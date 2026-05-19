@@ -1,0 +1,27 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: conduit_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: conduit
+      POSTGRES_PASSWORD: conduit_secret
+      POSTGRES_DB: conduit_db
+    ports:
+      - '5433:5432'
+    volumes:
+      - conduit_postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    container_name: conduit_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - '6379:6379'
+    volumes:
+      - conduit_redis_data:/data
+
+volumes:
+  conduit_postgres_data:
+  conduit_redis_data:

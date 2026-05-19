@@ -1,0 +1,149 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum MessageStatus {
+  PENDING
+  QUEUED
+  PROCESSING
+  SENT
+  FAILED
+  RETRYING
+  DEAD
+  CANCELLED
+}
+
+enum MessageChannel {
+  WHATSAPP
+  EMAIL
+  SMTP
+}
+
+enum ErrorType {
+  TRANSIENT
+  PERMANENT
+}
+
+model Tenant {
+  id        String   @id @default(uuid())
+  name      String
+  slug      String   @unique
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  templates        Template[]
+  messages         Message[]
+  webhookEndpoints WebhookEndpoint[]
+}
+
+model Template {
+  id              String   @id @default(uuid())
+  tenantId        String   @default("default")
+  name            String
+  description     String
+  channel         MessageChannel   
+  subject         String?  
+  bodyHandlebars  String
+  variablesSchema Json     @default("{}")
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id])
+  messages Message[]
+}
+
+model Message {
+  id          String    @id @default(uuid())
+  tenantId    String    @default("default")
+  templateId  String?
+  channel     MessageChannel    
+  recipient   String
+  variables   Json      @default("{}")
+
+  renderedSubject String
+  renderedBody String?
+
+  status      MessageStatus    @default(PENDING)
+  retryable   Boolean   @default(true)
+  attempts    Int       @default(0)
+  maxAttempts Int       @default(5)
+  lastError   String?
+
+  nextRetryAt DateTime?
+  scheduledAt DateTime  @default(now())
+  sentAt      DateTime?
+  meta        Json?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  tenant            Tenant?           @relation(fields: [tenantId], references: [id])
+  template          Template?         @relation(fields: [templateId], references: [id])
+  attemptLogs       MessageAttempt[]
+  webhookDeliveries WebhookDelivery[]
+
+  deadLetter        DeadLetterMessage?
+}
+
+model MessageAttempt {
+  id            String   @id @default(uuid())
+  messageId     String
+  attemptNumber Int
+  status        String
+  errorCode     String?
+  errorDetail   String?
+  errorType     ErrorType?  
+  durationMs    Int?
+  createdAt     DateTime @default(now())
+
+  message Message @relation(fields: [messageId], references: [id])
+}
+
+model WebhookEndpoint {
+  id        String   @id @default(uuid())
+  tenantId  String   @default("default")
+  url       String
+  secret    String
+  events    Json     @default("[]")
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant     Tenant            @relation(fields: [tenantId], references: [id])
+  deliveries WebhookDelivery[]
+}
+
+model WebhookDelivery {
+  id           String    @id @default(uuid())
+  webhookId    String
+  messageId    String
+  eventType    String
+  httpStatus   Int?
+  responseBody String?
+  attempts     Int       @default(0)
+  deliveredAt  DateTime?
+  createdAt    DateTime  @default(now())
+
+  webhook WebhookEndpoint @relation(fields: [webhookId], references: [id])
+  message Message         @relation(fields: [messageId], references: [id])
+}
+
+model DeadLetterMessage {
+  id          String
+  messageId   String @unique
+  reason      String
+  lastErrorCode String?
+  lastErrorDetail String?
+  totalAttempts Int
+  reviewBy    String?
+  reviewedAt     DateTime?
+  requeued       Boolean  @default(false)
+  createdAt      DateTime @default(now())
+
+  message Message @relation(fields: [messageId], references: [id])
+}

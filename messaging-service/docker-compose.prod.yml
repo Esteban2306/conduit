@@ -1,0 +1,3 @@
+# TODO: Docker Compose de producción - Etapa 5
+# Incluye: postgres + redis + la app NestJS como contenedor
+# Variables sensibles van en .env.prod, nunca hardcodeadas aquí
