@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 import { configFactory, configValidationSchema } from './config'
 import { SharedModule } from './shared/shared.module';
 import { HealthModule } from './api/health/health.module';
+import { TemplateModule } from './core/templates/template.module';
 
 
 @Module({
@@ -17,7 +18,8 @@ import { HealthModule } from './api/health/health.module';
     }),
     
     SharedModule,
-    HealthModule
+    HealthModule,
+    TemplateModule
   ],
   controllers: [],
   providers: [],
