@@ -4,6 +4,7 @@ import { configFactory, configValidationSchema } from './config'
 import { SharedModule } from './shared/shared.module';
 import { HealthModule } from './api/health/health.module';
 import { TemplateModule } from './core/templates/template.module';
+import { ChannelsModule } from './channels/channels.module';
 
 
 @Module({
@@ -19,7 +20,8 @@ import { TemplateModule } from './core/templates/template.module';
     
     SharedModule,
     HealthModule,
-    TemplateModule
+    TemplateModule,
+    ChannelsModule
   ],
   controllers: [],
   providers: [],

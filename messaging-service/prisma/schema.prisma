@@ -75,6 +75,9 @@ model Message {
   maxAttempts Int       @default(5)
   lastError   String?
 
+  provider    String?
+  providerMessageId String?
+
   nextRetryAt DateTime?
   scheduledAt DateTime  @default(now())
   sentAt      DateTime?
