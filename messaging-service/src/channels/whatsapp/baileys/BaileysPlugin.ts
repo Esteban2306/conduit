@@ -46,6 +46,18 @@ export class BaileysPlugin implements IChannelPlugin {
       };
     }
 
+    const hasWhatsaApp = await this.checkWhatsAppAccount(payload.to);
+    if (!hasWhatsaApp) {
+      return {
+        success: false,
+        provider: this.providerName,
+        retryable: false,
+        errorCode: 'NO_WHATSAPP_ACCOUNT',
+        error: `El número ${payload.to} no tiene una cuenta de WhatsApp asociada.`,
+        raw: null,
+      };
+    }
+
     return this.limiter.enqueue(() => this.sendMessage(payload));
   }
 
@@ -76,6 +88,21 @@ export class BaileysPlugin implements IChannelPlugin {
         error: error instanceof Error ? error.message : 'Unknown error',
         raw: error,
       };
+    }
+  }
+
+  private async checkWhatsAppAccount(phone: string): Promise<boolean> {
+    try {
+      const sock = this.session.getSocket()!;
+      const clean = phone.replace(/\D/g, '');
+      const waResult = await sock.onWhatsApp(clean);
+      if (!waResult || waResult.length === 0) {
+        return false;
+      }
+      const [result] = waResult;
+      return result.exists ?? false;
+    } catch {
+      return true;
     }
   }
 

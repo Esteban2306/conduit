@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@hapi/boom": "^10.0.1",
+    "@nestjs/bullmq": "^11.0.4",
     "@nestjs/common": "^11.0.1",
     "@nestjs/config": "^4.0.4",
     "@nestjs/core": "^11.0.1",
@@ -30,6 +31,7 @@
     "@prisma/client": "5.22.0",
     "@whiskeysockets/baileys": "7.0.0-rc12",
     "bufferutil": "^4.1.0",
+    "bullmq": "^5.77.1",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",
     "dotenv": "^17.4.2",

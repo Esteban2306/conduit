@@ -80,6 +80,7 @@ model Message {
 
   nextRetryAt DateTime?
   scheduledAt DateTime  @default(now())
+  resolvedAt DateTime?
   sentAt      DateTime?
   meta        Json?
   createdAt   DateTime  @default(now())
@@ -137,16 +138,16 @@ model WebhookDelivery {
 }
 
 model DeadLetterMessage {
-  id          String
-  messageId   String @unique
-  reason      String
-  lastErrorCode String?
+  id              String    @id @default(uuid())
+  messageId       String    @unique
+  reason          String
+  lastErrorCode   String?
   lastErrorDetail String?
-  totalAttempts Int
-  reviewBy    String?
-  reviewedAt     DateTime?
-  requeued       Boolean  @default(false)
-  createdAt      DateTime @default(now())
+  totalAttempts   Int
+  reviewedBy      String?
+  reviewedAt      DateTime?
+  requeued        Boolean   @default(false)
+  createdAt       DateTime  @default(now())
 
   message Message @relation(fields: [messageId], references: [id])
 }
