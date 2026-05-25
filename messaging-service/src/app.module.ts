@@ -6,6 +6,7 @@ import { HealthModule } from './api/health/health.module';
 import { TemplateModule } from './core/templates/template.module';
 import { ChannelsModule } from './channels/channels.module';
 import { QueueModule } from './queue/queue.module';
+import { OrchestratorModule } from './core/orchestrator/orchestrator.module';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { QueueModule } from './queue/queue.module';
     TemplateModule,
     ChannelsModule,
     QueueModule,
+    OrchestratorModule,
   ],
   controllers: [],
   providers: [],

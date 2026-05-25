@@ -2,8 +2,8 @@ import { Queue } from 'bullmq';
 import { ConfigService } from '@nestjs/config';
 
 export const QUEUE_NAMES = {
-  MESSAGES: 'conduit:messages',
-  DEAD_LETTER: 'conduit:dead-letter',
+  MESSAGES: 'conduit-messages',
+  DEAD_LETTER: 'conduit-dead-letter',
 } as const;
 
 export interface MessageJobPayload {
