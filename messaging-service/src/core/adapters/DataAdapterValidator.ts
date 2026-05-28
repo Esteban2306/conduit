@@ -30,7 +30,7 @@ export const MessagePayloadSchema = z.object({
     .object({
       scheduledAt: z
         .string()
-        .date({ message: 'scheduledAt debe ser ISO 8601' })
+        .datetime({ message: 'scheduledAt debe ser ISO 8601' })
         .optional(),
       priority: z.enum(['low', 'normal', 'high']).default('normal'),
       webhookUrl: z
@@ -49,16 +49,16 @@ export class DataAdapterValidator {
       const errors = result.error.issues.map((e) => ({
         field: e.path.join('.'),
         message: e.message,
-      }))
-      throw new DataAdapterValidationError(errors)
+      }));
+      throw new DataAdapterValidationError(errors);
     }
     return result.data;
   }
 }
 
 export class DataAdapterValidationError extends Error {
-    constructor(public readonly errors: {field: string; message: string} []) {
-        super('payload invalido')
-        this.name = 'DataAdapterValidationError'
-    }
+  constructor(public readonly errors: { field: string; message: string }[]) {
+    super('payload invalido');
+    this.name = 'DataAdapterValidationError';
+  }
 }
