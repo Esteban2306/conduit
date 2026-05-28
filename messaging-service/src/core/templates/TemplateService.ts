@@ -52,7 +52,9 @@ export class TemplateService {
   }
 
   async findOne(id: string) {
-    const template = await this.prisma.template.findUnique({ where: { id } });
+    const template = await this.prisma.template.findUnique({
+      where: { id: id },
+    });
     if (!template) throw new NotFoundException(`Template ${id} no encontrado`);
     return template;
   }

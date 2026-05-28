@@ -21,6 +21,8 @@ export class MessageOrchestrator {
   constructor(
     @InjectQueue(QUEUE_NAMES.MESSAGES)
     private readonly messageQueue: Queue<MessageJobPayload>,
+    @InjectQueue(QUEUE_NAMES.MESSAGES_SCHEDULED)
+    private readonly scheduledQueue: Queue<MessageJobPayload>,
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly templateService: TemplateService,
@@ -73,10 +75,13 @@ export class MessageOrchestrator {
     };
 
     const jobOptions = this.buildJobOptions(payload, scheduledAt);
+    const isScheduled = scheduledAt.getTime() - Date.now() > 1000;
 
-    const job = await this.messageQueue.add(
+    const targetQueue = isScheduled ? this.scheduledQueue : this.messageQueue;
+
+    const job = await targetQueue.add(
       `message:${payload.recipient.channel}`,
-      jobPayload,
+      { ...jobPayload, isScheduled },
       jobOptions,
     );
 
@@ -217,6 +222,7 @@ export class MessageOrchestrator {
   private buildJobOptions(payload: MessagePayload, scheduledAt: Date) {
     const now = new Date();
     const delayMs = scheduledAt.getTime() - now.getTime();
+    const isScheduled = delayMs > 1000;
 
     const priorityMap: Record<string, number> = {
       high: 1,
@@ -224,12 +230,15 @@ export class MessageOrchestrator {
       low: 10,
     };
 
-    const priority = priorityMap[payload.options?.priority ?? 'normal'];
+    const basePriority = priorityMap[payload.options?.priority ?? 'normal'];
+
+    const priority = isScheduled ? basePriority + 10 : basePriority;
 
     return {
       priority,
       delay: delayMs > 0 ? delayMs : 0,
-      jobId: `msg:${Date.now()}:${Math.random().toString(36).slice(2, 7)}`,
+      jobId: `msg:${isScheduled ? 'i' : 's'}:${Date.now()}:${Math.random().toString(36).slice(2, 7)}`,
+      isScheduled,
     };
   }
 }

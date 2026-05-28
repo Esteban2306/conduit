@@ -7,7 +7,10 @@ import { TemplateModule } from 'src/core/templates/template.module';
 
 @Module({
   imports: [
-    BullModule.registerQueue({ name: QUEUE_NAMES.MESSAGES }),
+    BullModule.registerQueue(
+      { name: QUEUE_NAMES.MESSAGES },
+      { name: QUEUE_NAMES.MESSAGES_SCHEDULED },
+    ),
     TemplateModule,
   ],
   controllers: [MessageController],

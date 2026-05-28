@@ -1,17 +1,11 @@
-import {
-  Injectable,
-  Logger,
-  OnModuleInit,
-  OnModuleDestroy,
-} from '@nestjs/common';
+import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { Worker } from 'bullmq';
 import { ConfigService } from '@nestjs/config';
 import { QUEUE_NAMES, MessageJobPayload } from 'src/queue/queues';
 import { MessageProcessor } from 'src/queue/processors/MessageProcessor';
 
 @Injectable()
-export class MessageWorker implements OnModuleInit, OnModuleDestroy {
-  private readonly logger = new Logger(MessageWorker.name);
+export class ScheduledMessageWorker implements OnModuleInit, OnModuleDestroy {
   private worker: Worker;
 
   constructor(
@@ -21,26 +15,16 @@ export class MessageWorker implements OnModuleInit, OnModuleDestroy {
 
   onModuleInit() {
     this.worker = new Worker<MessageJobPayload>(
-      QUEUE_NAMES.MESSAGES,
+      QUEUE_NAMES.MESSAGES_SCHEDULED,
       (job) => this.processor.process(job),
       {
         connection: {
           host: this.config.get<string>('redis.host'),
           port: this.config.get<number>('redis.port'),
         },
-        concurrency: 5,
+        concurrency: 2,
       },
     );
-
-    this.worker.on('completed', (job) => {
-      this.logger.log(
-        `Job completado: ${job.id} | messageId: ${job.data.messageId}`,
-      );
-    });
-
-    this.worker.on('failed', (job, error) => {
-      this.logger.error(`Job fallido: ${job?.id} | ${error.message}`);
-    });
   }
 
   async onModuleDestroy() {

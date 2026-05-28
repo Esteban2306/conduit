@@ -32,7 +32,7 @@ export class TemplateController {
 
   @Get(':id')
   @ApiOperation({ summary: 'Obtiene una plantilla por su ID' })
-  findOne(id: string) {
+  findOne(@Param('id') id: string) {
     return this.service.findOne(id);
   }
 
