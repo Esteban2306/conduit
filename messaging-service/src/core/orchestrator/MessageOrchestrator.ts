@@ -13,6 +13,7 @@ import { PrismaService } from 'src/shared/prisma.service';
 import { TemplateService } from '../templates/TemplateService';
 import { DataAdapterValidator } from '../adapters/DataAdapterValidator';
 import { MessagePayload } from '../adapters/IDataAdapter';
+import { ListMessageDto } from './dto/list-messages.dto';
 
 @Injectable()
 export class MessageOrchestrator {
@@ -198,6 +199,108 @@ export class MessageOrchestrator {
     this.logger.log(`Mensaje cancelado: ${messageId}`);
 
     return { messageId, status: MessageStatus.CANCELLED };
+  }
+
+  async listMessage(filter: ListMessageDto) {
+    const {
+      queue = 'all',
+      status,
+      channel,
+      scheduledFrom,
+      scheduledTo,
+      recipient,
+      page = 1,
+      limit = 20,
+    } = filter;
+
+    const skip = (page - 1) * limit;
+    const now = new Date();
+
+    const queueFilter =
+      queue === 'immediate'
+        ? { scheduledAt: { lte: now } }
+        : queue === 'scheduled'
+          ? { scheduledAt: { gt: now } }
+          : {};
+
+    const scheduledRangeFilter =
+      scheduledFrom || scheduledTo
+        ? {
+            scheduledAt: {
+              ...(scheduledFrom && { gte: new Date(scheduledFrom) }),
+              ...(scheduledTo && { lte: new Date(scheduledTo) }),
+            },
+          }
+        : {};
+
+    const where = {
+      ...queueFilter,
+      ...scheduledRangeFilter,
+      ...(status && { status: status as MessageStatus }),
+      ...(channel && { channel: channel as unknown as MessageChannel }),
+      ...(recipient && {
+        recipient: { contains: recipient, mode: 'insensitive' as const },
+      }),
+    };
+
+    const [message, total] = await Promise.all([
+      this.prisma.message.findMany({
+        where,
+        orderBy: { scheduledAt: 'asc' },
+        skip,
+        take: limit,
+        select: {
+          id: true,
+          channel: true,
+          recipient: true,
+          status: true,
+          attemptLogs: true,
+          maxAttempts: true,
+          scheduledAt: true,
+          sentAt: true,
+          resolvedAt: true,
+          provider: true,
+          lastError: true,
+          retryable: true,
+          createdAt: true,
+          template: { select: { id: true, name: true } },
+        },
+      }),
+      this.prisma.message.count({ where }),
+    ]);
+
+    const enriched = message.map((msg) => {
+      const isScheduled = msg.scheduledAt > now;
+      const minutesUntilSend = isScheduled
+        ? Math.round((msg.scheduledAt.getTime() - now.getTime()) / 60000)
+        : null;
+
+      return {
+        ...msg,
+        queue: isScheduled ? 'scheduled' : 'immediate',
+        minutesUntilSend,
+        isOverdue:
+          !isScheduled &&
+          msg.status !== MessageStatus.SENT &&
+          msg.status !== MessageStatus.DEAD &&
+          msg.status !== MessageStatus.CANCELLED,
+      };
+    });
+
+    return {
+      data: enriched,
+      meta: {
+        total,
+        page,
+        limit,
+        totalPage: Math.ceil(total / limit),
+        filter: {
+          queue,
+          status: status ?? 'all',
+          channel: channel ?? 'all',
+        },
+      },
+    };
   }
 
   private async validateTemplate(templateId: string): Promise<void> {
