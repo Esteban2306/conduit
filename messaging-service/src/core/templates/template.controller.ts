@@ -6,12 +6,14 @@ import {
   Param,
   Post,
   Put,
+  Query,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { TemplateService } from './TemplateService';
 import { CreateTemplateDto } from './dto/create-template.dto';
 import { UpdateTemplateDto } from './dto/update-template.dto';
 import { PreviewTemplateDto } from './dto/preview-template.dto';
+import { FilterTemplateDto } from './dto/filter-template.dto';
 
 @ApiTags('Templates')
 @Controller('templates')
@@ -26,8 +28,8 @@ export class TemplateController {
 
   @Get()
   @ApiOperation({ summary: 'Obtiene todas laas plantillas activas' })
-  findAll() {
-    return this.service.findAll();
+  findAll(@Query() filter: FilterTemplateDto) {
+    return this.service.findAll(filter);
   }
 
   @Get(':id')
@@ -49,8 +51,8 @@ export class TemplateController {
   }
 
   @Post(':id/preview')
-  @ApiOperation({ summary: 'Renderiza la plantilla con variables de prueba' })
+  @ApiOperation({ summary: 'Previsualiza la plantilla renderizada' })
   preview(@Param('id') id: string, @Body() dto: PreviewTemplateDto) {
-    return this.service.preview(id, dto.variables, dto.subject);
+    return this.service.preview(id, dto);
   }
 }

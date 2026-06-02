@@ -9,6 +9,9 @@ import { CreateTemplateDto } from './dto/create-template.dto';
 import { UpdateTemplateDto } from './dto/update-template.dto';
 import { ConfigService } from '@nestjs/config';
 import { AppConfig } from 'src/config';
+import { Prisma } from '@prisma/client';
+import { FilterTemplateDto } from './dto/filter-template.dto';
+import { PreviewTemplateDto } from './dto/preview-template.dto';
 
 @Injectable()
 export class TemplateService {
@@ -19,13 +22,9 @@ export class TemplateService {
   ) {}
 
   async create(dto: CreateTemplateDto) {
-    try {
-      this.engine.render(dto.bodyHandlebars, {});
-    } catch {
-      throw new BadRequestException(
-        'El bodyHandlebars contiene sintaxis invalida',
-      );
-    }
+    this.validateHandlebarsSyntax(dto.bodyHandlebars);
+
+    if (dto.subject) this.validateHandlebarsSyntax(dto.subject);
 
     const tenantId = this.config.get('tenant.defaultId', { infer: true });
 
@@ -41,40 +40,104 @@ export class TemplateService {
           ? JSON.stringify(dto.variadblesSchema)
           : JSON.stringify({}),
       },
+      include: {
+        tags: { include: { tag: true } },
+      },
     });
   }
 
-  async findAll() {
-    return this.prisma.template.findMany({
-      where: { isActive: true },
-      orderBy: { createdAt: 'desc' },
-    });
+  async findAll(filter: FilterTemplateDto) {
+    const tenantId = this.config.get('tenant.defaultId', { infer: true });
+
+    const where: Prisma.TemplateWhereInput = { tenantId, isActive: true };
+
+    if (filter.channel) {
+      where.channel = filter.channel;
+    }
+
+    if (filter.tagId) {
+      where.tags = {
+        some: {
+          tagId: filter.tagId,
+        },
+      };
+    }
+
+    if (filter.search) {
+      const search = filter.search.trim();
+
+      where.OR = [
+        { name: { contains: search, mode: 'insensitive' } },
+
+        { description: { contains: search, mode: 'insensitive' } },
+      ];
+    }
+
+    const skip = ((filter.page ?? 1) - 1) * (filter.limit ?? 20);
+
+    const take = filter.limit ?? 20;
+
+    const [templates, total] = await Promise.all([
+      this.prisma.template.findMany({
+        where,
+        skip,
+        take,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          tags: { include: { tag: true } },
+        },
+      }),
+
+      this.prisma.template.count({ where }),
+    ]);
+
+    return {
+      data: templates.map((t) => ({
+        ...t,
+        tags: t.tags.map((tt) => tt.tag),
+      })),
+
+      meta: {
+        total,
+        page: filter.page ?? 1,
+        limit: filter.limit ?? 20,
+        totalPages: Math.ceil(total / take),
+      },
+    };
   }
 
   async findOne(id: string) {
     const template = await this.prisma.template.findUnique({
       where: { id: id },
+      include: {
+        tags: { include: { tag: true } },
+      },
     });
     if (!template) throw new NotFoundException(`Template ${id} no encontrado`);
-    return template;
+    return {
+      ...template,
+
+      tags: template.tags.map((tt) => tt.tag),
+    };
   }
 
   async update(id: string, dto: UpdateTemplateDto) {
     await this.findOne(id);
 
     if (dto.bodyHandlebars) {
-      try {
-        this.engine.render(dto.bodyHandlebars, {});
-      } catch {
-        throw new BadRequestException(
-          'El bodyHandlebars contiene sintaxis invalida',
-        );
-      }
+      this.validateHandlebarsSyntax(dto.bodyHandlebars);
+    }
+
+    if (dto.subject) {
+      this.validateHandlebarsSyntax(dto.subject);
     }
 
     return this.prisma.template.update({
       where: { id },
       data: { ...dto },
+      include: {
+        tags: { include: { tag: true } },
+      },
     });
   }
 
@@ -87,38 +150,104 @@ export class TemplateService {
     });
   }
 
-  async preview(
-    id: string,
-    variables: Record<string, unknown>,
-    subjectOverride?: string,
-  ) {
+  async preview(id: string, dto: PreviewTemplateDto) {
     const template = await this.findOne(id);
+
+    const detectedVariables = this.engine.extractVariables(
+      template.bodyHandlebars,
+    );
 
     const validation = this.engine.validateVariables(
       template.bodyHandlebars,
-      variables,
+
+      dto.variables,
     );
+
     if (!validation.valid) {
       throw new BadRequestException(
-        `Variables faltantes en la plantilla: ${validation.missing.join(', ')}`,
+        `Variables faltantes: ${validation.missing.join(', ')}`,
       );
     }
 
-    const rendered = this.engine.render(
+    const rendered = this.engine.renderByChannel(
+      template.channel,
+
       template.bodyHandlebars,
-      variables,
-      subjectOverride ?? template.subject ?? undefined,
+
+      dto.variables,
+
+      dto.subject ?? template.subject ?? undefined,
+    );
+
+    const usedVariables = this.getUsedVariables(
+      dto.variables,
+
+      detectedVariables,
     );
 
     return {
       templateId: template.id,
+
       templateName: template.name,
+
       channel: template.channel,
-      variables: this.engine.extractVariables(template.bodyHandlebars),
-      rendered: {
+
+      detectedVariables,
+
+      providedVariables: usedVariables,
+
+      rendered,
+
+      preview: {
+        html: rendered.body,
+
+        plainText: this.stripHtml(rendered.body),
+
         subject: rendered.subject,
-        body: rendered.body,
+
+        whatsappPreview: this.formatWhatsappPreview(rendered.body),
       },
     };
+  }
+
+  private validateHandlebarsSyntax(template: string) {
+    try {
+      this.engine.render(template, {});
+    } catch {
+      throw new BadRequestException(
+        'El bodyHandlebars contiene sintaxis invalida',
+      );
+    }
+  }
+
+  private getUsedVariables(
+    provided: Record<string, unknown>,
+
+    detected: string[],
+  ): Record<string, unknown> {
+    return Object.fromEntries(
+      Object.entries(provided).filter(([key]) => detected.includes(key)),
+    );
+  }
+
+  private stripHtml(html: string): string {
+    return html
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/p>/gi, '\n\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .trim();
+  }
+
+  private formatWhatsappPreview(text: string): string {
+    const plain = this.stripHtml(text);
+
+    const truncated =
+      plain.length > 1024 ? plain.slice(0, 1021) + '...' : plain;
+
+    return truncated;
   }
 }
