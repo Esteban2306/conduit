@@ -106,27 +106,13 @@ export class MessageOrchestrator {
     queued: number;
     failed: Array<{ index: number; error: string }>;
   }> {
-    const results = await Promise.allSettled(
-      raws.map((raw) => this.dispatch(raw)),
-    );
 
-    const failed: Array<{ index: number; error: string }> = [];
-    let queued = 0;
+    if(raws.length <= this.BATCH_CHUNK_SIZE) {
+      return this.processBatchDirect(raws);
+    }
 
-    results.forEach((result, index) => {
-      if (result.status === 'fulfilled') {
-        queued++;
-      } else {
-        failed.push({
-          index,
-          error: result.reason?.message ?? 'Error desconocido',
-        });
-      }
-    });
+    return this.processBatchInChunks(raws)
 
-    this.logger.log(`Batch despachado: ${queued}/${raws.length} encolados`);
-
-    return { total: raws.length, queued, failed };
   }
 
   async getStatus(messageId: string) {
@@ -301,6 +287,73 @@ export class MessageOrchestrator {
         },
       },
     };
+  }
+
+  private readonly BATCH_CHUNK_SIZE = 50
+
+  private async processBatchDirect(raws: unknown[]): Promise<{
+    total: number;
+    queued: number;
+    failed: Array<{ index: number; error: string}>
+  }> {
+    const results = await Promise.allSettled(
+      raws.map((raw) => this.dispatch(raw))
+    )
+
+    return this.buildBatchResult(results)
+  }
+
+    private async processBatchInChunks(raws: unknown[]): Promise<{
+    total: number;
+    queued: number;
+    failed: Array<{ index: number; error: string}>
+  }> {
+    const chunks = this.chunkArray(raws, this.BATCH_CHUNK_SIZE)
+
+    const allResults: PromiseSettledResult<{messageId: string; status: string}>[] = []
+
+    for (const chunk of chunks) {
+    const chunkResults = await Promise.allSettled(
+      chunk.map((raw) => this.dispatch(raw))
+    )
+    allResults.push(...chunkResults)
+
+    this.logger.log(
+      `Chunk procesado: ${allResults.length}/${raws.length} mensajes`
+    )
+  }
+
+  return this.buildBatchResult(allResults)
+    
+  }
+
+  private chunkArray<T>(array: T[], chunkSize: number): T[][] {
+    const chunks: T[][] = [];
+    for (let i = 0; i < array.length; i += chunkSize) {
+      chunks.push(array.slice(i, i + chunkSize));
+    }
+    return chunks;
+  }
+
+  private buildBatchResult(results: PromiseSettledResult<{messageId: string; status: string}>[]): {total: number; queued: number; failed: Array<{ index: number; error: string}> } {
+    const failed: Array<{ index: number; error: string}> = []
+
+    let queued= 0 
+
+    results.forEach((result, index) => {
+      if (result.status === 'fulfilled') {
+        queued++
+      } else {
+        failed.push({
+          index,
+          error: result.reason.message ?? 'Error desconocido'
+        })
+      }
+    })
+
+  this.logger.log(`Batch completado: ${queued}/${results.length} encolados`)
+
+    return { total: results.length, queued, failed }
   }
 
   private async validateTemplate(templateId: string): Promise<void> {

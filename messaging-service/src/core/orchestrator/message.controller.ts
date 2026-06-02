@@ -10,11 +10,16 @@ import {
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { MessageOrchestrator } from './MessageOrchestrator';
 import { ListMessageDto } from './dto/list-messages.dto';
+import { TemplateService } from '../templates/TemplateService';
+import { BulkDispatchDto } from './dto/bulk-dispatch.dto';
 
 @ApiTags('Messages')
 @Controller('messages')
 export class MessageController {
-  constructor(private readonly orchestrator: MessageOrchestrator) {}
+  constructor(
+    private readonly orchestrator: MessageOrchestrator,
+    private readonly templateService: TemplateService,
+  ) {}
 
   @Post()
   @ApiOperation({ summary: 'Encola un mensaje para envío' })
@@ -26,6 +31,26 @@ export class MessageController {
   @ApiOperation({ summary: 'Encola múltiples mensajes de una vez' })
   dispatchBatch(@Body() body: unknown[]) {
     return this.orchestrator.dispatchBatch(body);
+  }
+
+  @Post('bulk')
+  @ApiOperation({ summary: 'Envios masivos con templates en comun' })
+  async bulkDispatch(@Body() body: BulkDispatchDto) {
+    const { templateId, recipients, options } = body;
+
+    const template = await this.templateService.findOne(templateId);
+
+    const payloads = recipients.map((r) => ({
+      recipient: {
+        channel: template.channel,
+        address: r.address,
+        name: r.name,
+      },
+      template: { id: templateId },
+      variables: r.variables,
+      options,
+    }));
+    return this.orchestrator.dispatchBatch(payloads);
   }
 
   @Get()

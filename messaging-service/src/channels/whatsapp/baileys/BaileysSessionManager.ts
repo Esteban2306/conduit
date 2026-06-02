@@ -84,13 +84,33 @@ export class BaileysSessionManager implements OnModuleInit {
 
       if (connection === 'open') {
         this.isConnected = true;
+        this.reconnectCount++;
+        this.lastReconnectAt = Date.now();
         this.logger.log('WhatsApp conectado');
+
+        if (this.reconnectCount > 1) {
+          this.limiter.enterReconnectThrottle();
+        }
       }
 
       if (connection === 'close') {
         this.isConnected = false;
         const code = (lastDisconnect?.error as Boom)?.output?.statusCode;
         const shouldReconnect = code !== DisconnectReason.loggedOut;
+
+        const BAN_WARNING_CODES = [403, 405, 408, 440, 500, 515];
+        const isWarningCode = BAN_WARNING_CODES.includes(code);
+
+        if (isWarningCode) {
+          this.logger.error(
+            `⚠️ ALERTA DE BAN: Código de desconexión ${code} detectado. Activando modo seguro.`,
+          );
+
+          this.limiter.reportDisconnect();
+          this.limiter.reportDisconnect();
+        }
+
+        this.limiter.reportDisconnect();
 
         this.logger.warn(
           `Desconectado. Código: ${code}. Reconectar: ${shouldReconnect}`,
@@ -130,6 +150,9 @@ export class BaileysSessionManager implements OnModuleInit {
     silentLogger.child = () => silentLogger;
     return silentLogger;
   }
+
+  private reconnectCount = 0;
+  private lastReconnectAt: number | null = null;
 
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));

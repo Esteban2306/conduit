@@ -39,6 +39,7 @@ model Tenant {
   templates        Template[]
   messages         Message[]
   webhookEndpoints WebhookEndpoint[]
+  tags             Tag[]
 }
 
 model Template {
@@ -56,6 +57,39 @@ model Template {
 
   tenant   Tenant    @relation(fields: [tenantId], references: [id])
   messages Message[]
+
+  tags TemplateTag[]
+}
+
+model TemplateTag {
+  templateId String
+  tagId      String
+
+  assignedAt DateTime @default(now())
+
+  template Template @relation(fields: [templateId], references: [id])
+  tag      Tag      @relation(fields: [tagId], references: [id])
+
+  @@id([templateId, tagId])
+}
+
+model Tag {
+  id        String   @id @default(uuid())
+  tenantId  String   @default("default")
+
+  name      String
+  slug      String
+
+  color     String?
+  createdAt DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  templates TemplateTag[]
+
+  @@unique([tenantId, slug])
+  @@index([tenantId])
+  @@index([slug])
 }
 
 model Message {

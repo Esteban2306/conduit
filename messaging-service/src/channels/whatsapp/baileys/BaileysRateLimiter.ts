@@ -64,13 +64,11 @@ export class BaileysRateLimiter {
 
   private readonly BURST_CHANCE = 0.12;
 
-  private readonly MAX_PER_HOUR = 18;
   private readonly MAX_PER_DAY = 180;
 
   private sentTimestamps: number[] = [];
   private dailySentCount = 0;
   private lastDayRest = new Date().toDateString();
-  private readonly MAX_MESSAGES_PER_HOUR = 25;
 
   private messagesSinceBreak = 0;
   private readonly BREAK_EVERY_MIN = 8;
@@ -107,6 +105,11 @@ export class BaileysRateLimiter {
 
       this.process();
     });
+  }
+
+  enterReconnectThrottle(): void {
+    this.reconnectThrottleUntil = Date.now() + this.RECONNECT_THROTTLE_MS;
+    this.logger.warn('Modo throttle post-reconexión activado por 60 segundos');
   }
 
   reportDisconnect(): void {
@@ -203,22 +206,6 @@ export class BaileysRateLimiter {
         );
       }
 
-      if (this.messagesSinceBreak >= this.nextBreakAt) {
-        const breakTime = this.randomInt(
-          this.BREAK_DURATION_MIN,
-          this.BREAK_DURATION_MAX,
-        );
-        this.logger.log(
-          `Pausa de sesión: ${Math.round(breakTime / 60000)} min`,
-        );
-        await this.sleep(breakTime);
-        this.messagesSinceBreak = 0;
-        this.nextBreakAt = this.randomInt(
-          this.BREAK_EVERY_MIN,
-          this.BREAK_EVERY_MAX,
-        );
-      }
-
       const job = this.queue.shift();
       if (!job) break;
 
@@ -275,6 +262,19 @@ export class BaileysRateLimiter {
 
   private calculateDelay(): number {
     const config = WARMUP_CONFIG[this.warmupLevel];
+
+    if (
+      this.reconnectThrottleUntil &&
+      Date.now() < this.reconnectThrottleUntil
+    ) {
+      const remaining = Math.round(
+        (this.reconnectThrottleUntil - Date.now()) / 1000,
+      );
+      this.logger.debug(
+        `Post-reconexión throttle activo: ${remaining}s restantes`,
+      );
+      return this.randomInt(15000, 30000);
+    }
 
     if (this.riskLevel === 1 && Math.random() < config.burstChance) {
       const burstDelay = this.randomInt(1000, 3000);
@@ -396,6 +396,9 @@ export class BaileysRateLimiter {
   private randomInt(min: number, max: number): number {
     return Math.floor(Math.random() * (max - min + 1)) + min;
   }
+
+  private reconnectThrottleUntil: number | null = null;
+  private readonly RECONNECT_THROTTLE_MS = 60000;
 
   private sleep(ms: number) {
     return new Promise((r) => {
