@@ -8,6 +8,7 @@ import { DLQHandler } from './Orchestrator/deadletter/DLQHandler';
 import { ChannelsModule } from 'src/channels/channels.module';
 import { TemplateModule } from 'src/core/templates/template.module';
 import { MessageProcessor } from './processors/MessageProcessor';
+import { WebhookModule } from 'src/webhooks/webhook.module';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { MessageProcessor } from './processors/MessageProcessor';
     ),
     ChannelsModule,
     TemplateModule,
+    WebhookModule,
   ],
   providers: [
     MessageWorker,

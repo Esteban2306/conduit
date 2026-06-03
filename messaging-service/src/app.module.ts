@@ -7,6 +7,7 @@ import { TemplateModule } from './core/templates/template.module';
 import { ChannelsModule } from './channels/channels.module';
 import { QueueModule } from './queue/queue.module';
 import { OrchestratorModule } from './core/orchestrator/orchestrator.module';
+import { WebhookModule } from './webhooks/webhook.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { OrchestratorModule } from './core/orchestrator/orchestrator.module';
     }),
 
     SharedModule,
+    WebhookModule,
     HealthModule,
     TemplateModule,
     ChannelsModule,

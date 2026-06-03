@@ -9,6 +9,7 @@ import { TemplateService } from 'src/core/templates/TemplateService';
 import { DLQHandler } from 'src/queue/Orchestrator/deadletter/DLQHandler';
 import { ErrorClassifier } from 'src/core/errors/ErrorClassifier';
 import { MessageJobPayload } from 'src/queue/queues';
+import { WebhookDispatcher } from 'src/webhooks/WebhookDispatcher';
 
 @Injectable()
 export class MessageProcessor {
@@ -21,6 +22,7 @@ export class MessageProcessor {
     private readonly templateService: TemplateService,
     private readonly templateEngine: TemplateEngine,
     private readonly dlqHandler: DLQHandler,
+    private readonly webhookDispatcher: WebhookDispatcher,
   ) {}
 
   async process(job: Job<MessageJobPayload>): Promise<void> {
@@ -67,6 +69,7 @@ export class MessageProcessor {
             renderedSubject: subject,
           },
         });
+        await this.webhookDispatcher.dispatch('message.sent', messageId);
         await this.logAttempt(
           messageId,
           job.attemptsMade + 1,
@@ -106,6 +109,7 @@ export class MessageProcessor {
             result.error,
             result.errorCode,
           );
+          await this.webhookDispatcher.dispatch('message.sent', messageId);
           return;
         }
 
