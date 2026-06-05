@@ -6,12 +6,20 @@ import {
   Post,
   Delete,
   Query,
+  UseInterceptors,
+  UploadedFiles,
+  ParseFilePipe,
+  MaxFileSizeValidator,
+  FileTypeValidator,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation } from '@nestjs/swagger';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { ApiTags, ApiOperation, ApiConsumes, ApiBody } from '@nestjs/swagger';
 import { MessageOrchestrator } from './MessageOrchestrator';
 import { ListMessageDto } from './dto/list-messages.dto';
 import { TemplateService } from '../templates/TemplateService';
 import { BulkDispatchDto } from './dto/bulk-dispatch.dto';
+import { FileParserService } from '../adapters/FileParserService';
+import { FileDispatchDto } from './dto/file-dispatch.dto';
 
 @ApiTags('Messages')
 @Controller('messages')
@@ -19,6 +27,7 @@ export class MessageController {
   constructor(
     private readonly orchestrator: MessageOrchestrator,
     private readonly templateService: TemplateService,
+    private readonly fileParser: FileParserService,
   ) {}
 
   @Post()
@@ -51,6 +60,82 @@ export class MessageController {
       options,
     }));
     return this.orchestrator.dispatchBatch(payloads);
+  }
+
+  @Post('upload')
+  @ApiOperation({
+    summary: 'Sube un archivo CSV o Excel con destinatarios',
+    description: `
+      El archivo debe tener como mínimo las columnas: address, channel.
+      Columnas adicionales se usan como variables del template.
+
+      Ejemplo de estructura:
+      | address           | channel | nombre | pedido |
+      |-------------------|---------|--------|--------|
+      | example@gmail.com    | EMAIL   | ex   | 1234   |
+      | 573001234567      | WHATSAPP| ex    | 5678   |
+    `,
+  })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        file: { type: 'string', format: 'binary' },
+        templateId: { type: 'string' },
+        extraVariables: { type: 'object' },
+        scheduledAt: { type: 'string' },
+        priority: { type: 'string', enum: ['low', 'normal', 'high'] },
+      },
+      required: ['file', 'templateId'],
+    },
+  })
+  @UseInterceptors(FileInterceptor('file'))
+  async uploadAndDispatch(
+    @UploadedFiles(
+      new ParseFilePipe({
+        validators: [
+          new MaxFileSizeValidator({ maxSize: 10 * 1024 * 1024 }),
+          new FileTypeValidator({
+            fileType: /(csv|xlsx|xls|vnd.openxmlformats|vnd.ms-excel)/,
+          }),
+        ],
+      }),
+    )
+    file: Express.Multer.File,
+    @Body() dto: FileDispatchDto,
+  ) {
+    const parsed = this.fileParser.parse(
+      file.buffer,
+      file.mimetype,
+      file.originalname,
+    );
+
+    if (parsed.errors.length > 0) {
+      return {
+        warning: `${parsed.errors.length} filas tuvieron errores de parseo y fueron ignoradas`,
+        parseErrors: parsed.errors,
+      };
+    }
+
+    const payloads = this.fileParser.rowsToPayloads(
+      parsed.rows,
+      dto.templateId,
+      dto.extraVariables ?? {},
+      dto.scheduledAt ?? '',
+      dto.priority,
+    );
+
+    const result = await this.orchestrator.dispatchBatch(payloads);
+
+    return {
+      ...result,
+      fileInfo: {
+        fileName: file.originalname,
+        totalRows: parsed.totalRows,
+        headers: parsed.headers,
+      },
+    };
   }
 
   @Get()

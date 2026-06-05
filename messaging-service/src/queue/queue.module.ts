@@ -9,6 +9,7 @@ import { ChannelsModule } from 'src/channels/channels.module';
 import { TemplateModule } from 'src/core/templates/template.module';
 import { MessageProcessor } from './processors/MessageProcessor';
 import { WebhookModule } from 'src/webhooks/webhook.module';
+import { JobSigner } from './security/JobSigner';
 
 @Module({
   imports: [
@@ -36,7 +37,14 @@ import { WebhookModule } from 'src/webhooks/webhook.module';
     MessageProcessor,
     ScheduledMessageWorker,
     DLQHandler,
+    JobSigner,
   ],
-  exports: [MessageWorker, ScheduledMessageWorker, DLQHandler, BullModule],
+  exports: [
+    MessageWorker,
+    ScheduledMessageWorker,
+    DLQHandler,
+    BullModule,
+    JobSigner,
+  ],
 })
 export class QueueModule {}

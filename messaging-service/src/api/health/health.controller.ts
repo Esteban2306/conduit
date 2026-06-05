@@ -4,6 +4,7 @@ import { PrismaService } from 'src/shared/prisma.service';
 import { ConfigService } from '@nestjs/config';
 import { AppConfig } from 'src/config';
 import { RedisService } from 'src/shared/redis';
+import { Public } from '../middlewares/auth';
 
 @ApiTags('Health')
 @Controller('health')
@@ -15,6 +16,7 @@ export class HealthController {
   ) {}
 
   @Get()
+  @Public()
   @ApiOperation({
     summary: 'Check the health of the microservice and its dependencises',
   })

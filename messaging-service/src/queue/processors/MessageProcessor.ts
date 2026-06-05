@@ -10,6 +10,7 @@ import { DLQHandler } from 'src/queue/Orchestrator/deadletter/DLQHandler';
 import { ErrorClassifier } from 'src/core/errors/ErrorClassifier';
 import { MessageJobPayload } from 'src/queue/queues';
 import { WebhookDispatcher } from 'src/webhooks/WebhookDispatcher';
+import { JobSigner, SignedJobPayload } from '../security/JobSigner';
 
 @Injectable()
 export class MessageProcessor {
@@ -23,9 +24,23 @@ export class MessageProcessor {
     private readonly templateEngine: TemplateEngine,
     private readonly dlqHandler: DLQHandler,
     private readonly webhookDispatcher: WebhookDispatcher,
+    private readonly jobSigner: JobSigner,
   ) {}
 
-  async process(job: Job<MessageJobPayload>): Promise<void> {
+  async process(job: Job<SignedJobPayload>): Promise<void> {
+    const verification = this.jobSigner.verify(job.data);
+
+    if (!verification.valid) {
+      this.logger.error(
+        `Job rechazado por seguridad: ${verification.reason} | jobId: ${job.id}`,
+      );
+      await this.dlqHandler.handle(
+        job.data.messageId,
+        verification.reason,
+        'INVALID_JOB_SIGNATURE',
+      );
+      return;
+    }
     const {
       messageId,
       channel,

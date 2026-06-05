@@ -1,5 +1,6 @@
 import { Queue } from 'bullmq';
 import { ConfigService } from '@nestjs/config';
+import { SignedJobPayload } from './security/JobSigner';
 
 export const QUEUE_NAMES = {
   MESSAGES: 'conduit-messages',
@@ -23,7 +24,7 @@ export interface MessageJobPayload {
 
 export function createMessageQueue(
   config: ConfigService,
-): Queue<MessageJobPayload> {
+): Queue<SignedJobPayload> {
   return new Queue(QUEUE_NAMES.MESSAGES, {
     connection: {
       host: config.get<string>('redis.host'),
@@ -43,7 +44,7 @@ export function createMessageQueue(
 
 export function createScheduledQueue(
   config: ConfigService,
-): Queue<MessageJobPayload> {
+): Queue<SignedJobPayload> {
   return new Queue(QUEUE_NAMES.MESSAGES_SCHEDULED, {
     connection: {
       host: config.get<string>('redis.host'),

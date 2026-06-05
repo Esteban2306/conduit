@@ -8,6 +8,7 @@ import { Worker } from 'bullmq';
 import { ConfigService } from '@nestjs/config';
 import { QUEUE_NAMES, MessageJobPayload } from 'src/queue/queues';
 import { MessageProcessor } from 'src/queue/processors/MessageProcessor';
+import { SignedJobPayload } from 'src/queue/security/JobSigner';
 
 @Injectable()
 export class MessageWorker implements OnModuleInit, OnModuleDestroy {
@@ -20,7 +21,7 @@ export class MessageWorker implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   onModuleInit() {
-    this.worker = new Worker<MessageJobPayload>(
+    this.worker = new Worker<SignedJobPayload>(
       QUEUE_NAMES.MESSAGES,
       (job) => this.processor.process(job),
       {

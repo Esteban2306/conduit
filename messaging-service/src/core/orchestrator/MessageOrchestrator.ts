@@ -14,6 +14,7 @@ import { TemplateService } from '../templates/TemplateService';
 import { DataAdapterValidator } from '../adapters/DataAdapterValidator';
 import { MessagePayload } from '../adapters/IDataAdapter';
 import { ListMessageDto } from './dto/list-messages.dto';
+import { JobSigner } from 'src/queue/security/JobSigner';
 
 @Injectable()
 export class MessageOrchestrator {
@@ -27,6 +28,7 @@ export class MessageOrchestrator {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly templateService: TemplateService,
+    private readonly jobSigner: JobSigner,
   ) {}
 
   async dispatch(raw: unknown): Promise<{ messageId: string; status: string }> {
@@ -80,9 +82,11 @@ export class MessageOrchestrator {
 
     const targetQueue = isScheduled ? this.scheduledQueue : this.messageQueue;
 
+    const signedPayload = this.jobSigner.sign({ ...jobPayload, isScheduled });
+
     const job = await targetQueue.add(
       `message:${payload.recipient.channel}`,
-      { ...jobPayload, isScheduled },
+      signedPayload,
       jobOptions,
     );
 
@@ -106,13 +110,11 @@ export class MessageOrchestrator {
     queued: number;
     failed: Array<{ index: number; error: string }>;
   }> {
-
-    if(raws.length <= this.BATCH_CHUNK_SIZE) {
+    if (raws.length <= this.BATCH_CHUNK_SIZE) {
       return this.processBatchDirect(raws);
     }
 
-    return this.processBatchInChunks(raws)
-
+    return this.processBatchInChunks(raws);
   }
 
   async getStatus(messageId: string) {
@@ -289,42 +291,44 @@ export class MessageOrchestrator {
     };
   }
 
-  private readonly BATCH_CHUNK_SIZE = 50
+  private readonly BATCH_CHUNK_SIZE = 50;
 
   private async processBatchDirect(raws: unknown[]): Promise<{
     total: number;
     queued: number;
-    failed: Array<{ index: number; error: string}>
+    failed: Array<{ index: number; error: string }>;
   }> {
     const results = await Promise.allSettled(
-      raws.map((raw) => this.dispatch(raw))
-    )
+      raws.map((raw) => this.dispatch(raw)),
+    );
 
-    return this.buildBatchResult(results)
+    return this.buildBatchResult(results);
   }
 
-    private async processBatchInChunks(raws: unknown[]): Promise<{
+  private async processBatchInChunks(raws: unknown[]): Promise<{
     total: number;
     queued: number;
-    failed: Array<{ index: number; error: string}>
+    failed: Array<{ index: number; error: string }>;
   }> {
-    const chunks = this.chunkArray(raws, this.BATCH_CHUNK_SIZE)
+    const chunks = this.chunkArray(raws, this.BATCH_CHUNK_SIZE);
 
-    const allResults: PromiseSettledResult<{messageId: string; status: string}>[] = []
+    const allResults: PromiseSettledResult<{
+      messageId: string;
+      status: string;
+    }>[] = [];
 
     for (const chunk of chunks) {
-    const chunkResults = await Promise.allSettled(
-      chunk.map((raw) => this.dispatch(raw))
-    )
-    allResults.push(...chunkResults)
+      const chunkResults = await Promise.allSettled(
+        chunk.map((raw) => this.dispatch(raw)),
+      );
+      allResults.push(...chunkResults);
 
-    this.logger.log(
-      `Chunk procesado: ${allResults.length}/${raws.length} mensajes`
-    )
-  }
+      this.logger.log(
+        `Chunk procesado: ${allResults.length}/${raws.length} mensajes`,
+      );
+    }
 
-  return this.buildBatchResult(allResults)
-    
+    return this.buildBatchResult(allResults);
   }
 
   private chunkArray<T>(array: T[], chunkSize: number): T[][] {
@@ -335,25 +339,31 @@ export class MessageOrchestrator {
     return chunks;
   }
 
-  private buildBatchResult(results: PromiseSettledResult<{messageId: string; status: string}>[]): {total: number; queued: number; failed: Array<{ index: number; error: string}> } {
-    const failed: Array<{ index: number; error: string}> = []
+  private buildBatchResult(
+    results: PromiseSettledResult<{ messageId: string; status: string }>[],
+  ): {
+    total: number;
+    queued: number;
+    failed: Array<{ index: number; error: string }>;
+  } {
+    const failed: Array<{ index: number; error: string }> = [];
 
-    let queued= 0 
+    let queued = 0;
 
     results.forEach((result, index) => {
       if (result.status === 'fulfilled') {
-        queued++
+        queued++;
       } else {
         failed.push({
           index,
-          error: result.reason.message ?? 'Error desconocido'
-        })
+          error: result.reason.message ?? 'Error desconocido',
+        });
       }
-    })
+    });
 
-  this.logger.log(`Batch completado: ${queued}/${results.length} encolados`)
+    this.logger.log(`Batch completado: ${queued}/${results.length} encolados`);
 
-    return { total: results.length, queued, failed }
+    return { total: results.length, queued, failed };
   }
 
   private async validateTemplate(templateId: string): Promise<void> {

@@ -8,9 +8,23 @@ import { ChannelsModule } from './channels/channels.module';
 import { QueueModule } from './queue/queue.module';
 import { OrchestratorModule } from './core/orchestrator/orchestrator.module';
 import { WebhookModule } from './webhooks/webhook.module';
+import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { APP_GUARD } from '@nestjs/core';
 
 @Module({
   imports: [
+    ThrottlerModule.forRoot([
+      {
+        name: 'short',
+        ttl: 1000,
+        limit: 10,
+      },
+      {
+        name: 'medium',
+        ttl: 60000,
+        limit: 200,
+      },
+    ]),
     ConfigModule.forRoot({
       isGlobal: true,
       load: [configFactory],
@@ -29,6 +43,11 @@ import { WebhookModule } from './webhooks/webhook.module';
     OrchestratorModule,
   ],
   controllers: [],
-  providers: [],
+  providers: [
+    {
+      provide: APP_GUARD,
+      useClass: ThrottlerGuard,
+    },
+  ],
 })
 export class AppModule {}

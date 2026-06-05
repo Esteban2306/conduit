@@ -48,7 +48,7 @@ export class DLQHandler {
 
       await this.dlQueue.add(
         'dead=message',
-        { messageId: reason, errorCode },
+        { messageId: messageId, errorCode },
         { jobId: `dlq:${messageId}` },
       );
       this.logger.warn(`Mensaje ${messageId} movido a DLQ. Razón: ${reason}`);

@@ -47,9 +47,34 @@ export class BaileysSessionManager implements OnModuleInit {
 
   async resetSession(): Promise<void> {
     this.logger.warn('Reiniciando sesión de WhatsApp...');
-    await this.sock?.logout().catch(() => {});
-    fs.rmSync(this.SESSION_PATH, { recursive: true, force: true });
+
+    this.isConnected = false;
+
+    if (this.sessionResetAttempts >= 3) {
+      this.logger.error('Máximo de reseteos de sesión alcanzado.');
+      return;
+    }
+
+    this.sessionResetAttempts++;
+    await this.resetSession();
+
+    try {
+      await this.sock?.logout();
+    } catch {
+      this.logger.warn(
+        'No fue posible cerrar sesión limpiamente. Continuando.',
+      );
+    }
+
+    this.sock = null;
+
+    fs.rmSync(this.SESSION_PATH, {
+      recursive: true,
+      force: true,
+    });
+
     this.ensureSessionDirectory();
+
     await this.connect();
   }
 
@@ -83,6 +108,7 @@ export class BaileysSessionManager implements OnModuleInit {
       }
 
       if (connection === 'open') {
+        this.sessionResetAttempts = 0;
         this.isConnected = true;
         this.reconnectCount++;
         this.lastReconnectAt = Date.now();
@@ -115,6 +141,16 @@ export class BaileysSessionManager implements OnModuleInit {
         this.logger.warn(
           `Desconectado. Código: ${code}. Reconectar: ${shouldReconnect}`,
         );
+
+        if (this.isInvalidSession(code)) {
+          this.logger.warn(
+            `Sesión inválida detectada (${code}). Eliminando credenciales y regenerando sesión.`,
+          );
+
+          await this.resetSession();
+
+          return;
+        }
 
         if (shouldReconnect) {
           await this.sleep(5000);
@@ -157,4 +193,12 @@ export class BaileysSessionManager implements OnModuleInit {
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
+
+  private readonly INVALID_SESSION_CODES = [DisconnectReason.loggedOut, 401];
+
+  private isInvalidSession(code?: number): boolean {
+    return this.INVALID_SESSION_CODES.includes(code ?? -1);
+  }
+
+  private sessionResetAttempts = 0;
 }
