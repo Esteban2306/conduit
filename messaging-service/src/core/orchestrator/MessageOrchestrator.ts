@@ -403,7 +403,7 @@ export class MessageOrchestrator {
     return {
       priority,
       delay: delayMs > 0 ? delayMs : 0,
-      jobId: `msg:${isScheduled ? 'i' : 's'}:${Date.now()}:${Math.random().toString(36).slice(2, 7)}`,
+      jobId: `msg-${isScheduled ? 'i' : 's'}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       isScheduled,
     };
   }

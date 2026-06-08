@@ -8,8 +8,10 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
 import { Observable } from 'rxjs';
+import * as crypto from 'crypto';
 
 export const IS_PUBLIC_KEY = 'isPublic';
+
 export const Public = () => SetMetadata(IS_PUBLIC_KEY, true);
 @Injectable()
 export class ApiKeyGuard implements CanActivate {
@@ -56,18 +58,13 @@ export class ApiKeyGuard implements CanActivate {
   }
 
   private safeCompare(a: string, b: string): boolean {
-    if (a.length !== b.length) {
-      let result = 1;
-      for (let i = 0; i < a.length; i++) {
-        result |= a.charCodeAt(i) ^ (b.charCodeAt(i % b.length) || 0);
-      }
+    const aBuffer = Buffer.from(a);
+    const bBuffer = Buffer.from(b);
+
+    if (aBuffer.length !== bBuffer.length) {
       return false;
     }
 
-    let result = 1;
-    for (let i = 0; i < a.length; i++) {
-      result |= a.charCodeAt(i) ^ b.charCodeAt(i);
-    }
-    return result === 0;
+    return crypto.timingSafeEqual(aBuffer, bBuffer);
   }
 }

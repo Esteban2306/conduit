@@ -2,38 +2,36 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import makeWASocket, {
   DisconnectReason,
-  useMultiFileAuthState,
   WASocket,
 } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
-import * as path from 'path';
-import * as fs from 'fs';
 import * as qrcode from 'qrcode-terminal';
 import { BaileysRateLimiter, WarmupLevel } from './BaileysRateLimiter';
+import { usePrismaAuthState } from './BaileysAuthState';
+import { PrismaService } from 'src/shared/prisma.service';
 
 @Injectable()
 export class BaileysSessionManager implements OnModuleInit {
   private readonly logger = new Logger(BaileysSessionManager.name);
   private sock: WASocket | null = null;
   private isConnected = false;
-  private readonly SESSION_PATH: string;
+  private reconnectCount = 0;
+  private lastReconnectAt: number | null = null;
+  private sessionResetAttempts = 0;
+
+  private readonly MAX_RESET_ATTEMPTS = 3;
+  private readonly BAN_WARNING_CODES = [403, 405, 408, 440, 500, 515];
+  private readonly INVALID_SESSION_CODES = [DisconnectReason.loggedOut, 401];
 
   constructor(
     private readonly config: ConfigService,
     private readonly limiter: BaileysRateLimiter,
-  ) {
-    const customPath = this.config.get<string>('whatsapp.sessionPath');
-    this.SESSION_PATH = customPath
-      ? path.resolve(customPath)
-      : path.join(process.cwd(), 'baileys_session');
-  }
+    private readonly prisma: PrismaService,
+  ) {}
 
   async onModuleInit(): Promise<void> {
-    this.ensureSessionDirectory();
-
     const level = this.config.get<string>('whatsapp.warmupLevel') ?? 'NORMAL';
     this.limiter.setWarmupLevel(level as WarmupLevel);
-
     await this.connect();
   }
 
@@ -46,17 +44,19 @@ export class BaileysSessionManager implements OnModuleInit {
   }
 
   async resetSession(): Promise<void> {
-    this.logger.warn('Reiniciando sesión de WhatsApp...');
-
-    this.isConnected = false;
-
-    if (this.sessionResetAttempts >= 3) {
-      this.logger.error('Máximo de reseteos de sesión alcanzado.');
+    if (this.sessionResetAttempts >= this.MAX_RESET_ATTEMPTS) {
+      this.logger.error(
+        `Máximo de reseteos alcanzado (${this.MAX_RESET_ATTEMPTS}). Intervención manual requerida.`,
+      );
       return;
     }
 
     this.sessionResetAttempts++;
-    await this.resetSession();
+    this.isConnected = false;
+
+    this.logger.warn(
+      `Reiniciando sesión (intento ${this.sessionResetAttempts}/${this.MAX_RESET_ATTEMPTS})`,
+    );
 
     try {
       await this.sock?.logout();
@@ -68,26 +68,16 @@ export class BaileysSessionManager implements OnModuleInit {
 
     this.sock = null;
 
-    fs.rmSync(this.SESSION_PATH, {
-      recursive: true,
-      force: true,
+    await this.prisma.whatsAppSession.deleteMany({
+      where: { id: { startsWith: 'default-session:' } },
     });
 
-    this.ensureSessionDirectory();
-
+    this.logger.log('Sesión eliminada de DB. Reconectando para nuevo QR...');
     await this.connect();
   }
 
-  private ensureSessionDirectory(): void {
-    if (!fs.existsSync(this.SESSION_PATH)) {
-      fs.mkdirSync(this.SESSION_PATH, { recursive: true });
-      this.logger.log(`Directorio de sesión creado: ${this.SESSION_PATH}`);
-    }
-  }
-
   private async connect(): Promise<void> {
-    const { state, saveCreds } = await useMultiFileAuthState(this.SESSION_PATH);
-
+    const { state, saveCreds } = await usePrismaAuthState(this.prisma as any);
     const silentLogger = this.buildSilentLogger();
 
     this.sock = makeWASocket({
@@ -97,7 +87,10 @@ export class BaileysSessionManager implements OnModuleInit {
       markOnlineOnConnect: false,
       syncFullHistory: false,
       generateHighQualityLinkPreview: false,
+      retryRequestDelayMs: 2000,
     });
+
+    this.sock.ev.on('messages.upsert', ({ messages }) => {});
 
     this.sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr } = update;
@@ -122,38 +115,33 @@ export class BaileysSessionManager implements OnModuleInit {
       if (connection === 'close') {
         this.isConnected = false;
         const code = (lastDisconnect?.error as Boom)?.output?.statusCode;
-        const shouldReconnect = code !== DisconnectReason.loggedOut;
 
-        const BAN_WARNING_CODES = [403, 405, 408, 440, 500, 515];
-        const isWarningCode = BAN_WARNING_CODES.includes(code);
+        this.logger.warn(`Desconectado. Código: ${code}`);
 
-        if (isWarningCode) {
+        if (this.BAN_WARNING_CODES.includes(code)) {
           this.logger.error(
-            `⚠️ ALERTA DE BAN: Código de desconexión ${code} detectado. Activando modo seguro.`,
+            `ALERTA BAN: código ${code}. Activando modo seguro.`,
           );
-
           this.limiter.reportDisconnect();
+          this.limiter.reportDisconnect();
+        } else {
           this.limiter.reportDisconnect();
         }
 
-        this.limiter.reportDisconnect();
-
-        this.logger.warn(
-          `Desconectado. Código: ${code}. Reconectar: ${shouldReconnect}`,
-        );
-
-        if (this.isInvalidSession(code)) {
-          this.logger.warn(
-            `Sesión inválida detectada (${code}). Eliminando credenciales y regenerando sesión.`,
-          );
-
+        if (this.INVALID_SESSION_CODES.includes(code ?? -1)) {
+          this.logger.warn(`Sesión inválida (${code}). Regenerando QR.`);
           await this.resetSession();
-
           return;
         }
 
-        if (shouldReconnect) {
-          await this.sleep(5000);
+        const backoff = Math.min(
+          5000 * Math.pow(2, this.reconnectCount - 1),
+          60000,
+        );
+
+        if (code !== DisconnectReason.loggedOut) {
+          this.logger.log(`Reconectando en ${Math.round(backoff / 1000)}s...`);
+          await this.sleep(backoff);
           await this.connect();
         } else {
           this.logger.error('Sesión cerrada manualmente. Requiere nuevo QR.');
@@ -172,10 +160,18 @@ export class BaileysSessionManager implements OnModuleInit {
       info: () => {},
       warn: (msg: unknown) => {
         const text = typeof msg === 'string' ? msg : JSON.stringify(msg);
+        if (text.includes('failed to find key')) return;
+        if (text.includes('msgId')) return;
+        if (text.includes('no name present')) return;
+        if (text.includes('Buffer timeout')) return;
+        if (text.includes('USync fetch yielded')) return;
         this.logger.warn(text);
       },
       error: (msg: unknown) => {
         const text = typeof msg === 'string' ? msg : JSON.stringify(msg);
+        if (text.includes('PreKeyError')) return;
+        if (text.includes('SessionError')) return;
+        if (text.includes('isSessionRecordError')) return;
         this.logger.error(text);
       },
       fatal: (msg: unknown) => {
@@ -187,18 +183,7 @@ export class BaileysSessionManager implements OnModuleInit {
     return silentLogger;
   }
 
-  private reconnectCount = 0;
-  private lastReconnectAt: number | null = null;
-
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
-
-  private readonly INVALID_SESSION_CODES = [DisconnectReason.loggedOut, 401];
-
-  private isInvalidSession(code?: number): boolean {
-    return this.INVALID_SESSION_CODES.includes(code ?? -1);
-  }
-
-  private sessionResetAttempts = 0;
 }

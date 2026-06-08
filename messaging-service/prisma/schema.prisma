@@ -185,3 +185,10 @@ model DeadLetterMessage {
 
   message Message @relation(fields: [messageId], references: [id])
 }
+
+model WhatsAppSession {
+  id        String   @id
+  data      Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
