@@ -10,6 +10,7 @@ import { OrchestratorModule } from './core/orchestrator/orchestrator.module';
 import { WebhookModule } from './webhooks/webhook.module';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { APP_GUARD } from '@nestjs/core';
+import { BotModule } from './bot/bot.module';
 
 @Module({
   imports: [
@@ -37,6 +38,7 @@ import { APP_GUARD } from '@nestjs/core';
     SharedModule,
     WebhookModule,
     HealthModule,
+    BotModule,
     TemplateModule,
     ChannelsModule,
     QueueModule,

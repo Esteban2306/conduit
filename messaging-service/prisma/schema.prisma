@@ -29,6 +29,41 @@ enum ErrorType {
   PERMANENT
 }
 
+enum BotStatus {
+  ACTIVE
+  INACTIVE
+  PAUSED
+}
+
+enum AiProvider {
+  ANTHROPIC
+  OPENAI
+  GEMINI
+  DEEPSEEK
+  GROQ
+  MISTRAL
+  CUSTOM
+}
+
+enum ConversationStatus {
+  ACTIVE
+  WAITING_PAYMENT
+  COMPLETED
+  ABANDONED
+}
+
+enum AiModelTier {
+  FREE        
+  PAID        
+}
+
+enum AiModelRole {
+  CONVERSATION     
+  IMAGE_ANALYSIS 
+  FALLBACK         
+}
+
+
 model Tenant {
   id        String   @id @default(uuid())
   name      String
@@ -40,6 +75,7 @@ model Tenant {
   messages         Message[]
   webhookEndpoints WebhookEndpoint[]
   tags             Tag[]
+  botContig        BotConfig[]
 }
 
 model Template {
@@ -127,6 +163,109 @@ model Message {
 
   deadLetter        DeadLetterMessage?
 }
+model AiModelConfig {
+  id          String @id @default(uuid())
+  botConfigId String
+  
+  provider  AiProvider
+  model     String      
+  apiKey    String       
+  baseUrl   String?      
+  
+  role      AiModelRole  
+  tier      AiModelTier  
+  priority  Int          
+  
+  isActive  Boolean @default(true)
+  
+
+  dailyTokenLimit    Int?   
+  minuteRequestLimit Int?   
+  
+  tokensUsedToday    Int @default(0)
+  requestsThisMinute Int @default(0)
+  lastResetAt        DateTime @default(now())
+  lastMinuteResetAt  DateTime @default(now())
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  botConfig BotConfig @relation(fields: [botConfigId], references: [id])
+  
+  @@index([botConfigId, role, priority])
+  @@index([botConfigId, isActive])
+}
+model BotConfig {
+  id          String    @id @default(uuid())
+  tenantId    String    @default("default")
+  name        String
+  status      BotStatus @default(INACTIVE)
+  
+  systemPrompt String @db.Text
+  
+  imageAnalysisEnabled Boolean @default(false)
+  
+  clientApiBaseUrl   String?
+  clientApiHeaders   Json @default("{}")
+  intentEndpoints    Json @default("{}")
+  
+  maxHistoryMessages         Int @default(10)
+  conversationTimeoutMinutes Int @default(60)
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  tenant        Tenant          @relation(fields: [tenantId], references: [id])
+  conversations Conversation[]
+  aiModels      AiModelConfig[] 
+  whatsappSession WhatsAppSession?
+}
+
+model Conversation {
+  id          String  @id @default(uuid())
+  tenantId    String  @default("default")
+  botConfigId String
+  phoneNumber String
+  status      ConversationStatus  @default(ACTIVE)
+
+  context     Json    @default("{}")
+
+  summary String? @db.Text
+
+  lastMessageAt DateTime @default(now())
+  lastIntent    String?
+  currentStep   String?
+  processing    Boolean @default(false)
+
+  lockedUntil DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  botConfig BotConfig    @relation(fields: [botConfigId], references: [id])
+  messages  BotMessage[]
+
+  @@unique([botConfigId, phoneNumber])
+  @@index([processing, lockedUntil])
+  @@index([phoneNumber])
+  @@index([botConfigId, status])
+}
+
+model BotMessage{
+  id        String  @id @default(uuid())
+  conversationId  String
+  direction String
+  content   String @db.Text
+  hasImage  Boolean @default(false)
+  imageVerfied  Boolean?
+  processedBy  String  @default("bot")
+  intent    String?
+  tokenUsed Int?
+  createdAt      DateTime @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id])
+
+  @@index([conversationId])
+}
 
 model MessageAttempt {
   id            String   @id @default(uuid())
@@ -187,8 +326,13 @@ model DeadLetterMessage {
 }
 
 model WhatsAppSession {
-  id        String   @id
-  data      Json
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id          String   @id
+  botConfigId String?  @unique
+
+  data        Json
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  botConfig BotConfig? @relation(fields: [botConfigId], references: [id])
 }

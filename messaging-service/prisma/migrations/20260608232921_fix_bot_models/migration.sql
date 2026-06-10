@@ -1,0 +1,4 @@
+-- AlterTable
+ALTER TABLE "BotMessage" ALTER COLUMN "imageVerfied" DROP NOT NULL,
+ALTER COLUMN "intent" DROP NOT NULL,
+ALTER COLUMN "tokenUsed" DROP NOT NULL;
