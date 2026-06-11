@@ -14,6 +14,8 @@ import {
 } from './interfaces/ConversationHistory';
 import { ConversationContext } from './interfaces/ConversationContext';
 import { UpdateContextDto } from './dto/UpdateContext.dto';
+import { EventBusService } from 'src/infra/events/event.service';
+import { EVENT_TYPES } from 'src/infra/events/constants/event.types';
 
 @Injectable()
 export class ConversationService {
@@ -21,7 +23,10 @@ export class ConversationService {
 
   private readonly LOCK_TIMEOUT_MS = 30000;
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly eventBus: EventBusService,
+  ) {}
 
   async getOrCreate(dto: CreateConversationDto) {
     const existing = await this.prisma.conversation.findFirst({
@@ -40,7 +45,7 @@ export class ConversationService {
       `Nueva conversación: ${dto.phoneNumber} → bot ${dto.botConfigId}`,
     );
 
-    return this.prisma.conversation.create({
+    const conversation = await this.prisma.conversation.create({
       data: {
         tenantId: dto.tenantId,
         botConfigId: dto.botConfigId,
@@ -50,6 +55,21 @@ export class ConversationService {
         lastMessageAt: new Date(),
       },
     });
+
+    this.eventBus.publish(
+      EVENT_TYPES.CONVERSATION_CREATED,
+      {
+        conversationId: conversation.id,
+        botConfigId: conversation.botConfigId,
+        tenantId: conversation.tenantId,
+        phoneNumber: conversation.phoneNumber,
+      },
+      {
+        tenantId: conversation.tenantId,
+      },
+    );
+
+    return conversation;
   }
 
   async findById(id: string) {
@@ -112,6 +132,13 @@ export class ConversationService {
       }),
     ]);
 
+    this.eventBus.publish(EVENT_TYPES.MESSAGE_RECEIVED, {
+      conversationId,
+      messageId: message.id,
+      content,
+      hasImage,
+    });
+
     return message;
   }
 
@@ -138,6 +165,13 @@ export class ConversationService {
         },
       }),
     ]);
+
+    this.eventBus.publish(EVENT_TYPES.MESSAGE_GENERATED, {
+      conversationId,
+      messageId: message.id,
+      content,
+      intent: options?.intent,
+    });
 
     return message;
   }
@@ -238,6 +272,12 @@ export class ConversationService {
     WHERE id = ${conversationId}
   `;
 
+    this.eventBus.publish(EVENT_TYPES.CONTEXT_UPDATED, {
+      conversationId,
+      step: dto.step,
+      intent: dto.intent,
+    });
+
     if (affectedRows === 0) {
       throw new NotFoundException(
         `Conversación ${conversationId} no encontrada`,
@@ -267,7 +307,7 @@ export class ConversationService {
 
     this.logger.log(`Cerrando conversación ${conversationId} → ${status}`);
 
-    return this.prisma.conversation.update({
+    const conversation = this.prisma.conversation.update({
       where: { id: conversationId },
       data: {
         status,
@@ -275,6 +315,13 @@ export class ConversationService {
         lockedUntil: null,
       },
     });
+
+    this.eventBus.publish(EVENT_TYPES.CONVERSATION_CLOSED, {
+      conversationId,
+      status,
+    });
+
+    return conversation;
   }
 
   async updateSummary(conversationId: string, summary: string) {

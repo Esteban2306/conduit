@@ -9,6 +9,7 @@ import * as qrcode from 'qrcode-terminal';
 import { BaileysRateLimiter, WarmupLevel } from './BaileysRateLimiter';
 import { usePrismaAuthState } from './BaileysAuthState';
 import { PrismaService } from 'src/shared/prisma.service';
+import { BotRouter } from 'src/bot/router/BotRouter';
 
 @Injectable()
 export class BaileysSessionManager implements OnModuleInit {
@@ -18,6 +19,7 @@ export class BaileysSessionManager implements OnModuleInit {
   private reconnectCount = 0;
   private lastReconnectAt: number | null = null;
   private sessionResetAttempts = 0;
+  private botRouter: BotRouter | null = null;
 
   private readonly MAX_RESET_ATTEMPTS = 3;
   private readonly BAN_WARNING_CODES = [403, 405, 408, 440, 500, 515];
@@ -28,6 +30,11 @@ export class BaileysSessionManager implements OnModuleInit {
     private readonly limiter: BaileysRateLimiter,
     private readonly prisma: PrismaService,
   ) {}
+
+  setBotRouter(router: BotRouter): void {
+    this.botRouter = router;
+    this.logger.log('BotRouter conectado a BaileysSessionManager');
+  }
 
   async onModuleInit(): Promise<void> {
     const level = this.config.get<string>('whatsapp.warmupLevel') ?? 'NORMAL';
@@ -90,7 +97,17 @@ export class BaileysSessionManager implements OnModuleInit {
       retryRequestDelayMs: 2000,
     });
 
-    this.sock.ev.on('messages.upsert', ({ messages }) => {});
+    this.sock.ev.on('messages.upsert', async ({ messages, type }) => {
+      if (type === 'notify') return;
+
+      if (this.botRouter) {
+        try {
+          await this.botRouter.route(messages);
+        } catch (err: any) {
+          this.logger.error(`BotRouter error: ${err?.message ?? err}`);
+        }
+      }
+    });
 
     this.sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr } = update;
