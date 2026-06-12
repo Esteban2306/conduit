@@ -6,6 +6,7 @@ import { WAMessage } from '@whiskeysockets/baileys';
 import { BotStatus } from '@prisma/client';
 import { EventBusService } from 'src/infra/events/event.service';
 import { EVENT_TYPES } from 'src/infra/events/constants/event.types';
+import { AiOrchestrator } from '../ai/AiOrchestrator';
 
 export interface IncomingMessageDto {
   phoneNumber: string;
@@ -22,6 +23,8 @@ export class BotRouter {
     private readonly botConfigService: BotConfigService,
     private readonly conversationService: ConversationService,
     private readonly eventBus: EventBusService,
+    private readonly aiOrchestrator: AiOrchestrator,
+    private readonly baileysPlugin: BaileysPlugin,
   ) {}
 
   async route(messages: WAMessage[]): Promise<void> {
@@ -85,6 +88,15 @@ export class BotRouter {
         botConfig.maxHistoryMessages,
       );
 
+      const aiResult = await this.aiOrchestrator.generateResponse({
+        botConfigId: botConfig.id,
+        systemPrompt: botConfig.systemPrompt,
+        userMessage: text ?? '[imagen recibida]',
+        history: aiData.history,
+        context: aiData.context,
+        summary: aiData.summary,
+      });
+
       this.publishResponseRequest(
         conversation.id,
         botConfig.id,
@@ -93,15 +105,20 @@ export class BotRouter {
       );
 
       // aqui ira la el service de ia por ahora responde con un massage placeholder
-      const responseText = this.buildPlaceholderResponse(
-        text,
-        hasImage,
-        aiData.currentStep,
-      );
+      const responseText = aiResult.content;
+
+      await this.baileysPlugin.send({
+        to: phoneNumber,
+        content: responseText,
+        subject: '',
+      });
 
       await this.conversationService.saveOutbound(
         conversation.id,
         responseText,
+        {
+          tokensUsed: aiResult.tokensUsed,
+        },
       );
     } finally {
       await this.conversationService.releaseLock(conversation.id);

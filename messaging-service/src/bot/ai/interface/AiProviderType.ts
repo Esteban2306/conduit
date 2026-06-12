@@ -1,0 +1,9 @@
+export enum AiProviderType {
+  ANTHROPIC = 'ANTHROPIC',
+  OPENAI = 'OPENAI',
+  GEMINI = 'GEMINI',
+  DEEPSEEK = 'DEEPSEEK',
+  GROQ = 'GROQ',
+  MISTRAL = 'MISTRAL',
+  CUSTOM = 'CUSTOM',
+}

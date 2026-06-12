@@ -21,7 +21,7 @@ import { EventModule } from 'src/infra/events/event.module';
     ChannelPluginFactory,
     BaileysSessionManager,
   ],
-  exports: [ChannelPluginFactory, ChannelRouter],
+  exports: [ChannelPluginFactory, ChannelRouter, BaileysPlugin],
 })
 export class ChannelsModule implements OnModuleInit {
   constructor(

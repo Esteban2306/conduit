@@ -203,6 +203,7 @@ export class ConversationService {
       currentStep: conversation.currentStep,
       lastIntent: conversation.lastIntent,
       history,
+      summary: conversation.summary,
     };
   }
 
