@@ -14,6 +14,7 @@ import { ConversationService } from './conversation/ConversationService';
 import { BotRouter } from './router/BotRouter';
 import { ChannelsModule } from 'src/channels/channels.module';
 import { forwardRef } from '@nestjs/common';
+import { ImageAnalysisService } from './ai/ImageAnalysisService';
 
 @Module({
   imports: [forwardRef(() => ChannelsModule)],
@@ -31,6 +32,7 @@ import { forwardRef } from '@nestjs/common';
     GroqProvider,
     MistralProvider,
     CustomProvider,
+    ImageAnalysisService,
   ],
   exports: [
     BotConfigService,

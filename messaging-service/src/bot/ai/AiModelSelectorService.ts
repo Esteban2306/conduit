@@ -2,12 +2,16 @@ import { Injectable, Logger } from '@nestjs/common';
 import { AiProviderType } from './interface/AiProviderType';
 import { PrismaService } from 'src/shared/prisma.service';
 import { AiModelConfig, AiModelRole, AiModelTier } from '@prisma/client';
+import { ConfigService } from '@nestjs/config';
 
 @Injectable()
 export class AiModelSelectorService {
   private readonly logger = new Logger(AiModelSelectorService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly config: ConfigService,
+  ) {}
 
   async selectModel(
     botConfigId: string,
@@ -38,6 +42,41 @@ export class AiModelSelectorService {
     }
 
     return null;
+  }
+
+  async resolveApiKey(model: AiModelConfig): Promise<string> {
+    const isPlaceholder =
+      !model.apiKey ||
+      model.apiKey.length < 20 ||
+      model.apiKey.toUpperCase().includes('_KEY') ||
+      model.apiKey.toUpperCase().includes('YOUR_') ||
+      model.apiKey === 'placeholder';
+
+    if (!isPlaceholder) {
+      return model.apiKey;
+    }
+
+    const envKeyMap: Record<string, string> = {
+      ANTHROPIC: 'ANTHROPIC_DEFAULT_API_KEY',
+      OPENAI: 'OPENAI_DEFAULT_API_KEY',
+      GEMINI: 'GEMINI_DEFAULT_API_KEY',
+      GROQ: 'GROQ_DEFAULT_API_KEY',
+      MISTRAL: 'MISTRAL_DEFAULT_API_KEY',
+      DEEPSEEK: 'DEEPSEEK_DEFAULT_API_KEY',
+    };
+
+    const envKey = envKeyMap[model.provider];
+    const systemKey = envKey ? process.env[envKey] : undefined;
+
+    if (!systemKey) {
+      throw new Error(
+        `Sin API key válida para ${model.provider}. ` +
+          `La key en DB parece un placeholder ("${model.apiKey}"). ` +
+          `Configura una key real o añade ${envKey} al .env`,
+      );
+    }
+
+    return systemKey;
   }
 
   private async isAvailable(model: AiModelConfig): Promise<boolean> {

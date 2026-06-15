@@ -20,7 +20,7 @@ export class BaileysPlugin implements IChannelPlugin {
   ) {}
 
   validateRecipient(address: string): boolean {
-    return /^\d{10,15}$/.test(address.replace(/\D/g, ''));
+    return /^[1-9]\d{9,14}$/.test(address);
   }
 
   async send(payload: ChannelSendPayload): Promise<ChannelSendResult> {
@@ -67,14 +67,14 @@ export class BaileysPlugin implements IChannelPlugin {
     try {
       const sock = this.session.getSocket()!;
       const jid = this.formatJid(payload.to);
-      const text = this.addInvisibleVariation(this.stripHtml(payload.content))
+      const text = this.addInvisibleVariation(this.stripHtml(payload.content));
 
-      await sock.sendPresenceUpdate('composing', jid)
-      const typingMs = Math.min(text.length * 40, 4000) + this.randomInt(500, 1500)
+      await sock.sendPresenceUpdate('composing', jid);
+      const typingMs =
+        Math.min(text.length * 40, 4000) + this.randomInt(500, 1500);
 
-      await this.sleep(typingMs)
-      await sock.sendPresenceUpdate('paused', jid)
-
+      await this.sleep(typingMs);
+      await sock.sendPresenceUpdate('paused', jid);
 
       const response = await sock.sendMessage(jid, { text });
 
@@ -119,28 +119,23 @@ export class BaileysPlugin implements IChannelPlugin {
   }
 
   private randomInt(min: number, max: number): number {
-    return Math.floor(Math.random() * (max - min + 1)) + min
+    return Math.floor(Math.random() * (max - min + 1)) + min;
   }
 
   private sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms))
-}
-
-private addInvisibleVariation(text: string): string{
-  const invisibleChars = [
-    '\u200B',  
-    '\u200C',  
-    '\u200D',  
-    '\uFEFF',
-  ]
-
-  const count = this.randomInt(1, 3)
-  let suffix = ''
-  for (let i = 0; i < count; i++) {
-    suffix += invisibleChars[this.randomInt(0, invisibleChars.length - 1)]
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
-  return text + suffix
-}
+
+  private addInvisibleVariation(text: string): string {
+    const invisibleChars = ['\u200B', '\u200C', '\u200D', '\uFEFF'];
+
+    const count = this.randomInt(1, 3);
+    let suffix = '';
+    for (let i = 0; i < count; i++) {
+      suffix += invisibleChars[this.randomInt(0, invisibleChars.length - 1)];
+    }
+    return text + suffix;
+  }
 
   private stripHtml(html: string): string {
     return html

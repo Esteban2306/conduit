@@ -1,12 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { BotConfigService } from '../config/BotConfigService';
 import { ConversationService } from '../conversation/ConversationService';
-import { BaileysPlugin } from 'src/channels/whatsapp/baileys/BaileysPlugin';
 import { WAMessage } from '@whiskeysockets/baileys';
 import { BotStatus } from '@prisma/client';
 import { EventBusService } from 'src/infra/events/event.service';
 import { EVENT_TYPES } from 'src/infra/events/constants/event.types';
 import { AiOrchestrator } from '../ai/AiOrchestrator';
+import { ImageAnalysisService } from '../ai/ImageAnalysisService';
 
 export interface IncomingMessageDto {
   phoneNumber: string;
@@ -24,7 +24,7 @@ export class BotRouter {
     private readonly conversationService: ConversationService,
     private readonly eventBus: EventBusService,
     private readonly aiOrchestrator: AiOrchestrator,
-    private readonly baileysPlugin: BaileysPlugin,
+    private readonly imageAnalysisService: ImageAnalysisService,
   ) {}
 
   async route(messages: WAMessage[]): Promise<void> {
@@ -40,12 +40,23 @@ export class BotRouter {
   private async handleMessage(message: WAMessage): Promise<void> {
     if (message.key.fromMe) return;
 
-    const jid = message.key.remoteJid;
+    const jid = message.key.remoteJidAlt ?? message.key.remoteJid;
     if (!jid) return;
+
+    console.log('REMOTE JID:', message.key.remoteJid);
+    console.log('PARTICIPANT:', message.key.participant);
+    console.log('PUSHNAME:', message.pushName);
+    console.dir(message, { depth: 4 });
+
+    console.log(JSON.stringify(message, null, 2));
+
+    this.logger.log(`JID recibido: ${jid}`);
 
     if (jid.endsWith('@g.us')) return;
 
-    const phoneNumber = jid.replace('@s.whatsapp.net', '');
+    const phoneNumber = jid.replace('@s.whatsapp.net', '').replace('@lid', '');
+
+    console.log('DESTINO:', phoneNumber);
 
     const botConfig = await this.botConfigService.getActiveConfig();
 
@@ -88,6 +99,43 @@ export class BotRouter {
         botConfig.maxHistoryMessages,
       );
 
+      let userMessageForAI = text ?? '[imagen recibida]';
+
+      if (hasImage) {
+        const analysisResult =
+          await this.imageAnalysisService.analyzeFromMessage(
+            message,
+            botConfig.id,
+            botConfig.systemPrompt,
+          );
+
+        await this.conversationService.updateContext(conversation.id, {
+          contextPatch: {
+            lastImageAnalysis: analysisResult,
+            imageVerified: analysisResult.valid,
+          },
+        });
+
+        userMessageForAI = `
+Usuario envió una imagen.
+
+Resultado del análisis:
+- válida: ${analysisResult.valid}
+- confianza: ${analysisResult.confidence}
+- detalles: ${analysisResult.details ?? 'Sin detalles'}
+
+Mensaje adjunto:
+${text ?? ''}
+      `.trim();
+      }
+
+      this.publishResponseRequest(
+        conversation.id,
+        botConfig.id,
+        text ?? '',
+        hasImage,
+      );
+
       const aiResult = await this.aiOrchestrator.generateResponse({
         botConfigId: botConfig.id,
         systemPrompt: botConfig.systemPrompt,
@@ -97,20 +145,13 @@ export class BotRouter {
         summary: aiData.summary,
       });
 
-      this.publishResponseRequest(
-        conversation.id,
-        botConfig.id,
-        text ?? '',
-        hasImage,
-      );
-
-      // aqui ira la el service de ia por ahora responde con un massage placeholder
       const responseText = aiResult.content;
 
-      await this.baileysPlugin.send({
-        to: phoneNumber,
+      this.eventBus.publish(EVENT_TYPES.CHANNEL_SEND_REQUESTED, {
+        phoneNumber,
         content: responseText,
-        subject: '',
+        conversationId: conversation.id,
+        tokensUsed: aiResult.tokensUsed,
       });
 
       await this.conversationService.saveOutbound(
@@ -162,7 +203,6 @@ export class BotRouter {
       };
     }
 
-    //futura integracion de entendimiento de ia a auido
     if (msg.audioMessage) {
       return { text: '[audio]', hasImage: false, imageBuffer: null };
     }
@@ -182,20 +222,5 @@ export class BotRouter {
       userMessage: text,
       hasImage,
     });
-  }
-
-  private buildPlaceholderResponse(
-    text: string | null,
-    hasImage: boolean,
-    currentStep: string | null,
-  ) {
-    if (hasImage) {
-      return 'Recibí tu imagen. Estoy analizándola...';
-    }
-    if (text) {
-      return `Recibí tu mensaje: "${text}". El bot con IA estará disponible pronto.`;
-    }
-
-    return 'Hola, ¿en qué te puedo ayudar?';
   }
 }

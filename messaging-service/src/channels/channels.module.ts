@@ -9,6 +9,7 @@ import { BaileysSessionManager } from './whatsapp/baileys/BaileysSessionManager'
 import { BotRouter } from 'src/bot/router/BotRouter';
 import { BotModule } from 'src/bot/bot.module';
 import { EventModule } from 'src/infra/events/event.module';
+import { BaileysMessageSender } from './whatsapp/baileys/BaileysMessageSender';
 
 @Module({
   imports: [forwardRef(() => BotModule), EventModule],
@@ -18,10 +19,16 @@ import { EventModule } from 'src/infra/events/event.module';
     BaileysPlugin,
     BaileysRateLimiter,
     ChannelRouter,
+    BaileysMessageSender,
     ChannelPluginFactory,
     BaileysSessionManager,
   ],
-  exports: [ChannelPluginFactory, ChannelRouter, BaileysPlugin],
+  exports: [
+    ChannelPluginFactory,
+    ChannelRouter,
+    BaileysPlugin,
+    BaileysMessageSender,
+  ],
 })
 export class ChannelsModule implements OnModuleInit {
   constructor(

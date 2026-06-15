@@ -26,6 +26,12 @@ export const EVENT_TYPES = {
 
   CONTEXT_UPDATED: 'context.updated',
 
+  CHANNEL_SEND_REQUESTED: 'channel.send.requested',
+
+  CHANNEL_SEND_COMPLETED: 'channel.send.completed',
+
+  CHANNEL_SEND_FAILED: 'channel.send.failed',
+
   // orchestration
 
   MESSAGE_DISPATCH_REQUESTED: 'message.dispatch.requested',
@@ -55,6 +61,25 @@ export interface EventPayloadMap {
     tenantId: string;
 
     phoneNumber: string;
+  };
+
+  [EVENT_TYPES.CHANNEL_SEND_REQUESTED]: {
+    phoneNumber: string;
+    content: string;
+    conversationId: string;
+    tokensUsed?: number;
+    imageVerified?: boolean;
+  };
+
+  [EVENT_TYPES.CHANNEL_SEND_COMPLETED]: {
+    phoneNumber: string;
+    providerMessageId?: string;
+  };
+
+  [EVENT_TYPES.CHANNEL_SEND_FAILED]: {
+    phoneNumber: string;
+    error: string;
+    retryable: boolean;
   };
 
   [EVENT_TYPES.CONVERSATION_LOCK_ACQUIRED]: {

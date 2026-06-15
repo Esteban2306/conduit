@@ -118,7 +118,6 @@ export class AiModelSelectorService {
       where: { id: modelId },
       data: {
         requestsThisMinute: 999999,
-        lastMinuteResetAt: new Date(),
       },
     });
   }

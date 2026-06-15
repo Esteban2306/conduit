@@ -54,12 +54,24 @@ export class AiOrchestrator {
           ? `${contextBlock}\n\n${input.userMessage}`
           : input.userMessage;
 
+        const apiKey = await this.selector.resolveApiKey(config);
+
+        console.log(config.model);
+        console.log(config.provider);
+        console.log(apiKey);
+
+        this.logger.debug({
+          provider: config.provider,
+          model: config.model,
+          apiKeyStart: apiKey.substring(0, 8),
+        });
+
         const result = await provider.generateText({
           prompt: fullPrompt,
           systemPrompt: input.systemPrompt,
           history: input.history,
           model: config.model,
-          apiKey: config.apiKey,
+          apiKey,
           baseUrl: config.baseUrl ?? '',
           maxTokens: 1024,
           temperature: 0.7,
@@ -97,7 +109,7 @@ export class AiOrchestrator {
           imageBuffer: input.imageBuffer,
           mimeType: input.mimeType,
           model: config.model,
-          apiKey: config.apiKey,
+          apiKey: await this.selector.resolveApiKey(config),
           baseUrl: config.baseUrl ?? undefined,
           maxTokens: 1024,
         });
