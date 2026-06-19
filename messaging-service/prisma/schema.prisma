@@ -168,7 +168,7 @@ model AiModelConfig {
   botConfigId String
   
   provider  AiProvider
-  model     String      
+  model     String   
   apiKey    String       
   baseUrl   String?      
   
@@ -209,7 +209,10 @@ model BotConfig {
   clientApiHeaders   Json @default("{}")
   intentEndpoints    Json @default("{}")
   
-  maxHistoryMessages         Int @default(10)
+  maxHistoryMessages         Int @default(6)
+  maxMessageAgeMinutes Int @default(1440)
+  humanTakeoverMinutes Int @default(10)
+  botResponseDelaySeconds Int @default(8)
   conversationTimeoutMinutes Int @default(60)
   
   createdAt DateTime @default(now())

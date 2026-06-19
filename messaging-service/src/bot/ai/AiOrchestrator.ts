@@ -14,6 +14,7 @@ import {
   OrchestratorResult,
 } from './interface/AiOrchestator.types';
 import { AiProviderType } from './interface/AiProviderType';
+import { resolveModel } from '../helper/model-resolver';
 
 @Injectable()
 export class AiOrchestrator {
@@ -56,21 +57,32 @@ export class AiOrchestrator {
 
         const apiKey = await this.selector.resolveApiKey(config);
 
-        console.log(config.model);
-        console.log(config.provider);
-        console.log(apiKey);
+        this.logger.debug({
+          provider: config.provider,
+          dbModel: config.model,
+        });
+
+        const model = resolveModel(
+          config.provider as AiProviderType,
+          config.model,
+        );
+
+        this.logger.debug({
+          provider: config.provider,
+          resolvedModel: model,
+        });
 
         this.logger.debug({
           provider: config.provider,
           model: config.model,
-          apiKeyStart: apiKey.substring(0, 8),
+          baseUrl: config.baseUrl,
         });
 
         const result = await provider.generateText({
           prompt: fullPrompt,
           systemPrompt: input.systemPrompt,
           history: input.history,
-          model: config.model,
+          model,
           apiKey,
           baseUrl: config.baseUrl ?? '',
           maxTokens: 1024,
@@ -120,66 +132,62 @@ export class AiOrchestrator {
   }
 
   private async executeWithFallback(
-    modelConfig: AiModelConfig,
+    initialModel: AiModelConfig,
     botConfigId: string,
     execute: (
       config: AiModelConfig,
     ) => Promise<{ result: GenerateTextResult; config: AiModelConfig }>,
   ): Promise<OrchestratorResult> {
     const start = Date.now();
+    const attempted = new Set<string>();
 
-    try {
-      const { result, config } = await execute(modelConfig);
+    let currentModel: AiModelConfig | null = initialModel;
 
-      await this.selector.recordUsage(config.id, result.tokensUsed);
+    while (currentModel) {
+      attempted.add(currentModel.id);
 
-      this.logger.log(
-        `IA: ${config.provider}/${config.model} | tokens: ${result.tokensUsed} | ${result.latencyMs}ms`,
-      );
+      try {
+        const { result, config } = await execute(currentModel);
+        await this.selector.recordUsage(config.id, result.tokensUsed);
 
-      return {
-        content: result.content,
-        tokensUsed: result.tokensUsed,
-        modelUsed: result.model,
-        providerUsed: result.provider,
-        latencyMs: result.latencyMs,
-        modelConfigId: config.id,
-      };
-    } catch (error) {
-      this.logger.error(
-        `Fallo en ${modelConfig.provider}/${modelConfig.model}: ${error.message}`,
-      );
-
-      await this.selector.markUnavailable(modelConfig.id);
-
-      const fallbackConfig = await this.selector.selectModel(
-        botConfigId,
-        AiModelRole.CONVERSATION,
-      );
-
-      if (!fallbackConfig || fallbackConfig.id === modelConfig.id) {
-        throw new Error(
-          `Sin modelos disponibles después de fallo en ${modelConfig.provider}. Error: ${error.message}`,
+        this.logger.log(
+          `IA: ${config.provider}/${config.model} | tokens: ${result.tokensUsed} | ${result.latencyMs}ms`,
         );
+
+        return {
+          content: result.content,
+          tokensUsed: result.tokensUsed,
+          modelUsed: result.model,
+          providerUsed: result.provider,
+          latencyMs: result.latencyMs,
+          modelConfigId: config.id,
+        };
+      } catch (error) {
+        this.logger.error(
+          `Fallo en ${currentModel.provider}/${currentModel.model}: ${error.message}`,
+        );
+
+        await this.selector.markUnavailable(currentModel.id);
+
+        const next = await this.selector.selectModel(
+          botConfigId,
+          AiModelRole.CONVERSATION,
+        );
+
+        if (!next || attempted.has(next.id)) {
+          throw new Error(
+            `Todos los modelos fallaron. Último error (${currentModel.provider}): ${error.message}`,
+          );
+        }
+
+        this.logger.warn(
+          `Fallback: ${currentModel.provider} → ${next.provider}/${next.model}`,
+        );
+        currentModel = next;
       }
-
-      this.logger.warn(
-        `usando fallback: ${fallbackConfig.provider}/${fallbackConfig.model}`,
-      );
-
-      const { result, config } = await execute(fallbackConfig);
-
-      await this.selector.recordUsage(config.id, result.tokensUsed);
-
-      return {
-        content: result.content,
-        tokensUsed: result.tokensUsed,
-        modelUsed: result.model,
-        providerUsed: result.provider,
-        latencyMs: Date.now() - start,
-        modelConfigId: config.id,
-      };
     }
+
+    throw new Error('Sin modelos de IA disponibles');
   }
 
   private buildContextBlock(

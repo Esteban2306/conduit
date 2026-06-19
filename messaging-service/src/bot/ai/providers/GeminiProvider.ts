@@ -25,13 +25,28 @@ export class GeminiProvider implements AiProvider {
       systemInstruction: input.systemPrompt,
     });
 
-    // Gemini usa un formato de historial diferente
-    const history = (input.history ?? []).map((h) => ({
-      role: h.role === 'user' ? 'user' : 'model',
-      parts: [{ text: h.content }],
-    }));
+    const rawHistory = input.history ?? [];
 
-    const chat = model.startChat({ history });
+    const firstUserIndex = rawHistory.findIndex((h) => h.role === 'user');
+    const safeHistory =
+      firstUserIndex >= 0 ? rawHistory.slice(firstUserIndex) : [];
+
+    const geminiHistory: Array<{
+      role: 'user' | 'model';
+      parts: { text: string }[];
+    }> = [];
+
+    for (const msg of safeHistory) {
+      const role = msg.role === 'user' ? 'user' : 'model';
+      const last = geminiHistory[geminiHistory.length - 1];
+      if (last && last.role === role) {
+        last.parts[0].text += '\n' + msg.content;
+      } else {
+        geminiHistory.push({ role, parts: [{ text: msg.content }] });
+      }
+    }
+
+    const chat = model.startChat({ history: geminiHistory });
     const result = await chat.sendMessage(input.prompt);
     const response = result.response;
 

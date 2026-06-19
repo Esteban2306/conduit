@@ -9,10 +9,17 @@ import {
 
 @Injectable()
 export class OpenAIProvider implements AiProvider {
-  readonly providerName: 'OPENAI';
+  readonly providerName = 'OPENAI';
   private readonly logger = new Logger(OpenAIProvider.name);
 
   async generateText(input: GenerateTextInput): Promise<GenerateTextResult> {
+    this.logger.debug({
+      provider: this.providerName,
+      model: input.model,
+      baseUrl: input.baseUrl,
+      apiKeyStart: input.apiKey.substring(0, 10),
+    });
+
     const start = Date.now();
     const client = new OpenAI({
       apiKey: input.apiKey,

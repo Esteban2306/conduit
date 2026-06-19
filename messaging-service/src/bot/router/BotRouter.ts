@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import { BotConfigService } from '../config/BotConfigService';
 import { ConversationService } from '../conversation/ConversationService';
 import { WAMessage } from '@whiskeysockets/baileys';
@@ -7,6 +7,9 @@ import { EventBusService } from 'src/infra/events/event.service';
 import { EVENT_TYPES } from 'src/infra/events/constants/event.types';
 import { AiOrchestrator } from '../ai/AiOrchestrator';
 import { ImageAnalysisService } from '../ai/ImageAnalysisService';
+import { BaileysSessionManager } from 'src/channels/whatsapp/baileys/BaileysSessionManager';
+import { messageReceiptTracker } from 'src/channels/whatsapp/baileys/MessageReceiptTracker';
+import { MessageDebouncer } from './MessageDebouncer';
 
 export interface IncomingMessageDto {
   phoneNumber: string;
@@ -20,11 +23,16 @@ export class BotRouter {
   private readonly logger = new Logger(BotRouter.name);
 
   constructor(
+    @Inject(forwardRef(() => BaileysSessionManager))
+    private readonly sessionManager: BaileysSessionManager,
+
     private readonly botConfigService: BotConfigService,
     private readonly conversationService: ConversationService,
     private readonly eventBus: EventBusService,
     private readonly aiOrchestrator: AiOrchestrator,
     private readonly imageAnalysisService: ImageAnalysisService,
+    private readonly receiptTracker: messageReceiptTracker,
+    private readonly debouncer: MessageDebouncer,
   ) {}
 
   async route(messages: WAMessage[]): Promise<void> {
@@ -42,21 +50,12 @@ export class BotRouter {
 
     const jid = message.key.remoteJidAlt ?? message.key.remoteJid;
     if (!jid) return;
-
-    console.log('REMOTE JID:', message.key.remoteJid);
-    console.log('PARTICIPANT:', message.key.participant);
-    console.log('PUSHNAME:', message.pushName);
-    console.dir(message, { depth: 4 });
-
-    console.log(JSON.stringify(message, null, 2));
-
-    this.logger.log(`JID recibido: ${jid}`);
-
     if (jid.endsWith('@g.us')) return;
 
-    const phoneNumber = jid.replace('@s.whatsapp.net', '').replace('@lid', '');
+    const messageId = message.key.id;
+    if (!messageId) return;
 
-    console.log('DESTINO:', phoneNumber);
+    const phoneNumber = jid.replace('@s.whatsapp.net', '').replace('@lid', '');
 
     const botConfig = await this.botConfigService.getActiveConfig();
 
@@ -65,10 +64,108 @@ export class BotRouter {
       return;
     }
 
-    const { text, hasImage, imageBuffer } = this.extractContent(message);
+    const messageTimestap = Number(message.messageTimestamp ?? 0) * 1000;
+    const messageAgeMs = Date.now() - messageTimestap;
+    const MaxAgeMs = (botConfig.maxMessageAgeMinutes ?? 1440) * 60 * 1000;
+
+    if (messageAgeMs > MaxAgeMs) {
+      this.logger.debug(
+        `Mensage de ${phoneNumber} igonrado: anguedad ${Math.round(messageAgeMs / 60000)} min > limite ${botConfig.maxMessageAgeMinutes} min`,
+      );
+
+      await this.markAsRead(message);
+      return;
+    }
+
+    if (this.receiptTracker.isChatActive(jid, 60000)) {
+      this.logger.debug(
+        `Chat ${jid} activo recientemente (dueño presente). Bot no procesa.`,
+      );
+      this.debouncer.cancel(jid);
+      return;
+    }
+
+    const { text, hasImage } = this.extractContent(message);
 
     if (!text && !hasImage) {
-      this.logger.debug(`Mensaje vacío de ${phoneNumber}. Ignorando.`);
+      await this.markAsRead(message);
+      return;
+    }
+
+    if (text && this.isTrivialMessage(text)) {
+      this.logger.debug(
+        `Mensaje trivial de ${phoneNumber}: "${text}". Marcando leído.`,
+      );
+      await this.markAsRead(message);
+      return;
+    }
+
+    const delaySeconds = (botConfig.botResponseDelaySeconds ?? 8) * 1000;
+
+    this.debouncer.debounce(
+      jid,
+      text,
+      hasImage,
+      delaySeconds,
+      async (texts, chatHasImage) => {
+        await this.processAccumulatedMessages(
+          jid,
+          phoneNumber,
+          texts,
+          chatHasImage,
+          message,
+          botConfig,
+        );
+      },
+    );
+  }
+
+  private async processAccumulatedMessages(
+    jid: string,
+    phoneNumber: string,
+    texts: string[],
+    hasImage: boolean,
+    lastMessage: WAMessage,
+    botConfig: any,
+  ): Promise<void> {
+    this.logger.error(
+      `BUSCANDO ${jid} -> ${this.receiptTracker.normalizeJid(jid)}`,
+    );
+    if (
+      this.receiptTracker.isChatActive(
+        jid,
+        (botConfig.botResponseDelaySeconds + 5) * 1000,
+      )
+    ) {
+      this.logger.log(
+        `Dueño activo en ${jid} después del delay. Bot cancelado.`,
+      );
+      return;
+    }
+
+    this.logger.debug(`Verificando isChatActive para JID: "${jid}"`);
+
+    if (this.receiptTracker.isTyping(jid)) {
+      this.logger.debug(`Usuario escribiendo en ${jid}. Esperando 3s más...`);
+      await this.sleep(3000);
+
+      if (this.receiptTracker.isTyping(jid)) {
+        this.logger.debug(`Usuario sigue escribiendo. Cancelando respuesta.`);
+        return;
+      }
+    }
+
+    this.logger.debug(
+      `Chat activo result: ${this.receiptTracker.isChatActive(jid, (botConfig.botResponseDelaySeconds + 5) * 1000)}`,
+    );
+
+    const humanActive = await this.isHumanActive(
+      botConfig.id,
+      phoneNumber,
+      botConfig.humanTakeoverMinutes ?? 10,
+    );
+    if (humanActive) {
+      this.logger.log(`Takeover humano para ${phoneNumber}. Bot cancelado.`);
       return;
     }
 
@@ -78,33 +175,32 @@ export class BotRouter {
       tenantId: botConfig.tenantId,
     });
 
-    const locked = await this.conversationService.acquireLock(conversation.id);
+    const combinedText = texts.join('\n');
 
+    await this.conversationService.saveInbound(
+      conversation.id,
+      combinedText || '[imagen]',
+      hasImage,
+    );
+
+    const locked = await this.conversationService.acquireLock(conversation.id);
     if (!locked) {
-      this.logger.warn(
-        `Conversación ${conversation.id} bloqueada. Descartando mensaje de ${phoneNumber}.`,
-      );
+      this.logger.warn(`Conversación ${conversation.id} bloqueada.`);
       return;
     }
 
     try {
-      await this.conversationService.saveInbound(
-        conversation.id,
-        text ?? '[imagen]',
-        hasImage,
-      );
-
       const aiData = await this.conversationService.getConversationForAI(
         conversation.id,
         botConfig.maxHistoryMessages,
       );
 
-      let userMessageForAI = text ?? '[imagen recibida]';
+      let userMessageForAI = combinedText || '[imagen recibida]';
 
-      if (hasImage) {
+      if (hasImage && botConfig.imageAnalysisEnabled) {
         const analysisResult =
           await this.imageAnalysisService.analyzeFromMessage(
-            message,
+            lastMessage,
             botConfig.id,
             botConfig.systemPrompt,
           );
@@ -116,47 +212,54 @@ export class BotRouter {
           },
         });
 
-        userMessageForAI = `
-Usuario envió una imagen.
-
+        userMessageForAI = `Usuario envió una imagen.
 Resultado del análisis:
 - válida: ${analysisResult.valid}
 - confianza: ${analysisResult.confidence}
 - detalles: ${analysisResult.details ?? 'Sin detalles'}
+Mensajes adjuntos: ${combinedText}`.trim();
+      }
 
-Mensaje adjunto:
-${text ?? ''}
-      `.trim();
+      if (this.receiptTracker.isTyping(jid)) {
+        this.logger.debug(
+          `Usuario escribiendo antes de llamar IA. Cancelando.`,
+        );
+        return;
       }
 
       this.publishResponseRequest(
         conversation.id,
         botConfig.id,
-        text ?? '',
+        combinedText,
         hasImage,
       );
 
       const aiResult = await this.aiOrchestrator.generateResponse({
         botConfigId: botConfig.id,
         systemPrompt: botConfig.systemPrompt,
-        userMessage: text ?? '[imagen recibida]',
+        userMessage: userMessageForAI,
         history: aiData.history,
         context: aiData.context,
         summary: aiData.summary,
       });
 
-      const responseText = aiResult.content;
+      if (this.receiptTracker.isChatActive(jid, 30000)) {
+        this.logger.log(
+          `Dueño activo mientras IA procesaba. Respuesta descartada.`,
+        );
+        return;
+      }
 
       this.eventBus.publish(EVENT_TYPES.CHANNEL_SEND_REQUESTED, {
         phoneNumber,
-        content: responseText,
+        content: aiResult.content,
         conversationId: conversation.id,
         tokensUsed: aiResult.tokensUsed,
       });
 
       await this.conversationService.saveOutbound(
         conversation.id,
-        responseText,
+        aiResult.content,
         {
           tokensUsed: aiResult.tokensUsed,
         },
@@ -164,6 +267,33 @@ ${text ?? ''}
     } finally {
       await this.conversationService.releaseLock(conversation.id);
     }
+  }
+
+  async registerHumanMessage(message: WAMessage): Promise<void> {
+    const jid = message.key.remoteJid;
+    if (!jid || jid.endsWith('@g.us')) return;
+
+    this.debouncer.cancel(jid);
+    this.logger.debug(`Debounce cancelado por mensaje humano en ${jid}`);
+
+    const phoneNumber = jid.replace('@s.whatsapp.net', '').replace('@lid', '');
+    const { text } = this.extractContent(message);
+    if (!text) return;
+
+    const botConfig = await this.botConfigService.getActiveConfig();
+
+    if (!botConfig) return;
+
+    const conversation = await this.conversationService.findActiveByPhone(
+      botConfig.id,
+      phoneNumber,
+    );
+
+    if (!conversation) return;
+
+    await this.conversationService.saveHumanOutbound(conversation.id, text);
+
+    this.logger.debug(`Takeover humano registrado para ${phoneNumber}`);
   }
 
   private extractContent(message: WAMessage): {
@@ -208,6 +338,47 @@ ${text ?? ''}
     }
 
     return { text: null, hasImage: false, imageBuffer: null };
+  }
+
+  private async isHumanActive(
+    botConfigId: string,
+    phoneNumber: string,
+    takeoverMinutes: number,
+  ): Promise<boolean> {
+    const cutoff = new Date(Date.now() - takeoverMinutes * 60 * 1000);
+
+    const recenHumanMessage =
+      await this.conversationService.findLastHumanMessage(
+        botConfigId,
+        phoneNumber,
+        cutoff,
+      );
+
+    return recenHumanMessage !== null;
+  }
+
+  private readonly TRIVIAL_PATTERNS = [
+    /^(ok|okay|okey|vale|sí|si|no|ya|dale|listo|gracias|thanks|ty|bye|adiós|adios|ciao|chao|hasta luego|ok gracias|👍|🙏|❤️|😊|👋|np|de nada|con gusto)$/i,
+  ];
+
+  private isTrivialMessage(text: string): boolean {
+    const normalized = text.trim().toLowerCase();
+    return this.TRIVIAL_PATTERNS.some((pattern) => pattern.test(normalized));
+  }
+
+  private async markAsRead(message: WAMessage): Promise<void> {
+    try {
+      const sock = this.sessionManager.getSocket();
+      if (!sock || !message.key.remoteJid) return;
+
+      await sock.readMessages([message.key]);
+    } catch (err) {
+      this.logger.debug(`no se puede marcar como leido: ${err.message}`);
+    }
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   private publishResponseRequest(

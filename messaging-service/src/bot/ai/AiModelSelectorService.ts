@@ -136,7 +136,7 @@ export class AiModelSelectorService {
   async markUnavailable(modelId: string): Promise<void> {
     await this.prisma.aiModelConfig.update({
       where: { id: modelId },
-      data: { requestsThisMinute: 999999, lastMinuteResetAt: new Date() },
+      data: { requestsThisMinute: 999999 },
     });
   }
 }

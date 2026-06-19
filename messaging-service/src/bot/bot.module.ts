@@ -15,6 +15,7 @@ import { BotRouter } from './router/BotRouter';
 import { ChannelsModule } from 'src/channels/channels.module';
 import { forwardRef } from '@nestjs/common';
 import { ImageAnalysisService } from './ai/ImageAnalysisService';
+import { MessageDebouncer } from './router/MessageDebouncer';
 
 @Module({
   imports: [forwardRef(() => ChannelsModule)],
@@ -33,6 +34,7 @@ import { ImageAnalysisService } from './ai/ImageAnalysisService';
     MistralProvider,
     CustomProvider,
     ImageAnalysisService,
+    MessageDebouncer,
   ],
   exports: [
     BotConfigService,
@@ -40,6 +42,7 @@ import { ImageAnalysisService } from './ai/ImageAnalysisService';
     BotRouter,
     AiOrchestrator,
     AiModelSelectorService,
+    MessageDebouncer,
   ],
 })
 export class BotModule {}

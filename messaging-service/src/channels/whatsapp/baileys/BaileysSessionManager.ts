@@ -10,6 +10,7 @@ import { BaileysRateLimiter, WarmupLevel } from './BaileysRateLimiter';
 import { usePrismaAuthState } from './BaileysAuthState';
 import { PrismaService } from 'src/shared/prisma.service';
 import { BotRouter } from 'src/bot/router/BotRouter';
+import { messageReceiptTracker } from './MessageReceiptTracker';
 
 @Injectable()
 export class BaileysSessionManager implements OnModuleInit {
@@ -29,6 +30,7 @@ export class BaileysSessionManager implements OnModuleInit {
     private readonly config: ConfigService,
     private readonly limiter: BaileysRateLimiter,
     private readonly prisma: PrismaService,
+    private readonly receiptTracker: messageReceiptTracker,
   ) {}
 
   setBotRouter(router: BotRouter): void {
@@ -97,14 +99,89 @@ export class BaileysSessionManager implements OnModuleInit {
       retryRequestDelayMs: 2000,
     });
 
+    this.sock.ev.on('messages.update', (updates) => {
+      for (const update of updates) {
+        if (update.key.fromMe) {
+          this.logger.warn(
+            `STATUS DETECTADO ${update.update.status} para ${update.key.remoteJid}`,
+          );
+        }
+        if (update.key.fromMe && update.update.status === 3) {
+          const jid = update.key.remoteJidAlt ?? update.key.remoteJid;
+
+          if (jid) {
+            this.logger.error({
+              markActiveRemoteJid: update.key.remoteJid,
+              markActiveRemoteJidAlt: update.key.remoteJidAlt,
+            });
+
+            this.receiptTracker.markChatActive(jid);
+            this.logger.debug(`Dueño leyó chat: ${jid}`);
+          }
+        }
+      }
+    });
+
+    this.sock.ev.on('presence.update', ({ id, presences }) => {
+      for (const [participantJid, presence] of Object.entries(presences)) {
+        if (presence.lastKnownPresence === 'composing') {
+          this.receiptTracker.markTyping(id);
+          this.logger.debug(`Typing detectado en chat: ${id}`);
+        } else if (
+          presence.lastKnownPresence === 'paused' ||
+          presence.lastKnownPresence === 'available'
+        ) {
+          this.receiptTracker.clearTyping(id);
+        }
+      }
+    });
+
     this.sock.ev.on('messages.upsert', async ({ messages, type }) => {
       if (type !== 'notify') return;
 
-      if (this.botRouter) {
-        try {
-          await this.botRouter.route(messages);
-        } catch (err: any) {
-          this.logger.error(`BotRouter error: ${err?.message ?? err}`);
+      for (const message of messages) {
+        if (message.key.fromMe) {
+          const jid = message.key.remoteJidAlt ?? message.key.remoteJid;
+
+          if (jid) {
+            this.receiptTracker.markChatActive(jid);
+          }
+
+          if (this.botRouter) {
+            await this.botRouter.registerHumanMessage(message).catch(() => {});
+          }
+          continue;
+        }
+
+        const senderJid = message.key.remoteJid;
+        this.logger.error({
+          remoteJid: message.key.remoteJid,
+          remoteJidAlt: message.key.remoteJidAlt,
+        });
+        if (senderJid && this.sock) {
+          this.sock.presenceSubscribe(senderJid).catch(() => {});
+        }
+
+        if (this.botRouter) {
+          await this.botRouter.route([message]).catch((err: any) => {
+            this.logger.error(`BotRouter error: ${err?.message ?? err}`);
+          });
+        }
+      }
+    });
+
+    this.sock.ev.on('message-receipt.update', (updates) => {
+      for (const update of updates) {
+        if (update.key.fromMe && update.receipt.readTimestamp) {
+          const jid = update.key.remoteJidAlt ?? update.key.remoteJid;
+          if (jid) {
+            this.logger.error({
+              markActiveRemoteJid: update.key.remoteJid,
+              markActiveRemoteJidAlt: update.key.remoteJidAlt,
+            });
+            this.receiptTracker.markChatActive(jid);
+            this.logger.debug(`Dueño leyó chat detectado via receipt: ${jid}`);
+          }
         }
       }
     });

@@ -10,6 +10,7 @@ import { BotRouter } from 'src/bot/router/BotRouter';
 import { BotModule } from 'src/bot/bot.module';
 import { EventModule } from 'src/infra/events/event.module';
 import { BaileysMessageSender } from './whatsapp/baileys/BaileysMessageSender';
+import { messageReceiptTracker } from './whatsapp/baileys/MessageReceiptTracker';
 
 @Module({
   imports: [forwardRef(() => BotModule), EventModule],
@@ -22,12 +23,15 @@ import { BaileysMessageSender } from './whatsapp/baileys/BaileysMessageSender';
     BaileysMessageSender,
     ChannelPluginFactory,
     BaileysSessionManager,
+    messageReceiptTracker,
   ],
   exports: [
     ChannelPluginFactory,
     ChannelRouter,
     BaileysPlugin,
     BaileysMessageSender,
+    BaileysSessionManager,
+    messageReceiptTracker,
   ],
 })
 export class ChannelsModule implements OnModuleInit {

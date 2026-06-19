@@ -72,6 +72,41 @@ export class ConversationService {
     return conversation;
   }
 
+  async findLastHumanMessage(
+    botConfigId: string,
+    phoneNumber: string,
+    since: Date,
+  ): Promise<{ id: string } | null> {
+    const conversation = await this.prisma.conversation.findFirst({
+      where: { botConfigId, phoneNumber },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true },
+    });
+
+    if (!conversation) return null;
+
+    return this.prisma.botMessage.findFirst({
+      where: {
+        conversationId: conversation.id,
+        direction: 'OUTBOUND',
+        processedBy: 'human',
+        createdAt: { gte: since },
+      },
+      select: { id: true },
+    });
+  }
+
+  async saveHumanOutbound(conversationId: string, content: string) {
+    return this.prisma.botMessage.create({
+      data: {
+        conversationId,
+        direction: MessageDirection.OUTBOUND,
+        content,
+        processedBy: 'human',
+      },
+    });
+  }
+
   async findById(id: string) {
     const conv = await this.prisma.conversation.findUnique({
       where: { id },
