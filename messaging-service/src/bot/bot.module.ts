@@ -16,6 +16,7 @@ import { ChannelsModule } from 'src/channels/channels.module';
 import { forwardRef } from '@nestjs/common';
 import { ImageAnalysisService } from './ai/ImageAnalysisService';
 import { MessageDebouncer } from './router/MessageDebouncer';
+import { OpenRouterProvider } from './ai/providers/OpenRouterProvider';
 
 @Module({
   imports: [forwardRef(() => ChannelsModule)],
@@ -31,6 +32,7 @@ import { MessageDebouncer } from './router/MessageDebouncer';
     OpenAIProvider,
     GeminiProvider,
     GroqProvider,
+    OpenRouterProvider,
     MistralProvider,
     CustomProvider,
     ImageAnalysisService,

@@ -39,8 +39,9 @@ enum AiProvider {
   ANTHROPIC
   OPENAI
   GEMINI
+  OPENROUTER
   DEEPSEEK
-  GROQ
+  GROQ 
   MISTRAL
   CUSTOM
 }
