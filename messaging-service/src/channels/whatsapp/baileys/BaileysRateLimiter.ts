@@ -70,6 +70,9 @@ export class BaileysRateLimiter {
   private dailySentCount = 0;
   private lastDayRest = new Date().toDateString();
 
+  private lastDisconnectReportedAt = 0;
+  private readonly DISCONNECT_DEBOUNCE_MS = 3000;
+
   private messagesSinceBreak = 0;
   private readonly BREAK_EVERY_MIN = 8;
   private readonly BREAK_EVERY_MAX = 15;
@@ -113,6 +116,13 @@ export class BaileysRateLimiter {
   }
 
   reportDisconnect(): void {
+    const now = Date.now();
+
+    if (now - this.lastDisconnectReportedAt < this.DISCONNECT_DEBOUNCE_MS) {
+      return;
+    }
+    this.lastDisconnectReportedAt = now;
+
     this.recentDisconnects++;
     this.logger.warn(
       `Desconexión reportada. Total recientes: ${this.recentDisconnects}`,
@@ -330,16 +340,18 @@ export class BaileysRateLimiter {
   private tryResetRisk(): void {
     const now = Date.now();
     const sinceReset = now - this.lastRiskReset;
-    if (
-      this.riskLevel > 1 &&
-      this.recentFailures === 0 &&
-      sinceReset > this.RISK_RESET_INTERVAL
-    ) {
-      this.riskLevel = Math.max(1, this.riskLevel - 1);
+    if (sinceReset > this.RISK_RESET_INTERVAL) {
+      this.recentFailures = 0;
+      this.recentDisconnects = 0;
+      this.lastDisconnectReportedAt = 0;
       this.lastRiskReset = now;
-      this.logger.log(
-        `Riesgo reducido pasivamente a ${this.riskLevel}/${this.MAX_RISK_LEVEL}`,
-      );
+
+      if (this.riskLevel > 1) {
+        this.riskLevel = Math.max(1, this.riskLevel - 1);
+        this.logger.log(
+          `Riesgo reducido pasivamente a ${this.riskLevel}/${this.MAX_RISK_LEVEL}`,
+        );
+      }
     }
   }
 
@@ -381,7 +393,14 @@ export class BaileysRateLimiter {
       this.dailySentCount = 0;
       this.recentFailures = 0;
       this.recentDisconnects = 0;
+      this.lastDisconnectReportedAt = 0;
       this.lastDayRest = today;
+      if (this.riskLevel > 2) {
+        this.riskLevel = 2;
+        this.logger.log(
+          `Riesgo reseteado al amanecer: ${this.riskLevel}/${this.MAX_RISK_LEVEL}`,
+        );
+      }
       this.logger.log('Contadores diarios reseteados');
     }
   }

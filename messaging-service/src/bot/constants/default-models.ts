@@ -7,5 +7,6 @@ export const DEFAULT_MODELS: Record<AiProviderType, string> = {
   GROQ: 'llama-3.3-70b-versatile',
   DEEPSEEK: 'deepseek-v4-flash',
   MISTRAL: 'mistral-small-latest',
+  OPENROUTER: 'nemotron-nano-12b-v2-vl:free',
   CUSTOM: '',
 };

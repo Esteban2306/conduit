@@ -24,9 +24,6 @@ export class AiModelSelectorService {
     });
 
     if (candidates.length === 0) {
-      if (role === AiModelRole.IMAGE_ANALYSIS) {
-        return this.selectModel(botConfigId, AiModelRole.CONVERSATION);
-      }
       return null;
     }
 

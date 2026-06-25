@@ -10,6 +10,7 @@ import { AnthropicProvider } from './providers/AnthropicProvider';
 import { GroqProvider } from './providers/GroqProvider';
 import { MistralProvider } from './providers/MistralProvider';
 import { CustomProvider } from './providers/CustomProvider';
+import { OpenRouterProvider } from './providers/OpenRouterProvider';
 
 @Injectable()
 export class AiProviderFactory {
@@ -20,6 +21,7 @@ export class AiProviderFactory {
     private readonly groq: GroqProvider,
     private readonly mistral: MistralProvider,
     private readonly custom: CustomProvider,
+    private readonly openRouterProvider: OpenRouterProvider,
   ) {}
 
   getProvider(type: AiProviderType): AiProvider {
@@ -31,6 +33,7 @@ export class AiProviderFactory {
       [AiProviderType.GROQ]: this.groq,
       [AiProviderType.MISTRAL]: this.mistral,
       [AiProviderType.CUSTOM]: this.custom,
+      [AiProviderType.OPENROUTER]: this.openRouterProvider,
     };
 
     const provider = map[type];

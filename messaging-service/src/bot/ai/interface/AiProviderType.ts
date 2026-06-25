@@ -6,4 +6,5 @@ export enum AiProviderType {
   GROQ = 'GROQ',
   MISTRAL = 'MISTRAL',
   CUSTOM = 'CUSTOM',
+  OPENROUTER = 'OPENROUTER',
 }

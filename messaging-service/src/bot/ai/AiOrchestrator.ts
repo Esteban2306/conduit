@@ -15,6 +15,7 @@ import {
 } from './interface/AiOrchestator.types';
 import { AiProviderType } from './interface/AiProviderType';
 import { resolveModel } from '../helper/model-resolver';
+import { ImageOptimizer } from '../helper/ImageOptimizer';
 
 @Injectable()
 export class AiOrchestrator {
@@ -42,6 +43,7 @@ export class AiOrchestrator {
     return this.executeWithFallback(
       modelConfig,
       input.botConfigId,
+      AiModelRole.CONVERSATION,
       async (config) => {
         const provider = this.providerFactory.getProvider(
           config.provider as AiProviderType,
@@ -106,9 +108,12 @@ export class AiOrchestrator {
       );
     }
 
+    const optimizedBuffer = await ImageOptimizer.optimize(input.imageBuffer);
+
     return this.executeWithFallback(
       modelConfig,
       input.botConfigId,
+      AiModelRole.IMAGE_ANALYSIS,
       async (config) => {
         const provider = this.providerFactory.getProvider(
           config.provider as AiProviderType,
@@ -134,6 +139,7 @@ export class AiOrchestrator {
   private async executeWithFallback(
     initialModel: AiModelConfig,
     botConfigId: string,
+    role: AiModelRole,
     execute: (
       config: AiModelConfig,
     ) => Promise<{ result: GenerateTextResult; config: AiModelConfig }>,
@@ -169,10 +175,7 @@ export class AiOrchestrator {
 
         await this.selector.markUnavailable(currentModel.id);
 
-        const next = await this.selector.selectModel(
-          botConfigId,
-          AiModelRole.CONVERSATION,
-        );
+        const next = await this.selector.selectModel(botConfigId, role);
 
         if (!next || attempted.has(next.id)) {
           throw new Error(
@@ -197,21 +200,77 @@ export class AiOrchestrator {
     const parts: string[] = [];
 
     if (summary) {
-      parts.push(`Resumen de la conversación hasta ahora:\n${summary}`);
+      parts.push(`Resumen: ${summary}`);
     }
 
-    const relevantContext = Object.entries(content).filter(
-      ([key, value]) =>
-        value !== undefined && value !== null && !['retryCount'].includes(key),
-    );
-
-    if (relevantContext.length > 0) {
-      const contextText = relevantContext
-        .map(([k, v]) => `${k}: ${JSON.stringify(v)}`)
-        .join('\n');
-      parts.push(`Estado actual de la conversación:\n${contextText}`);
+    const compactContext = this.extractRelevantContext(content);
+    if (compactContext) {
+      parts.push(`Contexto: ${compactContext}`);
     }
 
-    return parts.length > 0 ? parts.join('\n\n') : null;
+    return parts.length > 0 ? parts.join('\n') : null;
+  }
+
+  private extractRelevantContext(content: ConversationContext): string | null {
+    const EXCLUDED_KEYS = new Set([
+      'retryCount',
+      'imageVerified',
+      'lastImageAnalysis',
+      'processingAt',
+      'lockedBy',
+    ]);
+
+    const PRIORITY_KEYS = [
+      'currentStep',
+      'lastIntent',
+      'clientName',
+      'clientEmail',
+      'orderStatus',
+      'appointmentDate',
+      'pendingAction',
+      'collectedData',
+    ];
+
+    const result: string[] = [];
+
+    for (const key of PRIORITY_KEYS) {
+      const value = (content as any)[key];
+      if (value !== undefined && value !== null && value !== '') {
+        result.push(`${key}=${this.compactValue(value)}`);
+      }
+    }
+
+    const prioritySet = new Set(PRIORITY_KEYS);
+    for (const [key, value] of Object.entries(content)) {
+      if (EXCLUDED_KEYS.has(key)) continue;
+      if (prioritySet.has(key)) continue;
+      if (value === undefined || value === null || value === '') continue;
+
+      result.push(`${key}=${this.compactValue(value)}`);
+    }
+
+    if (result.length === 0) return null;
+    const joined = result.join(', ');
+    return joined.length > 800 ? joined.slice(0, 800) + '…' : joined;
+  }
+
+  private compactValue(value: unknown): string {
+    if (typeof value === 'string') return value.slice(0, 100);
+    if (typeof value === 'number' || typeof value === 'boolean')
+      return String(value);
+    if (Array.isArray(value)) {
+      return value
+        .slice(0, 3)
+        .map((v) => this.compactValue(v))
+        .join('|');
+    }
+    if (typeof value === 'object') {
+      return Object.entries(value as Record<string, unknown>)
+        .slice(0, 4)
+        .map(([k, v]) => `${k}:${this.compactValue(v)}`)
+        .join(';');
+    }
+
+    return String(value).slice(0, 100);
   }
 }

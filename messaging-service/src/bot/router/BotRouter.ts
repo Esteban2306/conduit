@@ -92,6 +92,10 @@ export class BotRouter {
       return;
     }
 
+    if (hasImage) {
+      this.logger.warn('PASO 2 - TIENE IMAGEN');
+    }
+
     if (text && this.isTrivialMessage(text)) {
       this.logger.debug(
         `Mensaje trivial de ${phoneNumber}: "${text}". Marcando leído.`,
@@ -100,7 +104,7 @@ export class BotRouter {
       return;
     }
 
-    const delaySeconds = (botConfig.botResponseDelaySeconds ?? 8) * 1000;
+    const delaySeconds = (botConfig.botResponseDelaySeconds ?? 15) * 1000;
 
     this.debouncer.debounce(
       jid,
@@ -117,6 +121,7 @@ export class BotRouter {
           botConfig,
         );
       },
+      messageId,
     );
   }
 
@@ -128,9 +133,13 @@ export class BotRouter {
     lastMessage: WAMessage,
     botConfig: any,
   ): Promise<void> {
-    this.logger.error(
-      `BUSCANDO ${jid} -> ${this.receiptTracker.normalizeJid(jid)}`,
-    );
+    this.logger.debug({
+      step: 'processAccumulated',
+      textsCount: texts.length,
+      hasImage,
+      imageAnalysisEnabled: botConfig.imageAnalysisEnabled,
+      willAnalyze: hasImage && botConfig.imageAnalysisEnabled,
+    });
     if (
       this.receiptTracker.isChatActive(
         jid,
@@ -205,19 +214,46 @@ export class BotRouter {
             botConfig.systemPrompt,
           );
 
-        await this.conversationService.updateContext(conversation.id, {
-          contextPatch: {
-            lastImageAnalysis: analysisResult,
-            imageVerified: analysisResult.valid,
-          },
-        });
+        if (analysisResult.status === 'SUCCESS') {
+          await this.conversationService.updateContext(conversation.id, {
+            contextPatch: {
+              imageVerified: analysisResult.valid,
+              lastImageDetails: analysisResult.details?.slice(0, 100),
+            },
+          });
 
-        userMessageForAI = `Usuario envió una imagen.
-Resultado del análisis:
-- válida: ${analysisResult.valid}
-- confianza: ${analysisResult.confidence}
-- detalles: ${analysisResult.details ?? 'Sin detalles'}
-Mensajes adjuntos: ${combinedText}`.trim();
+          const imageCtx = `[imagen: válida=${analysisResult.valid}, confianza=${analysisResult.confidence}${analysisResult.details ? `, ${analysisResult.details.slice(0, 80)}` : ''}]`;
+          userMessageForAI = combinedText
+            ? `${imageCtx}\n${combinedText}`
+            : imageCtx;
+        } else if (analysisResult.status === 'PROVIDER_UNAVAILABLE') {
+          this.logger.warn(
+            `Análisis de imagen no disponible para ${phoneNumber}. Respondiendo con mensaje de espera.`,
+          );
+
+          const fallbackMsg =
+            'No pude analizar tu imagen en este momento por alta demanda. Por favor intenta enviarla de nuevo en unos minutos. 🙏';
+
+          this.eventBus.publish(EVENT_TYPES.CHANNEL_SEND_REQUESTED, {
+            phoneNumber,
+            content: fallbackMsg,
+            conversationId: conversation.id,
+            tokensUsed: 0,
+          });
+
+          await this.conversationService.saveOutbound(
+            conversation.id,
+            fallbackMsg,
+          );
+          return;
+        } else {
+          this.logger.warn(
+            `Error de análisis para ${phoneNumber}. Continuando sin contexto de imagen.`,
+          );
+          userMessageForAI = combinedText
+            ? `[imagen recibida, no analizada]\n${combinedText}`
+            : '[imagen recibida, no analizada]';
+        }
       }
 
       if (this.receiptTracker.isTyping(jid)) {

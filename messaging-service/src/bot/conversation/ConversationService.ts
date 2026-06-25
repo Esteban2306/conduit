@@ -221,24 +221,42 @@ export class ConversationService {
       select: {
         direction: true,
         content: true,
-        intent: true,
       },
     });
 
-    const history: HistoryMessage[] = messages.reverse().map((msg) => ({
-      role:
-        msg.direction === MessageDirection.INBOUND
-          ? MessageRole.USER
-          : MessageRole.ASSISTANT,
-      content: msg.content,
-    }));
+    const reversed = messages.reverse();
+
+    const isLongConversation = reversed.length >= 4 || !!conversation.summary;
+
+    let history: HistoryMessage[];
+
+    if (isLongConversation && conversation.summary) {
+      const lastTwo = reversed.slice(-2);
+      history = lastTwo.map((msg) => ({
+        role:
+          msg.direction === MessageDirection.INBOUND
+            ? MessageRole.USER
+            : MessageRole.ASSISTANT,
+
+        content: this.truncateMessage(msg.content, 120),
+      }));
+    } else {
+      history = reversed.map((msg) => ({
+        role:
+          msg.direction === MessageDirection.INBOUND
+            ? MessageRole.USER
+            : MessageRole.ASSISTANT,
+
+        content: this.truncateMessage(msg.content, 120),
+      }));
+    }
 
     return {
       context: conversation.context as ConversationContext,
       currentStep: conversation.currentStep,
       lastIntent: conversation.lastIntent,
       history,
-      summary: conversation.summary,
+      summary: isLongConversation ? conversation.summary : null,
     };
   }
 
@@ -487,6 +505,12 @@ export class ConversationService {
       return false;
     }
     return true;
+  }
+
+  private truncateMessage(content: string, maxTokens: number): string {
+    const maxChars = maxTokens * 4;
+    if (content.length <= maxChars) return content;
+    return content.slice(0, maxChars) + '…';
   }
 
   // ejecutar cada minuto con cron por si la conversacion muere

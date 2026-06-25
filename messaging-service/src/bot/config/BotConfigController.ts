@@ -44,6 +44,18 @@ export class BotConfigController {
     return this.botConfigService.getAiModels(id);
   }
 
+  @Patch(':id/models/:modelId/reset')
+  @ApiOperation({ summary: 'Resetear contadores de uso de un modelo' })
+  resetModel(@Param('id') id: string, @Param('modelId') modelId: string) {
+    return this.botConfigService.resetModelCounters(modelId);
+  }
+
+  @Delete(':id/models/:modelId')
+  @ApiOperation({ summary: 'Eliminar un modelo de IA del bot' })
+  removeModel(@Param('id') id: string, @Param('modelId') modelId: string) {
+    return this.botConfigService.removeAiModel(id, modelId);
+  }
+
   @Get(':id')
   @ApiOperation({ summary: 'Obtener una configuración por ID' })
   findOne(@Param('id') id: string) {
@@ -60,17 +72,5 @@ export class BotConfigController {
   @ApiOperation({ summary: 'Activar o desactivar el bot' })
   toggle(@Param('id') id: string) {
     return this.botConfigService.toggle(id);
-  }
-
-  @Patch(':id/models/:modelId/reset')
-  @ApiOperation({ summary: 'Resetear contadores de uso de un modelo' })
-  resetModel(@Param('id') id: string, @Param('modelId') modelId: string) {
-    return this.botConfigService.resetModelCounters(modelId);
-  }
-
-  @Delete(':id/models/:modelId')
-  @ApiOperation({ summary: 'Eliminar un modelo de IA del bot' })
-  removeModel(@Param('id') id: string, @Param('modelId') modelId: string) {
-    return this.botConfigService.removeAiModel(id, modelId);
   }
 }

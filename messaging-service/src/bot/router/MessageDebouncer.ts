@@ -13,14 +13,33 @@ export class MessageDebouncer {
 
   private readonly pending = new Map<string, PendingChat>();
 
+  private readonly processedIds = new Set<string>();
+
+  private readonly PROCESSED_ID_TTL_MS = 60_000;
+
   debounce(
     jid: string,
     text: string | null,
     hasImage: boolean,
     delayMs: number,
     onReady: (texts: string[], hasImage: boolean) => Promise<void>,
+    messageId?: string,
   ): void {
-    const existing = this.pending.get(jid);
+    if (messageId) {
+      if (this.processedIds.has(messageId)) {
+        this.logger.debug(`Mensaje duplicado ignorado: ${messageId}`);
+        return;
+      }
+      this.processedIds.add(messageId);
+      setTimeout(
+        () => this.processedIds.delete(messageId),
+        this.PROCESSED_ID_TTL_MS,
+      );
+    }
+
+    const key = this.normalizeJid(jid);
+
+    const existing = this.pending.get(key);
 
     if (existing) {
       clearTimeout(existing.timer);
@@ -29,40 +48,48 @@ export class MessageDebouncer {
       if (hasImage) existing.hasImage = true;
 
       this.logger.debug(
-        `Mensaje acumulado para ${jid}. Total: ${existing.messages.length}`,
+        `Acumulado para ${jid}: ${existing.messages.length} msg(s), hasImage=${existing.hasImage}`,
       );
-    } else {
-      const entry: Omit<PendingChat, 'timer'> = {
-        messages: text ? [text] : [],
-        hasImage,
-        first: Date.now(),
-      };
 
-      const normalized = this.normalizeJid(jid);
-
-      this.pending.set(normalized, { ...entry, timer: null as any });
-    }
-
-    const current = this.pending.get(this.normalizeJid(jid));
-
-    if (current) {
-      current.timer = setTimeout(async () => {
-        this.pending.delete(jid);
-
-        const { messages, hasImage: chatHasImage } = current;
-
+      existing.timer = setTimeout(async () => {
+        this.pending.delete(key);
         this.logger.debug(
-          `Debounce completado para ${jid}. Procesando ${messages.length} mensaje(s).`,
+          `Debounce completado para ${jid}. Procesando ${existing.messages.length} mensaje(s).`,
         );
 
         try {
-          await onReady(messages, chatHasImage);
+          await onReady(existing.messages, existing.hasImage);
         } catch (err) {
           this.logger.error(
-            `Error en debounce callback para ${jid}: ${err.message}`,
+            `Error en debounce callback para ${key}: ${err.message}`,
           );
         }
       }, Number(delayMs));
+    } else {
+      const entry: PendingChat = {
+        messages: text ? [text] : [],
+        hasImage,
+        first: Date.now(),
+        timer: null as any,
+      };
+
+      entry.timer = setTimeout(async () => {
+        this.pending.delete(key);
+
+        this.logger.debug(
+          `Debounce completado para ${jid}. Procesando ${entry.messages.length} mensaje(s).`,
+        );
+
+        try {
+          await onReady(entry.messages, entry.hasImage);
+        } catch (err) {
+          this.logger.error(
+            `Error en debounce callback para ${key}: ${err.message}`,
+          );
+        }
+      }, Number(delayMs));
+
+      this.pending.set(key, entry);
     }
   }
 

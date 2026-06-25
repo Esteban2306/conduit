@@ -101,11 +101,6 @@ export class BaileysSessionManager implements OnModuleInit {
 
     this.sock.ev.on('messages.update', (updates) => {
       for (const update of updates) {
-        if (update.key.fromMe) {
-          this.logger.warn(
-            `STATUS DETECTADO ${update.update.status} para ${update.key.remoteJid}`,
-          );
-        }
         if (update.key.fromMe && update.update.status === 3) {
           const jid = update.key.remoteJidAlt ?? update.key.remoteJid;
 

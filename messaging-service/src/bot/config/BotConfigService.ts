@@ -133,6 +133,12 @@ export class BotConfigService {
       data.maxHistoryMessages = dto.maxHistoryMessages;
     if (dto.conversationTimeoutMinutes !== undefined)
       data.conversationTimeoutMinutes = dto.conversationTimeoutMinutes;
+    if (dto.maxMessageAgeMinutes !== undefined)
+      data.maxMessageAgeMinutes = dto.maxMessageAgeMinutes;
+    if (dto.humanTakeoverMinutes !== undefined)
+      data.humanTakeoverMinutes = dto.humanTakeoverMinutes;
+    if (dto.botResponseDelaySeconds !== undefined)
+      data.botResponseDelaySeconds = dto.botResponseDelaySeconds;
 
     return this.prisma.botConfig.update({
       where: { id },
@@ -262,6 +268,9 @@ export class BotConfigService {
       intentEndpoints: true,
       maxHistoryMessages: true,
       conversationTimeoutMinutes: true,
+      maxMessageAgeMinutes: true,
+      humanTakeoverMinutes: true,
+      botResponseDelaySeconds: true,
       createdAt: true,
       updatedAt: true,
     };
