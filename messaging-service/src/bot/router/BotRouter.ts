@@ -92,10 +92,6 @@ export class BotRouter {
       return;
     }
 
-    if (hasImage) {
-      this.logger.warn('PASO 2 - TIENE IMAGEN');
-    }
-
     if (text && this.isTrivialMessage(text)) {
       this.logger.debug(
         `Mensaje trivial de ${phoneNumber}: "${text}". Marcando leído.`,
@@ -133,13 +129,6 @@ export class BotRouter {
     lastMessage: WAMessage,
     botConfig: any,
   ): Promise<void> {
-    this.logger.debug({
-      step: 'processAccumulated',
-      textsCount: texts.length,
-      hasImage,
-      imageAnalysisEnabled: botConfig.imageAnalysisEnabled,
-      willAnalyze: hasImage && botConfig.imageAnalysisEnabled,
-    });
     if (
       this.receiptTracker.isChatActive(
         jid,

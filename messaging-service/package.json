@@ -74,6 +74,7 @@
     "@types/papaparse": "^5.5.2",
     "@types/pg": "^8.20.0",
     "@types/qrcode-terminal": "^0.12.2",
+    "@types/sharp": "^0.32.0",
     "@types/supertest": "^6.0.2",
     "eslint": "^9.18.0",
     "eslint-config-prettier": "^10.0.1",

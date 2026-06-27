@@ -78,8 +78,6 @@ export class OpenRouterProvider implements AiProvider {
     const apiKey = input.apiKey ?? process.env.OPENROUTER_API_KEY;
     if (!apiKey) throw new Error('OPENROUTER_API_KEY no configurada');
 
-    const optimizedBuffer = await ImageOptimizer.optimize(input.imageBuffer);
-
     const messages: any[] = [];
     if (input.systemPrompt?.trim()) {
       messages.push({ role: 'system', content: input.systemPrompt });
@@ -91,15 +89,10 @@ export class OpenRouterProvider implements AiProvider {
         {
           type: 'image_url',
           image_url: {
-            url: `data:${input.mimeType ?? 'image/jpeg'};base64,${optimizedBuffer.toString('base64')}`,
+            url: `data:${input.mimeType ?? 'image/jpeg'};base64,${input.imageBuffer.toString('base64')}`,
           },
         },
       ],
-    });
-
-    this.logger.log({
-      originalKb: Math.round(input.imageBuffer.length / 1024),
-      optimizedKb: Math.round(optimizedBuffer.length / 1024),
     });
 
     const response = await fetch(this.BASE_URL, {

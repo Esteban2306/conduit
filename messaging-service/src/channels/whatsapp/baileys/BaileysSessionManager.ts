@@ -149,10 +149,7 @@ export class BaileysSessionManager implements OnModuleInit {
         }
 
         const senderJid = message.key.remoteJid;
-        this.logger.error({
-          remoteJid: message.key.remoteJid,
-          remoteJidAlt: message.key.remoteJidAlt,
-        });
+
         if (senderJid && this.sock) {
           this.sock.presenceSubscribe(senderJid).catch(() => {});
         }

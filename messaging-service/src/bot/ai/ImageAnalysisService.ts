@@ -4,6 +4,7 @@ import { AiOrchestrator } from './AiOrchestrator';
 import { BotConfigService } from '../config/BotConfigService';
 import { AiModelSelectorService } from './AiModelSelectorService';
 import { downloadMediaMessage, WAMessage } from '@whiskeysockets/baileys';
+import { ImageOptimizer } from '../helper/ImageOptimizer';
 
 export type ImageAnalysisStatus =
   | 'SUCCESS'
@@ -60,18 +61,18 @@ export class ImageAnalysisService {
       };
     }
 
-    const mimeType = message.message?.imageMessage?.mimetype ?? 'image/jpeg';
+    const originalKb = Math.round(imageBuffer.length / 1024);
+    imageBuffer = await ImageOptimizer.optimize(imageBuffer);
+    const optimizedKb = Math.round(imageBuffer.length / 1024);
+    this.logger.log(`Imagen: ${originalKb}KB → ${optimizedKb}KB`);
+
+    const mimeType = 'image/jpeg';
 
     try {
       const imageModel = await this.selector.selectModel(
         botConfigId,
         AiModelRole.IMAGE_ANALYSIS,
       );
-
-      this.logger.warn({
-        role: AiModelRole.IMAGE_ANALYSIS,
-        imageModel,
-      });
       let result: string;
 
       if (imageModel) {

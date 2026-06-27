@@ -87,7 +87,7 @@ export class AiOrchestrator {
           model,
           apiKey,
           baseUrl: config.baseUrl ?? '',
-          maxTokens: 1024,
+          maxTokens: 800,
           temperature: 0.7,
         });
 
@@ -107,8 +107,6 @@ export class AiOrchestrator {
         'Sin modelos disponibles para análisis de imágenes',
       );
     }
-
-    const optimizedBuffer = await ImageOptimizer.optimize(input.imageBuffer);
 
     return this.executeWithFallback(
       modelConfig,
