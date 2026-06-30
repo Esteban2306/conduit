@@ -15,7 +15,6 @@ import {
 } from './interface/AiOrchestator.types';
 import { AiProviderType } from './interface/AiProviderType';
 import { resolveModel } from '../helper/model-resolver';
-import { ImageOptimizer } from '../helper/ImageOptimizer';
 
 @Injectable()
 export class AiOrchestrator {
@@ -49,46 +48,24 @@ export class AiOrchestrator {
           config.provider as AiProviderType,
         );
 
-        const contextBlock = this.buildContextBlock(
-          input.context,
-          input.summary ?? '',
-        );
-        const fullPrompt = contextBlock
-          ? `${contextBlock}\n\n${input.userMessage}`
-          : input.userMessage;
-
         const apiKey = await this.selector.resolveApiKey(config);
-
-        this.logger.debug({
-          provider: config.provider,
-          dbModel: config.model,
-        });
 
         const model = resolveModel(
           config.provider as AiProviderType,
           config.model,
         );
 
-        this.logger.debug({
-          provider: config.provider,
-          resolvedModel: model,
-        });
-
-        this.logger.debug({
-          provider: config.provider,
-          model: config.model,
-          baseUrl: config.baseUrl,
-        });
+        this.logger.debug({ provider: config.provider, model: config.model });
 
         const result = await provider.generateText({
-          prompt: fullPrompt,
+          prompt: input.userMessage,
           systemPrompt: input.systemPrompt,
           history: input.history,
           model,
           apiKey,
           baseUrl: config.baseUrl ?? '',
-          maxTokens: 800,
-          temperature: 0.7,
+          maxTokens: input.maxTokens ?? 400,
+          temperature: input.temperature ?? 0.7,
         });
 
         return { result, config };
@@ -189,86 +166,5 @@ export class AiOrchestrator {
     }
 
     throw new Error('Sin modelos de IA disponibles');
-  }
-
-  private buildContextBlock(
-    content: ConversationContext,
-    summary: string | null,
-  ): string | null {
-    const parts: string[] = [];
-
-    if (summary) {
-      parts.push(`Resumen: ${summary}`);
-    }
-
-    const compactContext = this.extractRelevantContext(content);
-    if (compactContext) {
-      parts.push(`Contexto: ${compactContext}`);
-    }
-
-    return parts.length > 0 ? parts.join('\n') : null;
-  }
-
-  private extractRelevantContext(content: ConversationContext): string | null {
-    const EXCLUDED_KEYS = new Set([
-      'retryCount',
-      'imageVerified',
-      'lastImageAnalysis',
-      'processingAt',
-      'lockedBy',
-    ]);
-
-    const PRIORITY_KEYS = [
-      'currentStep',
-      'lastIntent',
-      'clientName',
-      'clientEmail',
-      'orderStatus',
-      'appointmentDate',
-      'pendingAction',
-      'collectedData',
-    ];
-
-    const result: string[] = [];
-
-    for (const key of PRIORITY_KEYS) {
-      const value = (content as any)[key];
-      if (value !== undefined && value !== null && value !== '') {
-        result.push(`${key}=${this.compactValue(value)}`);
-      }
-    }
-
-    const prioritySet = new Set(PRIORITY_KEYS);
-    for (const [key, value] of Object.entries(content)) {
-      if (EXCLUDED_KEYS.has(key)) continue;
-      if (prioritySet.has(key)) continue;
-      if (value === undefined || value === null || value === '') continue;
-
-      result.push(`${key}=${this.compactValue(value)}`);
-    }
-
-    if (result.length === 0) return null;
-    const joined = result.join(', ');
-    return joined.length > 800 ? joined.slice(0, 800) + '…' : joined;
-  }
-
-  private compactValue(value: unknown): string {
-    if (typeof value === 'string') return value.slice(0, 100);
-    if (typeof value === 'number' || typeof value === 'boolean')
-      return String(value);
-    if (Array.isArray(value)) {
-      return value
-        .slice(0, 3)
-        .map((v) => this.compactValue(v))
-        .join('|');
-    }
-    if (typeof value === 'object') {
-      return Object.entries(value as Record<string, unknown>)
-        .slice(0, 4)
-        .map(([k, v]) => `${k}:${this.compactValue(v)}`)
-        .join(';');
-    }
-
-    return String(value).slice(0, 100);
   }
 }

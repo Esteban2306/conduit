@@ -5,6 +5,7 @@ import { BotConfigService } from '../config/BotConfigService';
 import { AiModelSelectorService } from './AiModelSelectorService';
 import { downloadMediaMessage, WAMessage } from '@whiskeysockets/baileys';
 import { ImageOptimizer } from '../helper/ImageOptimizer';
+import { PromptEngine } from '../prompt/PromptEngine';
 
 export type ImageAnalysisStatus =
   | 'SUCCESS'
@@ -36,6 +37,7 @@ export class ImageAnalysisService {
     private readonly orchestrator: AiOrchestrator,
     private readonly botConfigService: BotConfigService,
     private readonly selector: AiModelSelectorService,
+    private readonly promptEngine: PromptEngine,
   ) {}
 
   async analyzeFromMessage(
@@ -68,6 +70,9 @@ export class ImageAnalysisService {
 
     const mimeType = 'image/jpeg';
 
+    const builtPrompt = await this.promptEngine.buildImagePrompt(botConfigId);
+    const promptText = builtPrompt.systemPrompt;
+
     try {
       const imageModel = await this.selector.selectModel(
         botConfigId,
@@ -81,8 +86,8 @@ export class ImageAnalysisService {
         );
         const aiResult = await this.orchestrator.analyzeImage({
           botConfigId,
-          systemPrompt,
-          prompt: this.ANALYSIS_PROMPT,
+          systemPrompt: promptText,
+          prompt: promptText,
           imageBuffer,
           mimeType,
           model: imageModel.model,
@@ -96,7 +101,7 @@ export class ImageAnalysisService {
         result = await this.analyzeWithOpenRouter(
           imageBuffer,
           mimeType,
-          systemPrompt,
+          promptText,
         );
       }
       return this.parseAnalysisResult(result);
@@ -133,7 +138,7 @@ export class ImageAnalysisService {
   private async analyzeWithOpenRouter(
     imageBuffer: Buffer,
     mimeType: string,
-    systemPrompt: string,
+    promptText: string,
   ): Promise<string> {
     const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) {
@@ -149,13 +154,10 @@ export class ImageAnalysisService {
       body: JSON.stringify({
         model: this.DEFAULT_IMAGE_MODEL,
         messages: [
-          ...(systemPrompt?.trim()
-            ? [{ role: 'system', content: systemPrompt }]
-            : []),
           {
             role: 'user',
             content: [
-              { type: 'text', text: this.ANALYSIS_PROMPT },
+              { type: 'text', text: promptText },
               {
                 type: 'image_url',
                 image_url: {

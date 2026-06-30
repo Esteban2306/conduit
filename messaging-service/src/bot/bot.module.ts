@@ -17,9 +17,11 @@ import { forwardRef } from '@nestjs/common';
 import { ImageAnalysisService } from './ai/ImageAnalysisService';
 import { MessageDebouncer } from './router/MessageDebouncer';
 import { OpenRouterProvider } from './ai/providers/OpenRouterProvider';
+import { PromptEngine } from './prompt/PromptEngine';
+import { PromptModule } from './prompt/Prompt.module';
 
 @Module({
-  imports: [forwardRef(() => ChannelsModule)],
+  imports: [forwardRef(() => ChannelsModule), PromptModule],
   controllers: [BotConfigController],
   providers: [
     BotConfigService,

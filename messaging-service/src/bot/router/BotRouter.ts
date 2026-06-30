@@ -10,6 +10,7 @@ import { ImageAnalysisService } from '../ai/ImageAnalysisService';
 import { BaileysSessionManager } from 'src/channels/whatsapp/baileys/BaileysSessionManager';
 import { messageReceiptTracker } from 'src/channels/whatsapp/baileys/MessageReceiptTracker';
 import { MessageDebouncer } from './MessageDebouncer';
+import { PromptEngine } from '../prompt/PromptEngine';
 
 export interface IncomingMessageDto {
   phoneNumber: string;
@@ -33,6 +34,7 @@ export class BotRouter {
     private readonly imageAnalysisService: ImageAnalysisService,
     private readonly receiptTracker: messageReceiptTracker,
     private readonly debouncer: MessageDebouncer,
+    private readonly promptEngine: PromptEngine,
   ) {}
 
   async route(messages: WAMessage[]): Promise<void> {
@@ -259,13 +261,26 @@ export class BotRouter {
         hasImage,
       );
 
+      const builtPrompt = await this.promptEngine.buildConversationPrompt(
+        botConfig.id,
+        {
+          userMessage: userMessageForAI,
+          history: aiData.history,
+          context: aiData.context,
+          summary: aiData.summary,
+          hasImage: hasImage,
+        },
+      );
+
       const aiResult = await this.aiOrchestrator.generateResponse({
         botConfigId: botConfig.id,
-        systemPrompt: botConfig.systemPrompt,
+        systemPrompt: builtPrompt.systemPrompt,
         userMessage: userMessageForAI,
         history: aiData.history,
         context: aiData.context,
         summary: aiData.summary,
+        maxTokens: builtPrompt.maxTokens,
+        temperature: builtPrompt.temperature,
       });
 
       if (this.receiptTracker.isChatActive(jid, 30000)) {

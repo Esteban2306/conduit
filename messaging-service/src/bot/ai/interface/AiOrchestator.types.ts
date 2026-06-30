@@ -8,6 +8,8 @@ export interface GenerateResponseInput {
   history: HistoryMessage[];
   context: ConversationContext;
   summary?: string | null;
+  maxTokens?: number;
+  temperature?: number;
 }
 
 export interface AnalyzeImageInput {
