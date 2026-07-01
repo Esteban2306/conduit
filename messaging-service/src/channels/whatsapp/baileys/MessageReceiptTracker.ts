@@ -17,11 +17,16 @@ export class messageReceiptTracker {
 
   markChatActive(remoteJid: string): void {
     const normalized = this.normalizeJid(remoteJid);
+    const wasAlreadyActive = this.activeChats.has(normalized);
 
     this.logger.debug(`Chat activo detectado: ${normalized}`);
     this.activeChats.set(normalized, Date.now());
 
     this.debouncer.cancel(normalized);
+
+    if (!wasAlreadyActive) {
+      this.logger.warn(`Chat marcado activo (bot pausado): ${normalized}`);
+    }
 
     this.cleanup();
   }

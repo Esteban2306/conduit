@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { ConversationContext } from '../conversation/interfaces/ConversationContext';
+import { HistoryMessage } from '../conversation/interfaces/ConversationHistory';
 
 export interface BuiltContext {
   block: string | null;
@@ -45,6 +46,21 @@ export class ContextBuilder {
     const tokenEstimate = block ? Math.ceil(block.length / 4) : 0;
 
     return { block, tokenEstimate };
+  }
+
+  buildHistoryNarrative(history: HistoryMessage[]): string | null {
+    if (history.length === 0) return null;
+
+    const recent = history.slice(-3);
+    const lines: string[] = [];
+
+    for (const msg of recent) {
+      const role = msg.role === 'user' ? 'Cliente' : 'Bot';
+      const content = msg.content.slice(0, 100).replace(/\n/g, ' ');
+      lines.push(`${role}: ${content}`);
+    }
+
+    return `Conversación reciente:\n${lines.join('\n')}`;
   }
 
   private buildContextLine(context: ConversationContext): string | null {

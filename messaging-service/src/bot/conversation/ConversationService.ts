@@ -214,6 +214,8 @@ export class ConversationService {
   async getConversationForAI(conversationId: string, maxMessages: number) {
     const conversation = await this.findById(conversationId);
 
+    const limit = Math.max(maxMessages ?? 5, 5);
+
     const messages = await this.prisma.botMessage.findMany({
       where: { conversationId },
       orderBy: { createdAt: 'desc' },
@@ -251,11 +253,22 @@ export class ConversationService {
       }));
     }
 
+    const deduped = history.filter((msg, i) => {
+      if (i === 0) return true;
+      const prev = history[i - 1];
+      return !(
+        msg.role === MessageRole.ASSISTANT &&
+        prev.role === MessageRole.ASSISTANT &&
+        this.normalizeContent(msg.content) ===
+          this.normalizeContent(prev.content)
+      );
+    });
+
     return {
       context: conversation.context as ConversationContext,
       currentStep: conversation.currentStep,
       lastIntent: conversation.lastIntent,
-      history,
+      history: deduped,
       summary: isLongConversation ? conversation.summary : null,
     };
   }
@@ -464,23 +477,22 @@ export class ConversationService {
     return { active, waitingPayment, completed, abandoned };
   }
 
-  async acquireLock(conversationId: string): Promise<Boolean> {
-    const now = new Date();
-
-    const lockExpiry = new Date(now.getTime() + this.LOCK_TIMEOUT_MS);
-
-    const result = await this.prisma.conversation.updateMany({
-      where: {
-        id: conversationId,
-        OR: [{ processing: false }, { lockedUntil: { lt: now } }],
-      },
-      data: {
-        processing: true,
-        lockedUntil: lockExpiry,
-      },
-    });
-
-    return result.count > 0;
+  async acquireLock(conversationId: string): Promise<boolean> {
+    try {
+      const result = await this.prisma.$executeRaw`
+      UPDATE "Conversation"
+      SET 
+        processing = true,
+        "lockedUntil" = NOW() + INTERVAL '30 seconds',
+        "updatedAt" = NOW()
+      WHERE 
+        id = ${conversationId}
+        AND (processing = false OR "lockedUntil" < NOW())
+    `;
+      return result > 0;
+    } catch {
+      return false;
+    }
   }
 
   async releaseLock(conversationId: string): Promise<void> {
@@ -529,5 +541,9 @@ export class ConversationService {
     });
 
     return result.count;
+  }
+
+  private normalizeContent(content: string): string {
+    return content.toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 200);
   }
 }

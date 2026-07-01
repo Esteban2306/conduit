@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { PromptService } from '../prompt/Prompt.service';
+import { PrismaService } from 'src/shared/prisma.service';
 
 export interface KnowledgeBlock {
   label: string;
@@ -18,7 +18,7 @@ export class KnowledgeAssembler {
   private readonly logger = new Logger(KnowledgeAssembler.name);
   private readonly MAX_TONKENS = 400;
 
-  constructor(private readonly prisma: PromptService) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   async assemble(botConfigId: string): Promise<AssembledKnowledge> {
     const blocks: KnowledgeBlock[] = [];

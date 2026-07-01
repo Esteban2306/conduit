@@ -20,9 +20,11 @@ export class BaileysSessionManager implements OnModuleInit {
   private reconnectCount = 0;
   private lastReconnectAt: number | null = null;
   private sessionResetAttempts = 0;
+  private connectedAt: number | null = null;
   private botRouter: BotRouter | null = null;
 
   private readonly MAX_RESET_ATTEMPTS = 3;
+  private readonly RECEIPT_MAX_AGE_MS = 5 * 60 * 1000;
   private readonly BAN_WARNING_CODES = [403, 405, 408, 440, 500, 515];
   private readonly INVALID_SESSION_CODES = [DisconnectReason.loggedOut, 401];
 
@@ -104,6 +106,16 @@ export class BaileysSessionManager implements OnModuleInit {
         if (update.key.fromMe && update.update.status === 3) {
           const jid = update.key.remoteJidAlt ?? update.key.remoteJid;
 
+          const justReconnected =
+            this.lastReconnectAt && Date.now() - this.lastReconnectAt < 10000;
+
+          if (justReconnected) {
+            this.logger.debug(
+              `Update ignorado por estar en ventana post-reconexión: ${jid}`,
+            );
+            continue;
+          }
+
           if (jid) {
             this.logger.error({
               markActiveRemoteJid: update.key.remoteJid,
@@ -148,6 +160,21 @@ export class BaileysSessionManager implements OnModuleInit {
           continue;
         }
 
+        const msgTimestamp = Number(message.messageTimestamp ?? 0) * 1000;
+        const ageMs = Date.now() - msgTimestamp;
+
+        const isStartupCatchup =
+          this.connectedAt !== null &&
+          Date.now() - this.connectedAt < 30000 &&
+          ageMs > 5 * 60 * 1000;
+
+        if (isStartupCatchup) {
+          this.logger.debug(
+            `Catch-up ignorado: mensaje de ${Math.round(ageMs / 60000)}min para ${message.key.remoteJid}`,
+          );
+          continue;
+        }
+
         const senderJid = message.key.remoteJid;
 
         if (senderJid && this.sock) {
@@ -166,6 +193,17 @@ export class BaileysSessionManager implements OnModuleInit {
       for (const update of updates) {
         if (update.key.fromMe && update.receipt.readTimestamp) {
           const jid = update.key.remoteJidAlt ?? update.key.remoteJid;
+          const readTimestamp =
+            typeof update.receipt.readTimestamp === 'number'
+              ? update.receipt.readTimestamp
+              : update.receipt.readTimestamp?.toNumber();
+          const receiptAgeMs = Date.now() - readTimestamp * 1000;
+          if (receiptAgeMs > this.RECEIPT_MAX_AGE_MS) {
+            this.logger.debug(
+              `Receipt antiguo ignorado (${Math.round(receiptAgeMs / 1000)}s) para ${jid}`,
+            );
+            continue;
+          }
           if (jid) {
             this.logger.error({
               markActiveRemoteJid: update.key.remoteJid,
@@ -190,6 +228,7 @@ export class BaileysSessionManager implements OnModuleInit {
         this.sessionResetAttempts = 0;
         this.isConnected = true;
         this.reconnectCount++;
+        this.connectedAt = Date.now();
         this.lastReconnectAt = Date.now();
         this.logger.log('WhatsApp conectado');
 

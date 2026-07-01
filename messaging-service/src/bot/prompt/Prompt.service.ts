@@ -10,9 +10,9 @@ import { PromptEngine } from './PromptEngine';
 @Injectable()
 export class PromptService {
   constructor(
+    private readonly engine: PromptEngine,
     private readonly templates: TemplateRepository,
     private readonly settings: SettingsRepository,
-    private readonly engine: PromptEngine,
   ) {}
 
   listAll(botConfigId: string) {

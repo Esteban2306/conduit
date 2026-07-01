@@ -39,17 +39,14 @@ export class PromptEngine {
     botConfigId: string,
     input: PromptBuildInput,
   ): Promise<BuiltPrompt> {
-    const [settings, template] = await Promise.all([
+    const [settings, template, assembled] = await Promise.all([
       this.settingsRepo.findByBot(botConfigId),
       this.templates.findActive(botConfigId, PromptTemplateType.CONVERSATION),
+      this.knowledge.assemble(botConfigId),
     ]);
 
     const vars = this.variables.resolve(settings);
     let systemPrompt = this.renderer.render(template, vars);
-
-    const [assembled] = await Promise.all([
-      this.knowledge.assemble(botConfigId),
-    ]);
 
     if (assembled.compiled) {
       systemPrompt = `${systemPrompt}\n\nConocimiento:\n${assembled.compiled}`;
@@ -57,6 +54,13 @@ export class PromptEngine {
 
     const { block } = this.contextBuilder.build(input.context, input.summary);
     if (block) systemPrompt = `${systemPrompt}\n\n${block}`;
+
+    if (input.history.length > 1) {
+      const narrative = this.contextBuilder.buildHistoryNarrative(
+        input.history,
+      );
+      if (narrative) systemPrompt = `${systemPrompt}\n\n${narrative}`;
+    }
 
     this.logger.debug(
       `Prompt built | ~${Math.ceil(systemPrompt.length / 4)} tokens`,

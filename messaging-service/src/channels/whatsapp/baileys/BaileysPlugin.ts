@@ -129,6 +129,9 @@ export class BaileysPlugin implements IChannelPlugin {
   private addInvisibleVariation(text: string): string {
     const invisibleChars = ['\u200B', '\u200C', '\u200D', '\uFEFF'];
 
+    const lastChar = text.at(-1) ?? '';
+    if (invisibleChars.includes(lastChar)) return text;
+
     const count = this.randomInt(1, 3);
     let suffix = '';
     for (let i = 0; i < count; i++) {

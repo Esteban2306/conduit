@@ -23,6 +23,8 @@ export interface IncomingMessageDto {
 export class BotRouter {
   private readonly logger = new Logger(BotRouter.name);
 
+  private readonly processingConversations = new Set<string>();
+
   constructor(
     @Inject(forwardRef(() => BaileysSessionManager))
     private readonly sessionManager: BaileysSessionManager,
@@ -183,6 +185,15 @@ export class BotRouter {
       hasImage,
     );
 
+    if (this.processingConversations.has(conversation.id)) {
+      this.logger.warn(
+        `Conversación ${conversation.id} ya en proceso (in-memory guard). Descartando.`,
+      );
+      return;
+    }
+
+    this.processingConversations.add(conversation.id);
+
     const locked = await this.conversationService.acquireLock(conversation.id);
     if (!locked) {
       this.logger.warn(`Conversación ${conversation.id} bloqueada.`);
@@ -290,6 +301,59 @@ export class BotRouter {
         return;
       }
 
+      const lastOutbound = aiData.history
+        .filter((h) => h.role === 'assistant')
+        .at(-1);
+
+      if (
+        lastOutbound &&
+        this.isTooSimilar(aiResult.content, lastOutbound.content)
+      ) {
+        this.logger.warn(
+          `Respuesta duplicada detectada para ${phoneNumber}. Descartando.`,
+        );
+        try {
+          const retryResult = await this.aiOrchestrator.generateResponse({
+            botConfigId: botConfig.id,
+            systemPrompt: builtPrompt.systemPrompt,
+            userMessage: combinedText || userMessageForAI,
+            history: [],
+            context: aiData.context,
+            summary: aiData.summary,
+            maxTokens: builtPrompt.maxTokens,
+            temperature: Math.min((builtPrompt.temperature ?? 0.7) + 0.3, 1.0),
+          });
+
+          if (this.isTooSimilar(retryResult.content, lastOutbound.content)) {
+            this.logger.warn(
+              `Reintento también similar para ${phoneNumber}. Descartando para evitar spam.`,
+            );
+            return;
+          }
+
+          this.eventBus.publish(EVENT_TYPES.CHANNEL_SEND_REQUESTED, {
+            phoneNumber,
+            content: retryResult.content,
+            conversationId: conversation.id,
+            tokensUsed: retryResult.tokensUsed,
+          });
+
+          await this.conversationService.saveOutbound(
+            conversation.id,
+            retryResult.content,
+            {
+              tokensUsed: retryResult.tokensUsed,
+            },
+          );
+        } catch (retryErr) {
+          this.logger.error(
+            `Error en reintento de respuesta: ${retryErr.message}`,
+          );
+        }
+
+        return;
+      }
+
       this.eventBus.publish(EVENT_TYPES.CHANNEL_SEND_REQUESTED, {
         phoneNumber,
         content: aiResult.content,
@@ -305,6 +369,7 @@ export class BotRouter {
         },
       );
     } finally {
+      this.processingConversations.delete(conversation.id);
       await this.conversationService.releaseLock(conversation.id);
     }
   }
@@ -400,6 +465,19 @@ export class BotRouter {
   private readonly TRIVIAL_PATTERNS = [
     /^(ok|okay|okey|vale|sí|si|no|ya|dale|listo|gracias|thanks|ty|bye|adiós|adios|ciao|chao|hasta luego|ok gracias|👍|🙏|❤️|😊|👋|np|de nada|con gusto)$/i,
   ];
+
+  private isTooSimilar(a: string, b: string): boolean {
+    const normalize = (s: string) =>
+      s.toLowerCase().replace(/\s+/g, ' ').trim();
+    const na = normalize(a);
+    const nb = normalize(b);
+
+    if (na === nb) return true;
+
+    if (na.includes(nb) || nb.includes(na)) return true;
+
+    return false;
+  }
 
   private isTrivialMessage(text: string): boolean {
     const normalized = text.trim().toLowerCase();
