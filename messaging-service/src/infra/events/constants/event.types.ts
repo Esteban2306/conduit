@@ -1,4 +1,4 @@
-import { ConversationStatus } from '@prisma/client';
+import { ConversationStatus, SourceVariable } from '@prisma/client';
 
 export const EVENT_TYPES = {
   MESSAGE_RECEIVED: 'message.received',
@@ -41,6 +41,20 @@ export const EVENT_TYPES = {
   WHATSAPP_CONNECTED: 'whatsapp.connected',
 
   WHATSAPP_DISCONNECTED: 'whatsapp.disconnected',
+
+  //External
+
+  EXTERNAL_DATA_RECEIVED: 'external_data.received',
+
+  EXTERNAL_DATA_PROCESSED: 'external_data.processed',
+
+  EXTERNAL_DATA_FAILED: 'external_data.failed',
+
+  VARIABLES_UPDATED: 'variables.updated',
+
+  VARIABLES_DELETED: 'variables.deleted',
+
+  MAPPING_UPDATED: 'mapping.updated',
 } as const;
 
 export type EventType = (typeof EVENT_TYPES)[keyof typeof EVENT_TYPES];
@@ -166,5 +180,42 @@ export interface EventPayloadMap {
     disconnectedAt: Date;
 
     reason?: string;
+  };
+
+  [EVENT_TYPES.EXTERNAL_DATA_RECEIVED]: {
+    eventId: string;
+    botConfigId: string;
+    eventType: string;
+  };
+
+  [EVENT_TYPES.EXTERNAL_DATA_PROCESSED]: {
+    eventId: string;
+    botConfigId: string;
+    eventType: string;
+    mapped: number;
+  };
+
+  [EVENT_TYPES.EXTERNAL_DATA_FAILED]: {
+    eventId: string;
+    botConfigId: string;
+    eventType: string;
+    error: string;
+  };
+
+  [EVENT_TYPES.VARIABLES_UPDATED]: {
+    botConfigId: string;
+    source: SourceVariable;
+    count: number;
+    namespaces?: string[];
+  };
+
+  [EVENT_TYPES.VARIABLES_DELETED]: {
+    botConfigId: string;
+    deleted: number;
+  };
+
+  [EVENT_TYPES.MAPPING_UPDATED]: {
+    botConfigId: string;
+    eventType: string;
   };
 }

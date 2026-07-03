@@ -9,8 +9,10 @@ import { ContextBuilder } from './ContextBuilder';
 import { PromptRenderer } from './PromptRenderer';
 import { PrismaService } from 'src/shared/prisma.service';
 import { KnowledgeAssembler } from '../knowledge/KnowledgeAssembler';
+import { ExternalDataModule } from 'src/external/ExternalData.module';
 
 @Module({
+  imports: [ExternalDataModule],
   controllers: [PromptController],
   providers: [
     PrismaService,

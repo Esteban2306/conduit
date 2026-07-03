@@ -12,6 +12,8 @@ import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { APP_GUARD } from '@nestjs/core';
 import { BotModule } from './bot/bot.module';
 import { EventEmitterModule } from '@nestjs/event-emitter';
+import { ExternalDataModule } from './external/ExternalData.module';
+import { PromptModule } from './bot/prompt/Prompt.module';
 
 @Module({
   imports: [
@@ -48,6 +50,8 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
     TemplateModule,
     ChannelsModule,
     QueueModule,
+    ExternalDataModule,
+    PromptModule,
     OrchestratorModule,
   ],
   controllers: [],

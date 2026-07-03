@@ -35,6 +35,12 @@ enum BotStatus {
   PAUSED
 }
 
+enum SourceVariable {
+  MANUAL
+  WEBHOOK
+  POLLING
+}
+
 enum AiProvider {
   ANTHROPIC
   OPENAI
@@ -243,6 +249,8 @@ model BotConfig {
   
   tenant        Tenant          @relation(fields: [tenantId], references: [id])
   conversations Conversation[]
+  externalVariables ExternalVariable[]
+  webhookMappings   WebhookMapping[]
   aiModels      AiModelConfig[] 
   aiSettings      BotAiSettings?
   promptTemplates BotPromptTemplate[]
@@ -423,4 +431,55 @@ model WhatsAppSession {
   updatedAt   DateTime @updatedAt
 
   botConfig BotConfig? @relation(fields: [botConfigId], references: [id])
+}
+
+model ExternalVariable {
+  id                  String   @id @default(uuid())
+  botConfigId         String
+  namespace           String    @default("vars")
+  key                 String
+  value               String    @db.Text
+  source              SourceVariable    @default(MANUAL)
+  expiresAt   DateTime? 
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  botConfig BotConfig @relation(fields: [botConfigId], references: [id])
+
+  @@unique([botConfigId, namespace, key])
+  @@index([botConfigId, namespace])
+  @@index([expiresAt])
+}
+
+model WebhookMapping {
+  id          String   @id @default(uuid())
+  botConfigId String
+  eventType   String   
+  
+  rules       Json
+  
+  isActive    Boolean  @default(true)
+  description String?  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  botConfig BotConfig @relation(fields: [botConfigId], references: [id])
+
+  @@unique([botConfigId, eventType])
+  @@index([botConfigId, isActive])
+}
+
+model ExternalDataEvent {
+  id          String   @id @default(uuid())
+  botConfigId String
+  eventType   String   
+  payload     Json
+  source      String   
+  processedAt DateTime?
+  failedAt    DateTime?
+  error       String?
+  createdAt   DateTime @default(now())
+
+  @@index([botConfigId, processedAt])
+  @@index([processedAt, createdAt]) 
 }

@@ -8,6 +8,7 @@ import { ContextBuilder } from './ContextBuilder';
 import { PromptRenderer } from './PromptRenderer';
 import { HistoryMessage } from '../conversation/interfaces/ConversationHistory';
 import { KnowledgeAssembler } from '../knowledge/KnowledgeAssembler';
+import { ExternalDataResolver } from 'src/external/ExternalDataResolver';
 
 export interface BuiltPrompt {
   systemPrompt: string;
@@ -34,15 +35,17 @@ export class PromptEngine {
     private readonly contextBuilder: ContextBuilder,
     private readonly renderer: PromptRenderer,
     private readonly knowledge: KnowledgeAssembler,
+    private readonly externalData: ExternalDataResolver,
   ) {}
   async buildConversationPrompt(
     botConfigId: string,
     input: PromptBuildInput,
   ): Promise<BuiltPrompt> {
-    const [settings, template, assembled] = await Promise.all([
+    const [settings, template, assembled, external] = await Promise.all([
       this.settingsRepo.findByBot(botConfigId),
       this.templates.findActive(botConfigId, PromptTemplateType.CONVERSATION),
       this.knowledge.assemble(botConfigId),
+      this.externalData.resolve(botConfigId),
     ]);
 
     const vars = this.variables.resolve(settings);
@@ -54,6 +57,10 @@ export class PromptEngine {
 
     const { block } = this.contextBuilder.build(input.context, input.summary);
     if (block) systemPrompt = `${systemPrompt}\n\n${block}`;
+
+    if (external.compiledBlock) {
+      systemPrompt = `${systemPrompt}\n\n${external.compiledBlock}`;
+    }
 
     if (input.history.length > 1) {
       const narrative = this.contextBuilder.buildHistoryNarrative(
