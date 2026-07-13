@@ -7,6 +7,7 @@ import {
   Post,
   Put,
   Query,
+  UseGuards,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { TemplateService } from './TemplateService';
@@ -14,7 +15,11 @@ import { CreateTemplateDto } from './dto/create-template.dto';
 import { UpdateTemplateDto } from './dto/update-template.dto';
 import { PreviewTemplateDto } from './dto/preview-template.dto';
 import { FilterTemplateDto } from './dto/filter-template.dto';
+import { Public } from 'src/api/middlewares/auth';
+import { JwtGuard } from 'src/auth/guards/jwt-auth.guard';
 
+@Public()
+@UseGuards(JwtGuard)
 @ApiTags('Templates')
 @Controller('templates')
 export class TemplateController {

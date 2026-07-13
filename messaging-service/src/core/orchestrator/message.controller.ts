@@ -11,6 +11,7 @@ import {
   ParseFilePipe,
   MaxFileSizeValidator,
   FileTypeValidator,
+  UseGuards,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiTags, ApiOperation, ApiConsumes, ApiBody } from '@nestjs/swagger';
@@ -20,7 +21,11 @@ import { TemplateService } from '../templates/TemplateService';
 import { BulkDispatchDto } from './dto/bulk-dispatch.dto';
 import { FileParserService } from '../adapters/FileParserService';
 import { FileDispatchDto } from './dto/file-dispatch.dto';
+import { Public } from 'src/api/middlewares/auth';
+import { JwtGuard } from 'src/auth/guards/jwt-auth.guard';
 
+@Public()
+@UseGuards(JwtGuard)
 @ApiTags('Messages')
 @Controller('messages')
 export class MessageController {

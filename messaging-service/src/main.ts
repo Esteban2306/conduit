@@ -24,8 +24,10 @@ async function bootstrap() {
     }),
   );
 
-  const reflector = app.get(Reflector);
-  app.useGlobalGuards(new ApiKeyGuard(config, reflector));
+  app.enableCors({
+    origin: process.env.FRONTEND_URL ?? 'http://localhost:3000',
+    credentials: true,
+  });
 
   app.use((req: any, res: any, next: any) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');

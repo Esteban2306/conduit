@@ -1,7 +1,19 @@
-import { Body, Controller, Get, Param, Post, Put } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Put,
+  UseGuards,
+} from '@nestjs/common';
 import { PromptTemplateType } from '@prisma/client';
 import { PromptService } from './Prompt.service';
+import { JwtGuard } from 'src/auth/guards/jwt-auth.guard';
+import { Public } from 'src/api/middlewares/auth';
 
+@Public()
+@UseGuards(JwtGuard)
 @Controller('bots/:botId/prompts')
 export class PromptController {
   constructor(private readonly service: PromptService) {}

@@ -6,6 +6,7 @@ import {
   Param,
   Post,
   Put,
+  UseGuards,
 } from '@nestjs/common';
 
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
@@ -17,7 +18,11 @@ import { CreateTagDto } from './dto/create-tag.dto';
 import { UpdateTagDto } from './dto/update-tag.dto';
 
 import { AssignTagDto } from './dto/assign-tag.dto';
+import { JwtGuard } from 'src/auth/guards/jwt-auth.guard';
+import { Public } from 'src/api/middlewares/auth';
 
+@Public()
+@UseGuards(JwtGuard)
 @ApiTags('Tags')
 @Controller('tags')
 export class TagController {

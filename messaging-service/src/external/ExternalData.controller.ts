@@ -6,10 +6,15 @@ import {
   Param,
   Post,
   Query,
+  UseGuards,
 } from '@nestjs/common';
 import { ExternalDataService } from './ExternalData.service';
 import { SourceVariable } from '@prisma/client';
+import { Public } from 'src/api/middlewares/auth';
+import { JwtGuard } from 'src/auth/guards/jwt-auth.guard';
 
+@Public()
+@UseGuards(JwtGuard)
 @Controller('api/external-data')
 export class ExternalDataController {
   constructor(private readonly service: ExternalDataService) {}

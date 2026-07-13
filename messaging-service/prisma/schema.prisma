@@ -7,6 +7,20 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum UserRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+enum WhatsAppConnectionStatus {
+  DISCONNECTED
+  CONNECTING
+  CONNECTED
+  BANNED
+  ERROR
+}
+
 enum MessageStatus {
   PENDING
   QUEUED
@@ -101,10 +115,29 @@ model Tenant {
   createdAt DateTime @default(now())
 
   templates        Template[]
+  users            User[]
   messages         Message[]
   webhookEndpoints WebhookEndpoint[]
   tags             Tag[]
   botContig        BotConfig[]
+  whatsappConnections WhatsAppConnection[]
+}
+
+model User {
+  id        String   @id @default(uuid())
+  tenantId  String
+  email     String
+  password  String
+  name      String
+  role      UserRole @default(MEMBER)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, email])
+  @@index([tenantId])
 }
 
 model Template {
@@ -124,6 +157,9 @@ model Template {
   messages Message[]
 
   tags TemplateTag[]
+
+  @@index([tenantId])
+  @@index([tenantId, isActive])
 }
 
 model TemplateTag {
@@ -161,6 +197,8 @@ model Message {
   id          String    @id @default(uuid())
   tenantId    String    @default("default")
   templateId  String?
+  connectionId String?
+  botConfigId String?
   channel     MessageChannel    
   recipient   String
   variables   Json      @default("{}")
@@ -191,6 +229,10 @@ model Message {
   webhookDeliveries WebhookDelivery[]
 
   deadLetter        DeadLetterMessage?
+
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([status, scheduledAt])
 }
 model AiModelConfig {
   id          String @id @default(uuid())
@@ -254,7 +296,7 @@ model BotConfig {
   aiModels      AiModelConfig[] 
   aiSettings      BotAiSettings?
   promptTemplates BotPromptTemplate[]
-  whatsappSession WhatsAppSession?
+  whatsappConnection WhatsAppConnection?
 }
 
 model BotAiSettings {
@@ -321,6 +363,7 @@ model Conversation {
   id          String  @id @default(uuid())
   tenantId    String  @default("default")
   botConfigId String
+  connectionId String?
   phoneNumber String
   status      ConversationStatus  @default(ACTIVE)
 
@@ -341,6 +384,8 @@ model Conversation {
   messages  BotMessage[]
 
   @@unique([botConfigId, phoneNumber])
+  @@index([tenantId])
+  @@index([tenantId, status])
   @@index([processing, lockedUntil])
   @@index([phoneNumber])
   @@index([botConfigId, status])
@@ -361,6 +406,7 @@ model BotMessage{
   conversation Conversation @relation(fields: [conversationId], references: [id])
 
   @@index([conversationId])
+  @@index([conversationId, createdAt])
 }
 
 model MessageAttempt {
@@ -389,6 +435,9 @@ model WebhookEndpoint {
 
   tenant     Tenant            @relation(fields: [tenantId], references: [id])
   deliveries WebhookDelivery[]
+
+  @@index([tenantId])
+  @@index([tenantId, isActive])
 }
 
 model WebhookDelivery {
@@ -422,15 +471,20 @@ model DeadLetterMessage {
 }
 
 model WhatsAppSession {
-  id          String   @id
-  botConfigId String?  @unique
+  id           String   @id @default(uuid())
+  connectionId String
+  type         String   
+  key          String   
+  data         Json
 
-  data        Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  connection WhatsAppConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
 
-  botConfig BotConfig? @relation(fields: [botConfigId], references: [id])
+  @@unique([connectionId, type, key])
+  @@index([connectionId])
+  @@index([connectionId, type])
 }
 
 model ExternalVariable {
@@ -440,9 +494,9 @@ model ExternalVariable {
   key                 String
   value               String    @db.Text
   source              SourceVariable    @default(MANUAL)
-  expiresAt   DateTime? 
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  expiresAt           DateTime? 
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 
   botConfig BotConfig @relation(fields: [botConfigId], references: [id])
 
@@ -483,3 +537,25 @@ model ExternalDataEvent {
   @@index([botConfigId, processedAt])
   @@index([processedAt, createdAt]) 
 }
+
+model WhatsAppConnection {
+  id              String      @id @default(uuid())
+  tenantId        String      
+  botConfigId     String
+  name            String
+  phoneNumber     String?
+  status          WhatsAppConnectionStatus  @default(DISCONNECTED)
+  lastQr          String?
+  connectedAt     DateTime?
+  disconnectedAt  DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenant          Tenant   @relation(fields: [tenantId], references: [id])
+  botConfig       BotConfig  @relation(fields: [botConfigId], references: [id])
+  sessions        WhatsAppSession[] 
+
+  @@index([tenantId])
+  @@index([tenantId, status])
+}
+

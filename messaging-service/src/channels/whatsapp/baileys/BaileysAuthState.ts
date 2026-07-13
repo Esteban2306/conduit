@@ -6,11 +6,11 @@ import {
   BufferJSON,
 } from '@whiskeysockets/baileys';
 
-const SESSION_ID = 'default-session';
+const SESSION_ID = 'accessToken';
 
 const TYPE_MAP: Record<string, string> = {
   'pre-key': 'pre-key',
-  session: 'session',
+  session: 'accessToken',
   'identity-key': 'identity-key',
   'sender-key': 'sender-key',
   'sender-key-memory': 'sender-key-memory',
