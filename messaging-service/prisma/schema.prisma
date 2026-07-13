@@ -296,7 +296,7 @@ model BotConfig {
   aiModels      AiModelConfig[] 
   aiSettings      BotAiSettings?
   promptTemplates BotPromptTemplate[]
-  whatsappConnection WhatsAppConnection?
+  whatsappConnection WhatsAppConnection[]
 }
 
 model BotAiSettings {
