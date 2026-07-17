@@ -7,9 +7,17 @@ import { EventBusService } from 'src/infra/events/event.service';
 import { VariableMapper } from './hooks/VariableMapper';
 import { VariableStore } from './VariableStore';
 import { MappingRepository } from './MappingRepository';
+import { SecurityModule } from 'src/shared/security/security.module';
+import { ExternalIntegrationController } from './integrations/ExternalIntegration.controller';
+import { ExternalIntegrationService } from './integrations/ExternalIntegration.service';
+import {
+  ExternalIntegrationSecretResolver,
+  ExternalIntegrationSignatureGuard,
+} from './integrations/ExternalIntegrationSignatureGuard';
 
 @Module({
-  controllers: [ExternalDataController],
+  imports: [SecurityModule],
+  controllers: [ExternalDataController, ExternalIntegrationController],
   providers: [
     PrismaService,
     EventBusService,
@@ -18,6 +26,9 @@ import { MappingRepository } from './MappingRepository';
     MappingRepository,
     ExternalDataService,
     ExternalDataResolver,
+    ExternalIntegrationService,
+    ExternalIntegrationSecretResolver,
+    ExternalIntegrationSignatureGuard,
   ],
   exports: [ExternalDataResolver, ExternalDataService],
 })

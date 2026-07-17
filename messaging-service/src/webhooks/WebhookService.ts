@@ -1,5 +1,4 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { PrismaService } from 'src/shared/prisma.service';
 import * as crypto from 'crypto';
 
@@ -10,14 +9,9 @@ export interface CreateWebhookDto {
 
 @Injectable()
 export class WebhookService {
-  constructor(
-    private readonly prisma: PrismaService,
-    private readonly config: ConfigService,
-  ) {}
+  constructor(private readonly prisma: PrismaService) {}
 
-  async createWebhook(dto: CreateWebhookDto) {
-    const tenantId = this.config.get<string>('tenant.default') ?? 'default';
-
+  async createWebhook(tenantId: string, dto: CreateWebhookDto) {
     const secret = crypto.randomBytes(32).toString('hex');
 
     return this.prisma.webhookEndpoint.create({
@@ -31,8 +25,7 @@ export class WebhookService {
     });
   }
 
-  async findAll() {
-    const tenantId = this.config.get<string>('tenant.default') ?? 'default';
+  async findAll(tenantId: string) {
     return this.prisma.webhookEndpoint.findMany({
       where: { tenantId, isActive: true },
       select: {
@@ -45,9 +38,9 @@ export class WebhookService {
     });
   }
 
-  async remove(id: string) {
+  async remove(id: string, tenantId: string) {
     const webhook = await this.prisma.webhookEndpoint.findUnique({
-      where: { id },
+      where: { id, tenantId },
     });
     if (!webhook) throw new NotFoundException(`Webhook ${id} no encontrado`);
 
@@ -57,7 +50,13 @@ export class WebhookService {
     });
   }
 
-  async getDeliveries(webhookId: string) {
+  async getDeliveries(webhookId: string, tenantId: string) {
+    const webhook = await this.prisma.webhookEndpoint.findFirst({
+      where: { id: webhookId, tenantId },
+    });
+    if (!webhook)
+      throw new NotFoundException(`Webhook ${webhookId} no encontrado`);
+
     return this.prisma.webhookDelivery.findMany({
       where: { webhookId },
       orderBy: { createdAt: 'desc' },

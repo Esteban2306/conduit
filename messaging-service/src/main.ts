@@ -8,6 +8,7 @@ import { ApiKeyGuard } from './api/middlewares/auth';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
+    rawBody: true,
     logger:
       process.env.NODE_ENV === 'production'
         ? ['error', 'warn', 'log']
@@ -27,7 +28,7 @@ async function bootstrap() {
   );
 
   app.enableCors({
-    origin: process.env.FRONTEND_URL ?? 'http://localhost:3000',
+    origin: config.get<string>('app.frontendUrl'),
     credentials: true,
   });
 
