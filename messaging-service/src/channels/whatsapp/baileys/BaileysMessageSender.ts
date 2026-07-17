@@ -25,14 +25,21 @@ export class BaileysMessageSender {
       EventPayloadMap[typeof EVENT_TYPES.CHANNEL_SEND_REQUESTED]
     >,
   ): Promise<void> {
-    const { phoneNumber, content, conversationId, tokensUsed, imageVerified } =
-      event.payload;
+    const {
+      phoneNumber,
+      content,
+      conversationId,
+      connectionId,
+      tokensUsed,
+      imageVerified,
+    } = event.payload;
 
     try {
       const result = await this.baileysPlugin.send({
         to: phoneNumber,
         content,
         subject: '',
+        connectionId,
       });
 
       if (result.success) {
@@ -55,6 +62,11 @@ export class BaileysMessageSender {
       }
     } catch (error) {
       this.logger.error(`Error en BaileysMessageSender: ${error.message}`);
+      this.eventBus.publish(EVENT_TYPES.CHANNEL_SEND_FAILED, {
+        phoneNumber,
+        error: error instanceof Error ? error.message : 'Error desconocido',
+        retryable: false,
+      });
     }
   }
 }

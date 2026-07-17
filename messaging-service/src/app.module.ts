@@ -14,6 +14,7 @@ import { BotModule } from './bot/bot.module';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { ExternalDataModule } from './external/ExternalData.module';
 import { PromptModule } from './bot/prompt/Prompt.module';
+import { AuthModule } from './auth/auth.module';
 
 @Module({
   imports: [
@@ -53,6 +54,7 @@ import { PromptModule } from './bot/prompt/Prompt.module';
     ExternalDataModule,
     PromptModule,
     OrchestratorModule,
+    AuthModule,
   ],
   controllers: [],
   providers: [

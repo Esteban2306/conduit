@@ -39,17 +39,27 @@ export class BotRouter {
     private readonly promptEngine: PromptEngine,
   ) {}
 
-  async route(messages: WAMessage[]): Promise<void> {
+  async route(
+    messages: WAMessage[],
+    botConfigId: string,
+    connectionId: string,
+  ): Promise<void> {
     for (const message of messages) {
-      await this.handleMessage(message).catch((err) => {
-        this.logger.error(
-          `Error procesando mensaje ${message.key.id}: ${err.message}`,
-        );
-      });
+      await this.handleMessage(message, botConfigId, connectionId).catch(
+        (err) => {
+          this.logger.error(
+            `Error procesando mensaje ${message.key.id}: ${err.message}`,
+          );
+        },
+      );
     }
   }
 
-  private async handleMessage(message: WAMessage): Promise<void> {
+  private async handleMessage(
+    message: WAMessage,
+    botConfigId: string,
+    connectionId: string,
+  ): Promise<void> {
     if (message.key.fromMe) return;
 
     const jid = message.key.remoteJidAlt ?? message.key.remoteJid;
@@ -61,7 +71,7 @@ export class BotRouter {
 
     const phoneNumber = jid.replace('@s.whatsapp.net', '').replace('@lid', '');
 
-    const botConfig = await this.botConfigService.getActiveConfig();
+    const botConfig = await this.botConfigService.getConfigById(botConfigId);
 
     if (!botConfig || botConfig.status !== BotStatus.ACTIVE) {
       this.logger.debug(`Sin bot activo. Ignorando mensaje de ${phoneNumber}`);
@@ -77,7 +87,7 @@ export class BotRouter {
         `Mensage de ${phoneNumber} igonrado: anguedad ${Math.round(messageAgeMs / 60000)} min > limite ${botConfig.maxMessageAgeMinutes} min`,
       );
 
-      await this.markAsRead(message);
+      await this.markAsRead(message, connectionId);
       return;
     }
 
@@ -92,7 +102,7 @@ export class BotRouter {
     const { text, hasImage } = this.extractContent(message);
 
     if (!text && !hasImage) {
-      await this.markAsRead(message);
+      await this.markAsRead(message, connectionId);
       return;
     }
 
@@ -100,7 +110,7 @@ export class BotRouter {
       this.logger.debug(
         `Mensaje trivial de ${phoneNumber}: "${text}". Marcando leído.`,
       );
-      await this.markAsRead(message);
+      await this.markAsRead(message, connectionId);
       return;
     }
 
@@ -119,6 +129,7 @@ export class BotRouter {
           chatHasImage,
           message,
           botConfig,
+          connectionId,
         );
       },
       messageId,
@@ -132,6 +143,7 @@ export class BotRouter {
     hasImage: boolean,
     lastMessage: WAMessage,
     botConfig: any,
+    connectionId: string,
   ): Promise<void> {
     if (
       this.receiptTracker.isChatActive(
@@ -240,6 +252,7 @@ export class BotRouter {
             phoneNumber,
             content: fallbackMsg,
             conversationId: conversation.id,
+            connectionId,
             tokensUsed: 0,
           });
 
@@ -335,6 +348,7 @@ export class BotRouter {
             phoneNumber,
             content: retryResult.content,
             conversationId: conversation.id,
+            connectionId,
             tokensUsed: retryResult.tokensUsed,
           });
 
@@ -358,6 +372,7 @@ export class BotRouter {
         phoneNumber,
         content: aiResult.content,
         conversationId: conversation.id,
+        connectionId,
         tokensUsed: aiResult.tokensUsed,
       });
 
@@ -374,7 +389,10 @@ export class BotRouter {
     }
   }
 
-  async registerHumanMessage(message: WAMessage): Promise<void> {
+  async registerHumanMessage(
+    message: WAMessage,
+    botConfigId: string,
+  ): Promise<void> {
     const jid = message.key.remoteJid;
     if (!jid || jid.endsWith('@g.us')) return;
 
@@ -385,7 +403,7 @@ export class BotRouter {
     const { text } = this.extractContent(message);
     if (!text) return;
 
-    const botConfig = await this.botConfigService.getActiveConfig();
+    const botConfig = await this.botConfigService.getConfigById(botConfigId);
 
     if (!botConfig) return;
 
@@ -484,9 +502,12 @@ export class BotRouter {
     return this.TRIVIAL_PATTERNS.some((pattern) => pattern.test(normalized));
   }
 
-  private async markAsRead(message: WAMessage): Promise<void> {
+  private async markAsRead(
+    message: WAMessage,
+    connectionId: string,
+  ): Promise<void> {
     try {
-      const sock = this.sessionManager.getSocket();
+      const sock = this.sessionManager.get(connectionId);
       if (!sock || !message.key.remoteJid) return;
 
       await sock.readMessages([message.key]);

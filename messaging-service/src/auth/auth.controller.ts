@@ -19,20 +19,21 @@ import type { JwtPayload } from './types/jwt.types';
 
 const COOKIE_OPTS = {
   httpOnly: true,
-  secure: process.env.NODE_ENV === 'production',
+  secure: false, //process.env.NODE_ENV === 'production',
   sameSite: 'lax' as const,
 };
 
-@Public()
 @Controller('auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
+  @Public()
   @Post('register')
   register(@Body() dto: RegisterDto) {
     return this.authService.register(dto);
   }
 
+  @Public()
   @Post('login')
   async login(
     @Body() dto: LoginDto,
@@ -59,6 +60,7 @@ export class AuthController {
     return this.authService.getMe(user.sub, user.tenantId);
   }
 
+  @Public()
   @Post('refresh')
   async refresh(
     @Req() req: Request,
@@ -75,6 +77,7 @@ export class AuthController {
     return { ok: true };
   }
 
+  @Public()
   @Post('logout')
   logout(@Res({ passthrough: true }) res: Response) {
     res.clearCookie('accessToken', COOKIE_OPTS);

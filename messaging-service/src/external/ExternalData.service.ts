@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from 'src/shared/prisma.service';
 import { EventBusService } from 'src/infra/events/event.service';
 import { VariableMapper } from './hooks/VariableMapper';
@@ -6,6 +6,7 @@ import { VariableStore } from './VariableStore';
 import { MappingRepository } from './MappingRepository';
 import { MappingRule } from './hooks/VariableMapper';
 import { SourceVariable } from '@prisma/client';
+import { BotConfigService } from 'src/bot/config/BotConfigService';
 
 @Injectable()
 export class ExternalDataService {
@@ -17,6 +18,7 @@ export class ExternalDataService {
     private readonly mapper: VariableMapper,
     private readonly store: VariableStore,
     private readonly mappings: MappingRepository,
+    private readonly botConfigService: BotConfigService,
   ) {}
 
   async receiveWebhook(
@@ -24,6 +26,11 @@ export class ExternalDataService {
     eventType: string,
     payload: Record<string, any>,
   ): Promise<{ received: boolean; eventId: string; mapped: number }> {
+    try {
+      await this.botConfigService.findOneForBot(botConfigId);
+    } catch {
+      throw new NotFoundException(`Bot ${botConfigId} no encontrado`);
+    }
     const event = await this.prisma.externalDataEvent.create({
       data: {
         botConfigId,
@@ -77,8 +84,10 @@ export class ExternalDataService {
     botConfigId: string,
     variables: Record<string, string>,
     source: SourceVariable,
+    tenantId: string,
     ttlSeconds?: number,
   ): Promise<{ saved: number }> {
+    await this.botConfigService.findOne(botConfigId, tenantId);
     const mapped = Object.entries(variables).map(([fullKey, value]) => {
       const dot = fullKey.indexOf('.');
       return dot === -1
@@ -106,11 +115,23 @@ export class ExternalDataService {
     return { saved };
   }
 
-  getVariables(botConfigId: string, namespace?: string) {
+  async getVariables(
+    botConfigId: string,
+    tenantId: string,
+    namespace?: string,
+  ) {
+    await this.botConfigService.findOne(botConfigId, tenantId);
+
     return this.store.get(botConfigId, namespace);
   }
 
-  deleteVariables(botConfigId: string, keys?: string[]) {
+  async deleteVariables(
+    botConfigId: string,
+    tenantId: string,
+    keys?: string[],
+  ) {
+    await this.botConfigService.findOne(botConfigId, tenantId);
+
     return this.store.delete(botConfigId, keys);
   }
 
@@ -118,20 +139,31 @@ export class ExternalDataService {
     botConfigId: string,
     eventType: string,
     rules: MappingRule,
+    tenantId: string,
     description?: string,
   ) {
+    await this.botConfigService.findOne(botConfigId, tenantId);
+
     return this.mappings.upsert(botConfigId, eventType, rules, description);
   }
 
-  getAllMappings(botConfigId: string) {
+  async getAllMappings(botConfigId: string, tenantId: string) {
+    await this.botConfigService.findOne(botConfigId, tenantId);
     return this.mappings.findAll(botConfigId);
   }
 
-  deleteMapping(botConfigId: string, eventType: string) {
+  async deleteMapping(
+    botConfigId: string,
+    eventType: string,
+    tenantId: string,
+  ) {
+    await this.botConfigService.findOne(botConfigId, tenantId);
+
     return this.mappings.delete(botConfigId, eventType);
   }
 
-  getEventHistory(botConfigId: string, limit = 50) {
+  async getEventHistory(botConfigId: string, tenantId: string, limit = 50) {
+    await this.botConfigService.findOne(botConfigId, tenantId);
     return this.prisma.externalDataEvent.findMany({
       where: { botConfigId },
       orderBy: { createdAt: 'desc' },

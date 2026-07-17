@@ -43,6 +43,7 @@ export class MessageProcessor {
     }
     const {
       messageId,
+      tenantId,
       channel,
       recipient,
       templateId,
@@ -61,6 +62,7 @@ export class MessageProcessor {
         inlineBody,
         inlineSubject,
         variables,
+        tenantId,
       );
       const plugin = this.channelFactory.getPlugin(channel as MessageChannel);
       const result = await plugin.send({
@@ -172,11 +174,12 @@ export class MessageProcessor {
     inlineBody: string | undefined,
     inlineSubject: string | undefined,
     variables: Record<string, unknown>,
+    tenantId: string,
   ): Promise<{ subject?: string; body: string }> {
     if (inlineBody)
       return this.templateEngine.render(inlineBody, variables, inlineSubject);
     if (templateId) {
-      const template = await this.templateService.findOne(templateId);
+      const template = await this.templateService.findOne(templateId, tenantId);
       return this.templateEngine.render(
         template.bodyHandlebars,
         variables,

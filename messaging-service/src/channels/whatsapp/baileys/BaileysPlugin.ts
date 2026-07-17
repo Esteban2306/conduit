@@ -6,6 +6,7 @@ import {
 } from 'src/channels/types/IChannelPlugin';
 import { BaileysRateLimiter } from './BaileysRateLimiter';
 import { BaileysSessionManager } from './BaileysSessionManager';
+import { WASocket } from '@whiskeysockets/baileys';
 
 @Injectable()
 export class BaileysPlugin implements IChannelPlugin {
@@ -24,7 +25,32 @@ export class BaileysPlugin implements IChannelPlugin {
   }
 
   async send(payload: ChannelSendPayload): Promise<ChannelSendResult> {
-    if (!this.session.getIsConnected() || !this.session.getSocket()) {
+    const { connectionId } = payload;
+
+    if (!connectionId) {
+      return {
+        success: false,
+        provider: this.providerName,
+        retryable: false,
+        errorCode: 'MISSING_CONNECTION_ID',
+        error: 'No se especificó connectionId para el envío por WhatsApp.',
+        raw: null,
+      };
+    }
+
+    if (!this.session.isConnected(connectionId)) {
+      return {
+        success: false,
+        provider: this.providerName,
+        retryable: true,
+        errorCode: 'WHATSAPP_NOT_CONNECTED',
+        error: 'WhatsApp no está conectado. Escanea el QR para reconectar.',
+        raw: null,
+      };
+    }
+
+    const sock = this.session.get(connectionId);
+    if (!sock) {
       return {
         success: false,
         provider: this.providerName,
@@ -46,7 +72,7 @@ export class BaileysPlugin implements IChannelPlugin {
       };
     }
 
-    const hasWhatsaApp = await this.checkWhatsAppAccount(payload.to);
+    const hasWhatsaApp = await this.checkWhatsAppAccount(sock, payload.to);
     if (!hasWhatsaApp) {
       return {
         success: false,
@@ -58,14 +84,14 @@ export class BaileysPlugin implements IChannelPlugin {
       };
     }
 
-    return this.limiter.enqueue(() => this.sendMessage(payload));
+    return this.limiter.enqueue(() => this.sendMessage(sock, payload));
   }
 
   private async sendMessage(
+    sock: WASocket,
     payload: ChannelSendPayload,
   ): Promise<ChannelSendResult> {
     try {
-      const sock = this.session.getSocket()!;
       const jid = this.formatJid(payload.to);
       const text = this.addInvisibleVariation(this.stripHtml(payload.content));
 
@@ -99,9 +125,11 @@ export class BaileysPlugin implements IChannelPlugin {
     }
   }
 
-  private async checkWhatsAppAccount(phone: string): Promise<boolean> {
+  private async checkWhatsAppAccount(
+    sock: WASocket,
+    phone: string,
+  ): Promise<boolean> {
     try {
-      const sock = this.session.getSocket()!;
       const clean = phone.replace(/\D/g, '');
       const waResult = await sock.onWhatsApp(clean);
       if (!waResult || waResult.length === 0) {

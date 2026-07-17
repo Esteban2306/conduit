@@ -12,13 +12,15 @@ import { ExternalDataService } from './ExternalData.service';
 import { SourceVariable } from '@prisma/client';
 import { Public } from 'src/api/middlewares/auth';
 import { JwtGuard } from 'src/auth/guards/jwt-auth.guard';
+import { CurrentUser } from 'src/auth/decorators/current-user.decorator';
+import type { JwtPayload } from 'src/auth/types/jwt.types';
 
-@Public()
 @UseGuards(JwtGuard)
 @Controller('api/external-data')
 export class ExternalDataController {
   constructor(private readonly service: ExternalDataService) {}
 
+  @Public()
   @Post(':botId/webhook/:eventType')
   receiveWebhook(
     @Param('botId') botId: string,
@@ -37,11 +39,13 @@ export class ExternalDataController {
       ttlSeconds?: number;
       source: SourceVariable;
     },
+    @CurrentUser() user: JwtPayload,
   ) {
     return this.service.injectDirect(
       botId,
       body.variables,
       body.source,
+      user.tenantId,
       body.ttlSeconds,
     );
   }
@@ -49,19 +53,24 @@ export class ExternalDataController {
   @Get(':botId/variables')
   getVariables(
     @Param('botId') botId: string,
+    @CurrentUser() user: JwtPayload,
     @Query('namespace') namespace?: string,
   ) {
-    return this.service.getVariables(botId, namespace);
+    return this.service.getVariables(botId, user.tenantId, namespace);
   }
 
   @Delete(':botId/variables')
-  deleteVariables(@Param('botId') botId: string, @Query('keys') keys?: string) {
-    return this.service.deleteVariables(botId, keys?.split(','));
+  deleteVariables(
+    @Param('botId') botId: string,
+    @CurrentUser() user: JwtPayload,
+    @Query('keys') keys?: string,
+  ) {
+    return this.service.deleteVariables(botId, user.tenantId, keys?.split(','));
   }
 
   @Get(':botId/mappings')
-  getMappings(@Param('botId') botId: string) {
-    return this.service.getAllMappings(botId);
+  getMappings(@Param('botId') botId: string, @CurrentUser() user: JwtPayload) {
+    return this.service.getAllMappings(botId, user.tenantId);
   }
 
   @Post(':botId/mappings/:eventType')
@@ -69,11 +78,13 @@ export class ExternalDataController {
     @Param('botId') botId: string,
     @Param('eventType') eventType: string,
     @Body() body: { rules: Record<string, string>; description?: string },
+    @CurrentUser() user: JwtPayload,
   ) {
     return this.service.upsertMapping(
       botId,
       eventType,
       body.rules,
+      user.tenantId,
       body.description,
     );
   }
@@ -82,12 +93,21 @@ export class ExternalDataController {
   deleteMapping(
     @Param('botId') botId: string,
     @Param('eventType') eventType: string,
+    @CurrentUser() user: JwtPayload,
   ) {
-    return this.service.deleteMapping(botId, eventType);
+    return this.service.deleteMapping(botId, eventType, user.tenantId);
   }
 
   @Get(':botId/events')
-  getEvents(@Param('botId') botId: string, @Query('limit') limit?: string) {
-    return this.service.getEventHistory(botId, limit ? parseInt(limit) : 50);
+  getEvents(
+    @Param('botId') botId: string,
+    @CurrentUser() user: JwtPayload,
+    @Query('limit') limit?: string,
+  ) {
+    return this.service.getEventHistory(
+      botId,
+      user.tenantId,
+      limit ? parseInt(limit) : 50,
+    );
   }
 }

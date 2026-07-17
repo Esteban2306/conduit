@@ -21,12 +21,10 @@ export class TemplateService {
     private readonly config: ConfigService<AppConfig>,
   ) {}
 
-  async create(dto: CreateTemplateDto) {
+  async create(tenantId: string, dto: CreateTemplateDto) {
     this.validateHandlebarsSyntax(dto.bodyHandlebars);
 
     if (dto.subject) this.validateHandlebarsSyntax(dto.subject);
-
-    const tenantId = this.config.get('tenant.defaultId', { infer: true });
 
     return this.prisma.template.create({
       data: {
@@ -46,9 +44,7 @@ export class TemplateService {
     });
   }
 
-  async findAll(filter: FilterTemplateDto) {
-    const tenantId = this.config.get('tenant.defaultId', { infer: true });
-
+  async findAll(tenantId: string, filter: FilterTemplateDto) {
     const where: Prisma.TemplateWhereInput = { tenantId, isActive: true };
 
     if (filter.channel) {
@@ -106,9 +102,9 @@ export class TemplateService {
     };
   }
 
-  async findOne(id: string) {
+  async findOne(id: string, tenantId: string) {
     const template = await this.prisma.template.findUnique({
-      where: { id: id },
+      where: { id: id, tenantId },
       include: {
         tags: { include: { tag: true } },
       },
@@ -121,8 +117,8 @@ export class TemplateService {
     };
   }
 
-  async update(id: string, dto: UpdateTemplateDto) {
-    await this.findOne(id);
+  async update(id: string, dto: UpdateTemplateDto, tenantId: string) {
+    await this.findOne(id, tenantId);
 
     if (dto.bodyHandlebars) {
       this.validateHandlebarsSyntax(dto.bodyHandlebars);
@@ -141,8 +137,8 @@ export class TemplateService {
     });
   }
 
-  async remove(id: string) {
-    await this.findOne(id);
+  async remove(id: string, tenantId: string) {
+    await this.findOne(id, tenantId);
 
     return this.prisma.template.update({
       where: { id },
@@ -150,8 +146,8 @@ export class TemplateService {
     });
   }
 
-  async preview(id: string, dto: PreviewTemplateDto) {
-    const template = await this.findOne(id);
+  async preview(id: string, dto: PreviewTemplateDto, tenantId: string) {
+    const template = await this.findOne(id, tenantId);
 
     const detectedVariables = this.engine.extractVariables(
       template.bodyHandlebars,

@@ -297,6 +297,7 @@ model BotConfig {
   aiSettings      BotAiSettings?
   promptTemplates BotPromptTemplate[]
   whatsappConnection WhatsAppConnection[]
+  externalIntegrations ExternalIntegration[]
 }
 
 model BotAiSettings {
@@ -559,3 +560,19 @@ model WhatsAppConnection {
   @@index([tenantId, status])
 }
 
+model ExternalIntegration {
+  id              String    @id @default(uuid())
+  tenantId        String
+  botConfigId     String
+  name            String
+  secretEncrypted String    @db.Text
+  isActive        Boolean   @default(true)
+  lastUsedAt      DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  botConfig BotConfig @relation(fields: [botConfigId], references: [id])
+
+  @@index([botConfigId])
+  @@index([tenantId])
+}

@@ -1,120 +1,84 @@
 import { PrismaClient } from '@prisma/client';
-import {
-  AuthenticationState,
-  SignalDataTypeMap,
-  initAuthCreds,
-  BufferJSON,
-} from '@whiskeysockets/baileys';
-
-const SESSION_ID = 'accessToken';
-
-const TYPE_MAP: Record<string, string> = {
-  'pre-key': 'pre-key',
-  session: 'accessToken',
-  'identity-key': 'identity-key',
-  'sender-key': 'sender-key',
-  'sender-key-memory': 'sender-key-memory',
-  'app-state-sync-key': 'app-state-sync-key',
-  'app-state-sync-version': 'app-state-sync-version',
-  'lid-mapping': 'lid-mapping',
-  'device-list': 'device-list',
-};
+import { proto } from '@whiskeysockets/baileys';
+import { BufferJSON, initAuthCreds } from '@whiskeysockets/baileys';
 
 export async function usePrismaAuthState(
   prisma: PrismaClient,
-): Promise<{ state: AuthenticationState; saveCreds: () => Promise<void> }> {
-  const credsKey = `${SESSION_ID}:creds:main`;
-  const credsRecord = await prisma.whatsAppSession.findUnique({
-    where: { id: credsKey },
-  });
+  connectionId: string,
+) {
+  const SESSION_TYPE = {
+    CREDS: 'creds',
+    KEY: 'key',
+  } as const;
 
-  const creds = credsRecord
-    ? JSON.parse(JSON.stringify(credsRecord.data), BufferJSON.reviver)
-    : initAuthCreds();
+  async function readData(type: string, key: string): Promise<any> {
+    const record = await prisma.whatsAppSession.findUnique({
+      where: { connectionId_type_key: { connectionId, type, key } },
+      select: { data: true },
+    });
+    if (!record) return null;
+    return JSON.parse(JSON.stringify(record.data), BufferJSON.reviver);
+  }
+
+  async function writeData(
+    type: string,
+    key: string,
+    data: any,
+  ): Promise<void> {
+    const serialized = JSON.parse(JSON.stringify(data, BufferJSON.replacer));
+    await prisma.whatsAppSession.upsert({
+      where: { connectionId_type_key: { connectionId, type, key } },
+      create: { connectionId, type, key, data: serialized },
+      update: { data: serialized, updatedAt: new Date() },
+    });
+  }
+
+  async function removeData(type: string, key: string): Promise<void> {
+    await prisma.whatsAppSession.deleteMany({
+      where: { connectionId, type, key },
+    });
+  }
+
+  const creds = (await readData(SESSION_TYPE.CREDS, 'main')) ?? initAuthCreds();
 
   return {
     state: {
       creds,
       keys: {
-        get: async (type, ids) => {
-          const data: Record<string, unknown> = {};
-
-          const dbIds = ids.map((id) => `${SESSION_ID}:${type}:${id}`);
-
-          const records = await prisma.whatsAppSession.findMany({
-            where: { id: { in: dbIds } },
-          });
-
-          for (const record of records) {
-            const originalId = record.id.replace(`${SESSION_ID}:${type}:`, '');
-            data[originalId] = JSON.parse(
-              JSON.stringify(record.data),
-              BufferJSON.reviver,
-            );
-          }
-
-          return data as any;
-        },
-
-        set: async (data) => {
-          const upserts: Array<{ id: string; data: unknown }> = [];
-          const deletes: string[] = [];
-
-          for (const [type, categoryData] of Object.entries(data)) {
-            if (!categoryData) continue;
-
-            for (const [id, value] of Object.entries(categoryData)) {
-              const dbId = `${SESSION_ID}:${type}:${id}`;
-
-              if (value === null || value === undefined) {
-                deletes.push(dbId);
-              } else {
-                const serialized = JSON.parse(
-                  JSON.stringify(value, BufferJSON.replacer),
-                );
-                upserts.push({ id: dbId, data: serialized });
+        get: async (type: string, ids: string[]) => {
+          const data: Record<string, any> = {};
+          await Promise.all(
+            ids.map(async (id) => {
+              const value = await readData(SESSION_TYPE.KEY, `${type}:${id}`);
+              if (value) {
+                if (type === 'app-state-sync-key') {
+                  data[id] =
+                    proto.Message.AppStateSyncKeyData.fromObject(value);
+                } else {
+                  data[id] = value;
+                }
               }
-            }
-          }
-
-          await Promise.all([
-            deletes.length > 0
-              ? prisma.whatsAppSession.deleteMany({
-                  where: { id: { in: deletes } },
-                })
-              : Promise.resolve(),
-
-            ...chunkArray(upserts, 50).map((chunk) =>
-              Promise.all(
-                chunk.map((item) =>
-                  prisma.whatsAppSession.upsert({
-                    where: { id: item.id },
-                    update: { data: item.data as any },
-                    create: { id: item.id, data: item.data as any },
-                  }),
-                ),
-              ),
+            }),
+          );
+          return data;
+        },
+        set: async (data: Record<string, Record<string, any>>) => {
+          await Promise.all(
+            Object.entries(data).flatMap(([type, entries]) =>
+              Object.entries(entries ?? {}).map(([id, value]) => {
+                if (value) {
+                  return writeData(SESSION_TYPE.KEY, `${type}:${id}`, value);
+                } else {
+                  return removeData(SESSION_TYPE.KEY, `${type}:${id}`);
+                }
+              }),
             ),
-          ]);
+          );
         },
       },
     },
-
     saveCreds: async () => {
-      const serialized = JSON.parse(JSON.stringify(creds, BufferJSON.replacer));
-      await prisma.whatsAppSession.upsert({
-        where: { id: credsKey },
-        update: { data: serialized },
-        create: { id: credsKey, data: serialized },
-      });
+      await writeData(SESSION_TYPE.CREDS, 'main', creds);
     },
   };
-}
-
-function chunkArray<T>(array: T[], size: number): T[][] {
-  const chunks: T[][] = [];
-  for (let i = 0; i < array.length; i += size) {
-    chunks.push(array.slice(i, i + size));
-  }
-  return chunks;
 }

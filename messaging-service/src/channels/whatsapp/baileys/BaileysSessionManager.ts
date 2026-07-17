@@ -1,139 +1,154 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import makeWASocket, {
   DisconnectReason,
   WASocket,
 } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
-import * as qrcode from 'qrcode-terminal';
-import { BaileysRateLimiter, WarmupLevel } from './BaileysRateLimiter';
-import { usePrismaAuthState } from './BaileysAuthState';
 import { PrismaService } from 'src/shared/prisma.service';
 import { BotRouter } from 'src/bot/router/BotRouter';
+import { WhatsAppConnectionService } from '../WhatsAppConnection.service';
+import { BaileysRateLimiter, WarmupLevel } from './BaileysRateLimiter';
+import { usePrismaAuthState } from './BaileysAuthState';
 import { messageReceiptTracker } from './MessageReceiptTracker';
 
+interface SocketState {
+  botConfigId: string;
+  reconnectCount: number;
+  lastReconnectAt: number | null;
+  connectedAt: number | null;
+  connected: boolean;
+  stopped: boolean;
+}
+
 @Injectable()
-export class BaileysSessionManager implements OnModuleInit {
+export class BaileysSessionManager {
   private readonly logger = new Logger(BaileysSessionManager.name);
-  private sock: WASocket | null = null;
-  private isConnected = false;
-  private reconnectCount = 0;
-  private lastReconnectAt: number | null = null;
-  private sessionResetAttempts = 0;
-  private connectedAt: number | null = null;
+  private readonly sockets = new Map<string, WASocket>();
+  private readonly states = new Map<string, SocketState>();
+  private readonly starting = new Map<string, Promise<void>>();
   private botRouter: BotRouter | null = null;
 
-  private readonly MAX_RESET_ATTEMPTS = 3;
   private readonly RECEIPT_MAX_AGE_MS = 5 * 60 * 1000;
   private readonly BAN_WARNING_CODES = [403, 405, 408, 440, 500, 515];
   private readonly INVALID_SESSION_CODES = [DisconnectReason.loggedOut, 401];
 
   constructor(
     private readonly config: ConfigService,
-    private readonly limiter: BaileysRateLimiter,
     private readonly prisma: PrismaService,
+    private readonly connections: WhatsAppConnectionService,
+    private readonly limiter: BaileysRateLimiter,
     private readonly receiptTracker: messageReceiptTracker,
-  ) {}
+  ) {
+    const level = this.config.get<string>('whatsapp.warmupLevel') ?? 'NORMAL';
+    this.limiter.setWarmupLevel(level as WarmupLevel);
+  }
 
   setBotRouter(router: BotRouter): void {
     this.botRouter = router;
-    this.logger.log('BotRouter conectado a BaileysSessionManager');
   }
 
-  async onModuleInit(): Promise<void> {
-    const level = this.config.get<string>('whatsapp.warmupLevel') ?? 'NORMAL';
-    this.limiter.setWarmupLevel(level as WarmupLevel);
-    await this.connect();
-  }
+  async start(connectionId: string): Promise<void> {
+    if (this.sockets.has(connectionId)) return;
 
-  getSocket(): WASocket | null {
-    return this.sock;
-  }
+    const inProgress = this.starting.get(connectionId);
+    if (inProgress) return inProgress;
 
-  getIsConnected(): boolean {
-    return this.isConnected;
-  }
-
-  async resetSession(): Promise<void> {
-    if (this.sessionResetAttempts >= this.MAX_RESET_ATTEMPTS) {
-      this.logger.error(
-        `Máximo de reseteos alcanzado (${this.MAX_RESET_ATTEMPTS}). Intervención manual requerida.`,
-      );
-      return;
-    }
-
-    this.sessionResetAttempts++;
-    this.isConnected = false;
-
-    this.logger.warn(
-      `Reiniciando sesión (intento ${this.sessionResetAttempts}/${this.MAX_RESET_ATTEMPTS})`,
-    );
-
-    try {
-      await this.sock?.logout();
-    } catch {
-      this.logger.warn(
-        'No fue posible cerrar sesión limpiamente. Continuando.',
-      );
-    }
-
-    this.sock = null;
-
-    await this.prisma.whatsAppSession.deleteMany({
-      where: { id: { startsWith: 'default-session:' } },
+    const startPromise = this.createSocket(connectionId).finally(() => {
+      this.starting.delete(connectionId);
     });
-
-    this.logger.log('Sesión eliminada de DB. Reconectando para nuevo QR...');
-    await this.connect();
+    this.starting.set(connectionId, startPromise);
+    return startPromise;
   }
 
-  private async connect(): Promise<void> {
-    const { state, saveCreds } = await usePrismaAuthState(this.prisma as any);
-    const silentLogger = this.buildSilentLogger();
+  async stop(connectionId: string): Promise<void> {
+    const state = this.states.get(connectionId);
+    if (state) {
+      state.stopped = true;
+      state.connected = false;
+    }
 
-    this.sock = makeWASocket({
-      auth: state,
+    const socket = this.sockets.get(connectionId);
+    this.sockets.delete(connectionId);
+    this.states.delete(connectionId);
+
+    if (socket) {
+      await socket.end(undefined).catch((error: unknown) => {
+        this.logger.debug(
+          `No fue posible detener ${connectionId}: ${this.errorMessage(error)}`,
+        );
+      });
+    }
+  }
+
+  async reconnect(connectionId: string): Promise<void> {
+    await this.stop(connectionId);
+    await this.start(connectionId);
+  }
+
+  get(connectionId: string): WASocket | undefined {
+    return this.sockets.get(connectionId);
+  }
+
+  isConnected(connectionId: string): boolean {
+    return this.states.get(connectionId)?.connected ?? false;
+  }
+
+  private async createSocket(connectionId: string): Promise<void> {
+    const connection =
+      await this.connections.findForSessionManager(connectionId);
+    if (!connection) {
+      throw new Error(`La conexión ${connectionId} no existe.`);
+    }
+
+    const { state: authState, saveCreds } = await usePrismaAuthState(
+      this.prisma,
+      connectionId,
+    );
+    const socket = makeWASocket({
+      auth: authState,
       printQRInTerminal: false,
-      logger: silentLogger,
+      logger: this.buildSilentLogger(),
       markOnlineOnConnect: false,
       syncFullHistory: false,
       generateHighQualityLinkPreview: false,
       retryRequestDelayMs: 2000,
     });
 
-    this.sock.ev.on('messages.update', (updates) => {
+    const state: SocketState = {
+      botConfigId: connection.botConfigId,
+      reconnectCount: 0,
+      lastReconnectAt: null,
+      connectedAt: null,
+      connected: false,
+      stopped: false,
+    };
+    this.states.set(connectionId, state);
+    this.sockets.set(connectionId, socket);
+    this.bindEvents(connectionId, socket, state, saveCreds);
+  }
+
+  private bindEvents(
+    connectionId: string,
+    socket: WASocket,
+    state: SocketState,
+    saveCreds: () => Promise<void>,
+  ): void {
+    socket.ev.on('messages.update', (updates) => {
       for (const update of updates) {
         if (update.key.fromMe && update.update.status === 3) {
           const jid = update.key.remoteJidAlt ?? update.key.remoteJid;
-
           const justReconnected =
-            this.lastReconnectAt && Date.now() - this.lastReconnectAt < 10000;
-
-          if (justReconnected) {
-            this.logger.debug(
-              `Update ignorado por estar en ventana post-reconexión: ${jid}`,
-            );
-            continue;
-          }
-
-          if (jid) {
-            this.logger.error({
-              markActiveRemoteJid: update.key.remoteJid,
-              markActiveRemoteJidAlt: update.key.remoteJidAlt,
-            });
-
-            this.receiptTracker.markChatActive(jid);
-            this.logger.debug(`Dueño leyó chat: ${jid}`);
-          }
+            state.lastReconnectAt && Date.now() - state.lastReconnectAt < 10000;
+          if (jid && !justReconnected) this.receiptTracker.markChatActive(jid);
         }
       }
     });
 
-    this.sock.ev.on('presence.update', ({ id, presences }) => {
-      for (const [participantJid, presence] of Object.entries(presences)) {
+    socket.ev.on('presence.update', ({ id, presences }) => {
+      for (const presence of Object.values(presences)) {
         if (presence.lastKnownPresence === 'composing') {
           this.receiptTracker.markTyping(id);
-          this.logger.debug(`Typing detectado en chat: ${id}`);
         } else if (
           presence.lastKnownPresence === 'paused' ||
           presence.lastKnownPresence === 'available'
@@ -143,138 +158,145 @@ export class BaileysSessionManager implements OnModuleInit {
       }
     });
 
-    this.sock.ev.on('messages.upsert', async ({ messages, type }) => {
+    socket.ev.on('messages.upsert', async ({ messages, type }) => {
       if (type !== 'notify') return;
 
       for (const message of messages) {
         if (message.key.fromMe) {
           const jid = message.key.remoteJidAlt ?? message.key.remoteJid;
-
-          if (jid) {
-            this.receiptTracker.markChatActive(jid);
-          }
-
-          if (this.botRouter) {
-            await this.botRouter.registerHumanMessage(message).catch(() => {});
-          }
+          if (jid) this.receiptTracker.markChatActive(jid);
+          await this.botRouter
+            ?.registerHumanMessage(message, state.botConfigId)
+            .catch(() => {});
           continue;
         }
 
-        const msgTimestamp = Number(message.messageTimestamp ?? 0) * 1000;
-        const ageMs = Date.now() - msgTimestamp;
-
+        const ageMs = Date.now() - Number(message.messageTimestamp ?? 0) * 1000;
         const isStartupCatchup =
-          this.connectedAt !== null &&
-          Date.now() - this.connectedAt < 30000 &&
+          state.connectedAt !== null &&
+          Date.now() - state.connectedAt < 30000 &&
           ageMs > 5 * 60 * 1000;
+        if (isStartupCatchup) continue;
 
-        if (isStartupCatchup) {
-          this.logger.debug(
-            `Catch-up ignorado: mensaje de ${Math.round(ageMs / 60000)}min para ${message.key.remoteJid}`,
-          );
+        if (message.key.remoteJid) {
+          socket.presenceSubscribe(message.key.remoteJid).catch(() => {});
+        }
+        await this.botRouter
+          ?.route([message], state.botConfigId, connectionId)
+          .catch((error: unknown) => {
+            this.logger.error(`BotRouter error: ${this.errorMessage(error)}`);
+          });
+      }
+    });
+
+    socket.ev.on('message-receipt.update', (updates) => {
+      for (const update of updates) {
+        if (!update.key.fromMe || !update.receipt.readTimestamp) continue;
+        const readTimestamp =
+          typeof update.receipt.readTimestamp === 'number'
+            ? update.receipt.readTimestamp
+            : update.receipt.readTimestamp.toNumber();
+        if (Date.now() - readTimestamp * 1000 > this.RECEIPT_MAX_AGE_MS)
           continue;
+
+        const jid = update.key.remoteJidAlt ?? update.key.remoteJid;
+        if (jid) this.receiptTracker.markChatActive(jid);
+      }
+    });
+
+    socket.ev.on(
+      'connection.update',
+      async ({ connection, lastDisconnect, qr }) => {
+        if (!this.isCurrentSocket(connectionId, socket) || state.stopped)
+          return;
+
+        if (qr) {
+          await this.connections
+            .updateQR(connectionId, qr)
+            .catch((error: unknown) => {
+              this.logger.error(
+                `No fue posible guardar QR: ${this.errorMessage(error)}`,
+              );
+            });
         }
 
-        const senderJid = message.key.remoteJid;
+        if (connection === 'open') {
+          state.reconnectCount++;
+          state.connectedAt = Date.now();
+          state.lastReconnectAt = Date.now();
+          state.connected = true;
+          if (state.reconnectCount > 1) this.limiter.enterReconnectThrottle();
 
-        if (senderJid && this.sock) {
-          this.sock.presenceSubscribe(senderJid).catch(() => {});
+          const phoneNumber =
+            socket.user?.id?.split('@')[0].split(':')[0] ?? null;
+          await this.connections.markConnected(connectionId, phoneNumber);
+          this.logger.log(`WhatsApp conectado: ${connectionId}`);
         }
 
-        if (this.botRouter) {
-          await this.botRouter.route([message]).catch((err: any) => {
-            this.logger.error(`BotRouter error: ${err?.message ?? err}`);
+        if (connection === 'close') {
+          const code = (lastDisconnect?.error as Boom | undefined)?.output
+            ?.statusCode;
+          state.connected = false;
+          this.sockets.delete(connectionId);
+
+          await this.connections
+            .updateStatus(connectionId, this.disconnectedStatus(), {
+              disconnectedAt: new Date(),
+            })
+            .catch((error: unknown) => {
+              this.logger.error(
+                `No fue posible actualizar desconexión: ${this.errorMessage(error)}`,
+              );
+            });
+
+          this.reportDisconnect(code);
+          if (this.INVALID_SESSION_CODES.includes(code ?? -1)) {
+            await this.prisma.whatsAppSession.deleteMany({
+              where: { connectionId },
+            });
+          }
+
+          if (code === DisconnectReason.loggedOut || state.stopped) return;
+
+          const backoff = Math.min(
+            5000 * Math.pow(2, Math.max(state.reconnectCount - 1, 0)),
+            60000,
+          );
+          await this.sleep(backoff);
+          if (state.stopped) return;
+
+          await this.connections
+            .updateStatus(connectionId, this.connectingStatus())
+            .catch(() => {});
+          await this.start(connectionId).catch((error: unknown) => {
+            this.logger.error(
+              `Error reconectando ${connectionId}: ${this.errorMessage(error)}`,
+            );
           });
         }
-      }
-    });
+      },
+    );
 
-    this.sock.ev.on('message-receipt.update', (updates) => {
-      for (const update of updates) {
-        if (update.key.fromMe && update.receipt.readTimestamp) {
-          const jid = update.key.remoteJidAlt ?? update.key.remoteJid;
-          const readTimestamp =
-            typeof update.receipt.readTimestamp === 'number'
-              ? update.receipt.readTimestamp
-              : update.receipt.readTimestamp?.toNumber();
-          const receiptAgeMs = Date.now() - readTimestamp * 1000;
-          if (receiptAgeMs > this.RECEIPT_MAX_AGE_MS) {
-            this.logger.debug(
-              `Receipt antiguo ignorado (${Math.round(receiptAgeMs / 1000)}s) para ${jid}`,
-            );
-            continue;
-          }
-          if (jid) {
-            this.logger.error({
-              markActiveRemoteJid: update.key.remoteJid,
-              markActiveRemoteJidAlt: update.key.remoteJidAlt,
-            });
-            this.receiptTracker.markChatActive(jid);
-            this.logger.debug(`Dueño leyó chat detectado via receipt: ${jid}`);
-          }
-        }
-      }
-    });
+    socket.ev.on('creds.update', saveCreds);
+  }
 
-    this.sock.ev.on('connection.update', async (update) => {
-      const { connection, lastDisconnect, qr } = update;
+  private isCurrentSocket(connectionId: string, socket: WASocket): boolean {
+    return this.sockets.get(connectionId) === socket;
+  }
 
-      if (qr) {
-        this.logger.log('Escanea el QR con WhatsApp para conectar');
-        qrcode.generate(qr, { small: true });
-      }
+  private reportDisconnect(code: number | undefined): void {
+    if (code && this.BAN_WARNING_CODES.includes(code)) {
+      this.limiter.reportDisconnect();
+    }
+    this.limiter.reportDisconnect();
+  }
 
-      if (connection === 'open') {
-        this.sessionResetAttempts = 0;
-        this.isConnected = true;
-        this.reconnectCount++;
-        this.connectedAt = Date.now();
-        this.lastReconnectAt = Date.now();
-        this.logger.log('WhatsApp conectado');
+  private disconnectedStatus() {
+    return 'DISCONNECTED' as const;
+  }
 
-        if (this.reconnectCount > 1) {
-          this.limiter.enterReconnectThrottle();
-        }
-      }
-
-      if (connection === 'close') {
-        this.isConnected = false;
-        const code = (lastDisconnect?.error as Boom)?.output?.statusCode;
-
-        this.logger.warn(`Desconectado. Código: ${code}`);
-
-        if (this.BAN_WARNING_CODES.includes(code)) {
-          this.logger.error(
-            `ALERTA BAN: código ${code}. Activando modo seguro.`,
-          );
-          this.limiter.reportDisconnect();
-          this.limiter.reportDisconnect();
-        } else {
-          this.limiter.reportDisconnect();
-        }
-
-        if (this.INVALID_SESSION_CODES.includes(code ?? -1)) {
-          this.logger.warn(`Sesión inválida (${code}). Regenerando QR.`);
-          await this.resetSession();
-          return;
-        }
-
-        const backoff = Math.min(
-          5000 * Math.pow(2, this.reconnectCount - 1),
-          60000,
-        );
-
-        if (code !== DisconnectReason.loggedOut) {
-          this.logger.log(`Reconectando en ${Math.round(backoff / 1000)}s...`);
-          await this.sleep(backoff);
-          await this.connect();
-        } else {
-          this.logger.error('Sesión cerrada manualmente. Requiere nuevo QR.');
-        }
-      }
-    });
-
-    this.sock.ev.on('creds.update', saveCreds);
+  private connectingStatus() {
+    return 'CONNECTING' as const;
   }
 
   private buildSilentLogger() {
@@ -283,29 +305,35 @@ export class BaileysSessionManager implements OnModuleInit {
       trace: () => {},
       debug: () => {},
       info: () => {},
-      warn: (msg: unknown) => {
-        const text = typeof msg === 'string' ? msg : JSON.stringify(msg);
-        if (text.includes('failed to find key')) return;
-        if (text.includes('msgId')) return;
-        if (text.includes('no name present')) return;
-        if (text.includes('Buffer timeout')) return;
-        if (text.includes('USync fetch yielded')) return;
-        this.logger.warn(text);
+      warn: (message: unknown) => {
+        const text = this.errorMessage(message);
+        if (
+          !['failed to find key', 'msgId', 'no name present'].some((item) =>
+            text.includes(item),
+          )
+        ) {
+          this.logger.warn(text);
+        }
       },
-      error: (msg: unknown) => {
-        const text = typeof msg === 'string' ? msg : JSON.stringify(msg);
-        if (text.includes('PreKeyError')) return;
-        if (text.includes('SessionError')) return;
-        if (text.includes('isSessionRecordError')) return;
-        this.logger.error(text);
+      error: (message: unknown) => {
+        const text = this.errorMessage(message);
+        if (
+          !['PreKeyError', 'SessionError', 'isSessionRecordError'].some(
+            (item) => text.includes(item),
+          )
+        ) {
+          this.logger.error(text);
+        }
       },
-      fatal: (msg: unknown) => {
-        const text = typeof msg === 'string' ? msg : JSON.stringify(msg);
-        this.logger.fatal(text);
-      },
+      fatal: (message: unknown) =>
+        this.logger.fatal(this.errorMessage(message)),
     };
     silentLogger.child = () => silentLogger;
     return silentLogger;
+  }
+
+  private errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
   }
 
   private sleep(ms: number): Promise<void> {

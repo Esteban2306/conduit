@@ -7,6 +7,8 @@ export interface ChannelSendPayload {
 
   channels?: ChannelPreference[];
 
+  connectionId?: string;
+
   meta?: Record<string, unknown>;
 }
 

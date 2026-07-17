@@ -23,8 +23,9 @@ import { FileParserService } from '../adapters/FileParserService';
 import { FileDispatchDto } from './dto/file-dispatch.dto';
 import { Public } from 'src/api/middlewares/auth';
 import { JwtGuard } from 'src/auth/guards/jwt-auth.guard';
+import { CurrentUser } from 'src/auth/decorators/current-user.decorator';
+import type { JwtPayload } from 'src/auth/types/jwt.types';
 
-@Public()
 @UseGuards(JwtGuard)
 @ApiTags('Messages')
 @Controller('messages')
@@ -37,22 +38,28 @@ export class MessageController {
 
   @Post()
   @ApiOperation({ summary: 'Encola un mensaje para envío' })
-  dispatch(@Body() body: unknown) {
-    return this.orchestrator.dispatch(body);
+  dispatch(@Body() body: unknown, @CurrentUser() user: JwtPayload) {
+    return this.orchestrator.dispatch(user.tenantId, body);
   }
 
   @Post('batch')
   @ApiOperation({ summary: 'Encola múltiples mensajes de una vez' })
-  dispatchBatch(@Body() body: unknown[]) {
-    return this.orchestrator.dispatchBatch(body);
+  dispatchBatch(@Body() body: unknown[], @CurrentUser() user: JwtPayload) {
+    return this.orchestrator.dispatchBatch(user.tenantId, body);
   }
 
   @Post('bulk')
   @ApiOperation({ summary: 'Envios masivos con templates en comun' })
-  async bulkDispatch(@Body() body: BulkDispatchDto) {
+  async bulkDispatch(
+    @Body() body: BulkDispatchDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
     const { templateId, recipients, options } = body;
 
-    const template = await this.templateService.findOne(templateId);
+    const template = await this.templateService.findOne(
+      templateId,
+      user.tenantId,
+    );
 
     const payloads = recipients.map((r) => ({
       recipient: {
@@ -64,7 +71,7 @@ export class MessageController {
       variables: r.variables,
       options,
     }));
-    return this.orchestrator.dispatchBatch(payloads);
+    return this.orchestrator.dispatchBatch(user.tenantId, payloads);
   }
 
   @Post('upload')
@@ -109,6 +116,7 @@ export class MessageController {
     )
     file: Express.Multer.File,
     @Body() dto: FileDispatchDto,
+    @CurrentUser() user: JwtPayload,
   ) {
     const parsed = this.fileParser.parse(
       file.buffer,
@@ -131,7 +139,10 @@ export class MessageController {
       dto.priority,
     );
 
-    const result = await this.orchestrator.dispatchBatch(payloads);
+    const result = await this.orchestrator.dispatchBatch(
+      user.tenantId,
+      payloads,
+    );
 
     return {
       ...result,
@@ -161,19 +172,22 @@ export class MessageController {
       (los más próximos a enviarse aparecen primero).
       `,
   })
-  listMessage(@Query() filters: ListMessageDto) {
-    return this.orchestrator.listMessage(filters);
+  listMessage(
+    @Query() filters: ListMessageDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.orchestrator.listMessage(user.tenantId, filters);
   }
 
   @Get(':id/status')
   @ApiOperation({ summary: 'Consulta el estado de un mensaje' })
-  getStatus(@Param('id') id: string) {
-    return this.orchestrator.getStatus(id);
+  getStatus(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
+    return this.orchestrator.getStatus(id, user.tenantId);
   }
 
   @Delete(':id')
   @ApiOperation({ summary: 'Cancela un mensaje pendiente o en cola' })
-  cancel(@Param('id') id: string) {
+  cancel(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
     return this.orchestrator.cancel(id);
   }
 }

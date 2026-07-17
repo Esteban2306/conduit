@@ -31,16 +31,17 @@ export class MessageOrchestrator {
     private readonly jobSigner: JobSigner,
   ) {}
 
-  async dispatch(raw: unknown): Promise<{ messageId: string; status: string }> {
+  async dispatch(
+    tenantId: string,
+    raw: unknown,
+  ): Promise<{ messageId: string; status: string }> {
     const payload = DataAdapterValidator.validate(raw);
 
     if (payload.template.id) {
-      await this.validateTemplate(payload.template.id);
+      await this.validateTemplate(payload.template.id, tenantId);
     }
 
     this.validateChannel(payload.recipient.channel);
-
-    const tenantId = this.config.get<string>('tenant.defaultId') ?? 'default';
 
     const scheduledAt = payload.options?.scheduledAt
       ? new Date(payload.options.scheduledAt)
@@ -105,21 +106,24 @@ export class MessageOrchestrator {
     };
   }
 
-  async dispatchBatch(raws: unknown[]): Promise<{
+  async dispatchBatch(
+    tenantId: string,
+    raws: unknown[],
+  ): Promise<{
     total: number;
     queued: number;
     failed: Array<{ index: number; error: string }>;
   }> {
     if (raws.length <= this.BATCH_CHUNK_SIZE) {
-      return this.processBatchDirect(raws);
+      return this.processBatchDirect(tenantId, raws);
     }
 
-    return this.processBatchInChunks(raws);
+    return this.processBatchInChunks(tenantId, raws);
   }
 
-  async getStatus(messageId: string) {
+  async getStatus(messageId: string, tenantId: string) {
     const message = await this.prisma.message.findUnique({
-      where: { id: messageId },
+      where: { id: messageId, tenantId },
       include: {
         attemptLogs: { orderBy: { createdAt: 'desc' } },
         deadLetter: true,
@@ -189,7 +193,7 @@ export class MessageOrchestrator {
     return { messageId, status: MessageStatus.CANCELLED };
   }
 
-  async listMessage(filter: ListMessageDto) {
+  async listMessage(tenantId: string, filter: ListMessageDto) {
     const {
       queue = 'all',
       status,
@@ -222,6 +226,7 @@ export class MessageOrchestrator {
         : {};
 
     const where = {
+      tenantId,
       ...queueFilter,
       ...scheduledRangeFilter,
       ...(status && { status: status as MessageStatus }),
@@ -293,19 +298,25 @@ export class MessageOrchestrator {
 
   private readonly BATCH_CHUNK_SIZE = 50;
 
-  private async processBatchDirect(raws: unknown[]): Promise<{
+  private async processBatchDirect(
+    tenantId: string,
+    raws: unknown[],
+  ): Promise<{
     total: number;
     queued: number;
     failed: Array<{ index: number; error: string }>;
   }> {
     const results = await Promise.allSettled(
-      raws.map((raw) => this.dispatch(raw)),
+      raws.map((raw) => this.dispatch(tenantId, raw)),
     );
 
     return this.buildBatchResult(results);
   }
 
-  private async processBatchInChunks(raws: unknown[]): Promise<{
+  private async processBatchInChunks(
+    tenantId: string,
+    raws: unknown[],
+  ): Promise<{
     total: number;
     queued: number;
     failed: Array<{ index: number; error: string }>;
@@ -319,7 +330,7 @@ export class MessageOrchestrator {
 
     for (const chunk of chunks) {
       const chunkResults = await Promise.allSettled(
-        chunk.map((raw) => this.dispatch(raw)),
+        chunk.map((raw) => this.dispatch(tenantId, raw)),
       );
       allResults.push(...chunkResults);
 
@@ -366,9 +377,12 @@ export class MessageOrchestrator {
     return { total: results.length, queued, failed };
   }
 
-  private async validateTemplate(templateId: string): Promise<void> {
+  private async validateTemplate(
+    templateId: string,
+    tenantId: string,
+  ): Promise<void> {
     try {
-      await this.templateService.findOne(templateId);
+      await this.templateService.findOne(templateId, tenantId);
     } catch {
       throw new NotFoundException(
         `Template ${templateId} no encontrado o inactivo`,

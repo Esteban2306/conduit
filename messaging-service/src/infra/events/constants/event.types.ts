@@ -81,6 +81,7 @@ export interface EventPayloadMap {
     phoneNumber: string;
     content: string;
     conversationId: string;
+    connectionId: string;
     tokensUsed?: number;
     imageVerified?: boolean;
   };

@@ -11,9 +11,12 @@ import { BotModule } from 'src/bot/bot.module';
 import { EventModule } from 'src/infra/events/event.module';
 import { BaileysMessageSender } from './whatsapp/baileys/BaileysMessageSender';
 import { messageReceiptTracker } from './whatsapp/baileys/MessageReceiptTracker';
+import { ConnectionController } from './whatsapp/Connection.controller';
+import { WhatsAppConnectionService } from './whatsapp/WhatsAppConnection.service';
 
 @Module({
   imports: [forwardRef(() => BotModule), EventModule],
+  controllers: [ConnectionController],
   providers: [
     GmailResendPlugin,
     SmtpPlugin,
@@ -23,6 +26,7 @@ import { messageReceiptTracker } from './whatsapp/baileys/MessageReceiptTracker'
     BaileysMessageSender,
     ChannelPluginFactory,
     BaileysSessionManager,
+    WhatsAppConnectionService,
     messageReceiptTracker,
   ],
   exports: [
@@ -31,6 +35,7 @@ import { messageReceiptTracker } from './whatsapp/baileys/MessageReceiptTracker'
     BaileysPlugin,
     BaileysMessageSender,
     BaileysSessionManager,
+    WhatsAppConnectionService,
     messageReceiptTracker,
   ],
 })
@@ -38,9 +43,19 @@ export class ChannelsModule implements OnModuleInit {
   constructor(
     private readonly sessionManager: BaileysSessionManager,
     private readonly botRouter: BotRouter,
+    private readonly connections: WhatsAppConnectionService,
   ) {}
 
-  onModuleInit() {
+  async onModuleInit() {
     this.sessionManager.setBotRouter(this.botRouter);
+
+    const connections = await this.connections.findConnectionsToRestore();
+    await Promise.all(
+      connections.map(({ id }) =>
+        this.sessionManager.start(id).catch(() => {
+          // El manager registra el error de cada conexión sin impedir el arranque.
+        }),
+      ),
+    );
   }
 }

@@ -3,6 +3,7 @@ import { AppModule } from './app.module';
 import { ConfigService } from '@nestjs/config';
 import { ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import cookieParser from 'cookie-parser';
 import { ApiKeyGuard } from './api/middlewares/auth';
 
 async function bootstrap() {
@@ -16,6 +17,7 @@ async function bootstrap() {
   const port = config.get<number>('app.port');
   const nodeEnv = config.get<string>('app.nodeEnv');
 
+  app.use(cookieParser());
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
@@ -29,7 +31,7 @@ async function bootstrap() {
     credentials: true,
   });
 
-  app.use((req: any, res: any, next: any) => {
+  app.use((req: Request, res: any, next: any) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'DENY');
     if (nodeEnv === 'production') {

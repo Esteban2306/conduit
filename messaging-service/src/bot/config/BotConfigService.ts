@@ -19,9 +19,7 @@ export class BotConfigService {
     private readonly config: ConfigService,
   ) {}
 
-  async create(dto: CreateBotConfigDto) {
-    const tenantId = this.config.get<string>('tenant.defaultId') ?? 'default';
-
+  async create(tenantId: string, dto: CreateBotConfigDto) {
     return this.prisma.botConfig.create({
       data: {
         tenantId,
@@ -43,8 +41,7 @@ export class BotConfigService {
     });
   }
 
-  async findAll() {
-    const tenantId = this.config.get<string>('tenant.defaultId') ?? 'default';
+  async findAll(tenantId: string) {
     return this.prisma.botConfig.findMany({
       where: { tenantId },
       select: {
@@ -68,9 +65,9 @@ export class BotConfigService {
     });
   }
 
-  async findOne(id: string) {
+  async findOne(id: string, tenantId: string) {
     const config = await this.prisma.botConfig.findUnique({
-      where: { id },
+      where: { id, tenantId },
       select: {
         ...this.safeSelect(),
         aiModels: {
@@ -115,8 +112,8 @@ export class BotConfigService {
     return config;
   }
 
-  async update(id: string, dto: Partial<CreateBotConfigDto>) {
-    await this.findOne(id);
+  async update(id: string, dto: Partial<CreateBotConfigDto>, tenantId: string) {
+    await this.findOne(id, tenantId);
     const data: Prisma.BotConfigUpdateInput = {};
 
     if (dto.name !== undefined) data.name = dto.name;
@@ -147,12 +144,17 @@ export class BotConfigService {
     });
   }
 
-  async toggle(id: string): Promise<{ id: string; status: BotStatus }> {
+  async toggle(
+    id: string,
+    tenantId: string,
+  ): Promise<{ id: string; status: BotStatus }> {
+    await this.findOne(id, tenantId); // valida ownership
+
     const config = await this.prisma.botConfig.findUnique({ where: { id } });
     if (!config) throw new NotFoundException(`BotConfig ${id} no encontrado`);
 
     const newStatus =
-      config.status === BotStatus.ACTIVE
+      config!.status === BotStatus.ACTIVE
         ? BotStatus.INACTIVE
         : BotStatus.ACTIVE;
 
@@ -166,10 +168,9 @@ export class BotConfigService {
     return updated;
   }
 
-  async getActiveConfig() {
-    const tenantId = this.config.get<string>('tenant.defaultId') ?? 'default';
+  async getConfigById(botConfigId: string) {
     return this.prisma.botConfig.findFirst({
-      where: { tenantId, status: BotStatus.ACTIVE },
+      where: { id: botConfigId, status: BotStatus.ACTIVE },
       include: {
         aiModels: {
           where: { isActive: true },
@@ -179,8 +180,12 @@ export class BotConfigService {
     });
   }
 
-  async addAiModel(botConfigId: string, dto: CreateAiModelDto) {
-    await this.findOne(botConfigId);
+  async addAiModel(
+    botConfigId: string,
+    dto: CreateAiModelDto,
+    tenantId: string,
+  ) {
+    await this.findOne(botConfigId, tenantId);
 
     return this.prisma.aiModelConfig.create({
       data: {
@@ -211,8 +216,8 @@ export class BotConfigService {
     });
   }
 
-  async getAiModels(botConfigId: string) {
-    await this.findOne(botConfigId);
+  async getAiModels(botConfigId: string, tenantId: string) {
+    await this.findOne(botConfigId, tenantId);
 
     return this.prisma.aiModelConfig.findMany({
       where: { botConfigId },
@@ -234,7 +239,9 @@ export class BotConfigService {
     });
   }
 
-  async removeAiModel(botConfigId: string, modelId: string) {
+  async removeAiModel(botConfigId: string, modelId: string, tenantId: string) {
+    await this.findOne(botConfigId, tenantId);
+
     const model = await this.prisma.aiModelConfig.findFirst({
       where: { id: modelId, botConfigId },
     });
@@ -243,7 +250,13 @@ export class BotConfigService {
     return this.prisma.aiModelConfig.delete({ where: { id: modelId } });
   }
 
-  async resetModelCounters(modelId: string) {
+  async resetModelCounters(
+    botConfigId: string,
+    modelId: string,
+    tenantId: string,
+  ) {
+    await this.findOne(botConfigId, tenantId);
+
     return this.prisma.aiModelConfig.update({
       where: { id: modelId },
       data: {

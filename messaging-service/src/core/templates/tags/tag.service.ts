@@ -17,9 +17,7 @@ export class TagService {
     private readonly config: ConfigService<AppConfig>,
   ) {}
 
-  async create(dto: CreateTagDto) {
-    const tenantId = this.config.get('tenant.defaultId', { infer: true });
-
+  async create(dto: CreateTagDto, tenantId: string) {
     const existing = await this.prisma.tag.findFirst({
       where: { tenantId, slug: dto.slug },
     });
@@ -43,9 +41,7 @@ export class TagService {
     });
   }
 
-  async findAll() {
-    const tenantId = this.config.get('tenant.defaultId', { infer: true });
-
+  async findAll(tenantId: string) {
     return this.prisma.tag.findMany({
       where: { tenantId },
 
@@ -59,9 +55,9 @@ export class TagService {
     });
   }
 
-  async findOne(id: string) {
+  async findOne(id: string, tenantId: string) {
     const tag = await this.prisma.tag.findUnique({
-      where: { id },
+      where: { id, tenantId },
 
       include: { _count: { select: { templates: true } } },
     });
@@ -71,10 +67,8 @@ export class TagService {
     return tag;
   }
 
-  async update(id: string, dto: UpdateTagDto) {
-    await this.findOne(id);
-
-    const tenantId = this.config.get('tenant.defaultId', { infer: true });
+  async update(id: string, dto: UpdateTagDto, tenantId: string) {
+    await this.findOne(id, tenantId);
 
     if (dto.slug) {
       const conflict = await this.prisma.tag.findFirst({
@@ -101,15 +95,19 @@ export class TagService {
     });
   }
 
-  async remove(id: string) {
-    await this.findOne(id);
+  async remove(id: string, tenantId: string) {
+    await this.findOne(id, tenantId);
 
     return this.prisma.tag.delete({ where: { id } });
   }
 
-  async assignToTemplate(templateId: string, tagIds: string[]) {
+  async assignToTemplate(
+    templateId: string,
+    tagIds: string[],
+    tenantId: string,
+  ) {
     const template = await this.prisma.template.findUnique({
-      where: { id: templateId },
+      where: { id: templateId, tenantId },
     });
 
     if (!template) {
