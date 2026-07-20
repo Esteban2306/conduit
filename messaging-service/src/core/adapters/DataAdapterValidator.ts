@@ -25,6 +25,10 @@ const TemplateSchema = z
 export const MessagePayloadSchema = z.object({
   recipient: RecipientSchema,
   template: TemplateSchema,
+  connectionId: z
+    .string()
+    .uuid('connectionId debe ser un UUID válido')
+    .optional(),
   variables: z.record(z.string(), z.unknown()).default({}),
   options: z
     .object({

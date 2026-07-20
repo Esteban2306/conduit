@@ -14,9 +14,10 @@ import {
   ExternalIntegrationSecretResolver,
   ExternalIntegrationSignatureGuard,
 } from './integrations/ExternalIntegrationSignatureGuard';
+import { BotConfigModule } from 'src/bot/config/BotConfig.module';
 
 @Module({
-  imports: [SecurityModule],
+  imports: [SecurityModule, BotConfigModule],
   controllers: [ExternalDataController, ExternalIntegrationController],
   providers: [
     PrismaService,

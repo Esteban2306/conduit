@@ -18,7 +18,7 @@ export class JobSigner {
     const signedAt = Date.now();
     const secret = this.config.get<string>('webhook.signingSecret') ?? '';
 
-    const content = `${payload.messageId}:${payload.channel}:${payload.recipient}:${signedAt}`;
+    const content = this.buildSignableContent(payload, signedAt);
 
     const signature = crypto
       .createHmac('sha256', secret)
@@ -49,7 +49,7 @@ export class JobSigner {
     }
 
     const secret = this.config.get<string>('webhook.signingSecret') ?? '';
-    const content = `${payload.messageId}:${payload.channel}:${payload.recipient}:${payload._signedAt}`;
+    const content = this.buildSignableContent(payload, payload._signedAt);
 
     const expectedSignature = crypto
       .createHmac('sha256', secret)
@@ -71,5 +71,19 @@ export class JobSigner {
           valid: false,
           reason: 'Firma inválida — job posiblemente manipulado',
         };
+  }
+
+  private buildSignableContent(
+    payload: MessageJobPayload,
+    signedAt: number,
+  ): string {
+    return [
+      payload.messageId,
+      payload.tenantId,
+      payload.channel,
+      payload.recipient,
+      payload.connectionId ?? '',
+      signedAt,
+    ].join(':');
   }
 }

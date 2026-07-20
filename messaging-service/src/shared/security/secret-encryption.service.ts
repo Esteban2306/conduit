@@ -13,7 +13,7 @@ export class SecretEncryptionService implements OnModuleInit {
   constructor(private readonly config: ConfigService) {}
 
   onModuleInit(): void {
-    const hexKey = this.config.get<string>('integrations.encryptionKey');
+    const hexKey = this.config.get<string>('webhook.encryptionKey');
     if (!hexKey) {
       throw new Error(
         'INTEGRATION_ENCRYPTION_KEY no configurada. Genera una con: ' +

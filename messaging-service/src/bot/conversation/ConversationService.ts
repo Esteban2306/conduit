@@ -50,6 +50,7 @@ export class ConversationService {
         tenantId: dto.tenantId,
         botConfigId: dto.botConfigId,
         phoneNumber: dto.phoneNumber,
+        lastConnectionId: dto.connectionId ?? null,
         status: ConversationStatus.ACTIVE,
         context: (dto.initialContext ?? {}) as Prisma.InputJsonValue,
         lastMessageAt: new Date(),
@@ -96,15 +97,25 @@ export class ConversationService {
     });
   }
 
-  async saveHumanOutbound(conversationId: string, content: string) {
-    return this.prisma.botMessage.create({
-      data: {
-        conversationId,
-        direction: MessageDirection.OUTBOUND,
-        content,
-        processedBy: 'human',
-      },
-    });
+  async saveHumanOutbound(
+    conversationId: string,
+    content: string,
+    connectionId?: string,
+  ) {
+    const [, message] = await this.prisma.$transaction([
+      this.touchActivity(conversationId, connectionId),
+      this.prisma.botMessage.create({
+        data: {
+          conversationId,
+          connectionId: connectionId ?? null,
+          direction: MessageDirection.OUTBOUND,
+          content,
+          processedBy: 'human',
+        },
+      }),
+    ]);
+
+    return message;
   }
 
   async findById(id: string) {
@@ -138,6 +149,7 @@ export class ConversationService {
         phoneNumber: true,
         status: true,
         context: true,
+        lastConnectionId: true,
         lastMessageAt: true,
         createdAt: true,
         _count: { select: { messages: true } },
@@ -145,20 +157,30 @@ export class ConversationService {
     });
   }
 
-  touchActivity(conversationId: string) {
+  touchActivity(conversationId: string, connectionId?: string) {
     return this.prisma.conversation.update({
       where: { id: conversationId },
-      data: { lastMessageAt: new Date(), updatedAt: new Date() },
+      data: {
+        lastMessageAt: new Date(),
+        updatedAt: new Date(),
+        ...(connectionId && { lastConnectionId: connectionId }),
+      },
     });
   }
 
-  async saveInbound(conversationId: string, content: string, hasImage = false) {
+  async saveInbound(
+    conversationId: string,
+    content: string,
+    hasImage = false,
+    connectionId?: string,
+  ) {
     const [, message] = await this.prisma.$transaction([
-      this.touchActivity(conversationId),
+      this.touchActivity(conversationId, connectionId),
 
       this.prisma.botMessage.create({
         data: {
           conversationId,
+          connectionId: connectionId ?? null,
           direction: MessageDirection.INBOUND,
           content,
           hasImage,

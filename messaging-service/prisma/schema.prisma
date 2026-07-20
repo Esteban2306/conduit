@@ -361,15 +361,14 @@ model BotPromptTemplate {
 
 
 model Conversation {
-  id          String  @id @default(uuid())
-  tenantId    String  @default("default")
-  botConfigId String
-  connectionId String?
-  phoneNumber String
-  status      ConversationStatus  @default(ACTIVE)
+  id               String  @id @default(uuid())
+  tenantId         String  @default("default")
+  botConfigId      String
+  lastConnectionId String?
+  phoneNumber      String
+  status           ConversationStatus  @default(ACTIVE)
 
   context     Json    @default("{}")
-
   summary String? @db.Text
 
   lastMessageAt DateTime @default(now())
@@ -390,24 +389,27 @@ model Conversation {
   @@index([processing, lockedUntil])
   @@index([phoneNumber])
   @@index([botConfigId, status])
+  @@index([lastConnectionId])
 }
 
 model BotMessage{
-  id        String  @id @default(uuid())
-  conversationId  String
-  direction String
-  content   String @db.Text
-  hasImage  Boolean @default(false)
-  imageVerfied  Boolean?
-  processedBy  String  @default("bot")
-  intent    String?
-  tokenUsed Int?
+  id             String  @id @default(uuid())
+  conversationId String
+  connectionId   String?
+  direction      String
+  content        String @db.Text
+  hasImage       Boolean @default(false)
+  imageVerfied   Boolean?
+  processedBy    String  @default("bot")
+  intent         String?
+  tokenUsed      Int?
   createdAt      DateTime @default(now())
 
   conversation Conversation @relation(fields: [conversationId], references: [id])
 
   @@index([conversationId])
   @@index([conversationId, createdAt])
+  @@index([connectionId])
 }
 
 model MessageAttempt {

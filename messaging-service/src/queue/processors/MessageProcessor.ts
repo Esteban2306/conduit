@@ -47,12 +47,58 @@ export class MessageProcessor {
       channel,
       recipient,
       templateId,
+      connectionId,
       inlineBody,
       inlineSubject,
       variables,
       meta,
     } = job.data;
     const start = Date.now();
+
+    const dbMessage = await this.prisma.message.findUnique({
+      where: { id: messageId },
+      select: { id: true, tenantId: true, connectionId: true },
+    });
+
+    if (!dbMessage || dbMessage.tenantId !== tenantId) {
+      this.logger.error(
+        `Inconsistencia de tenant: job.tenantId=${tenantId} no coincide con Message ${messageId}`,
+      );
+      await this.dlqHandler.handle(
+        messageId,
+        'Inconsistencia de tenant entre job y registro de Message',
+        'TENANT_MISMATCH',
+      );
+      return;
+    }
+
+    if (channel === MessageChannel.WHATSAPP) {
+      if (!connectionId) {
+        await this.dlqHandler.handle(
+          messageId,
+          'connectionId ausente para mensaje de WhatsApp',
+          'MISSING_CONNECTION_ID',
+        );
+        return;
+      }
+
+      const connection = await this.prisma.whatsAppConnection.findFirst({
+        where: { id: connectionId, tenantId },
+        select: { id: true },
+      });
+
+      if (!connection) {
+        this.logger.error(
+          `connectionId ${connectionId} no pertenece al tenant ${tenantId}`,
+        );
+        await this.dlqHandler.handle(
+          messageId,
+          'La conexión de WhatsApp no pertenece a este tenant',
+          'CONNECTION_TENANT_MISMATCH',
+        );
+        return;
+      }
+    }
 
     await this.updateMessageStatus(messageId, MessageStatus.PROCESSING);
 
@@ -69,6 +115,7 @@ export class MessageProcessor {
         to: recipient,
         subject,
         content: body,
+        connectionId,
         meta,
       });
       const durationMs = Date.now() - start;

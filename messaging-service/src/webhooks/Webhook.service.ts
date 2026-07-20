@@ -1,11 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from 'src/shared/prisma.service';
 import * as crypto from 'crypto';
-
-export interface CreateWebhookDto {
-  url: string;
-  events: string[];
-}
+import { CreateWebhookDto } from './dto/CreateWebhook.dto';
 
 @Injectable()
 export class WebhookService {

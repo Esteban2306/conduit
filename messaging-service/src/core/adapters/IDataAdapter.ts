@@ -19,6 +19,7 @@ export interface MessagePayload {
     id?: string;
     inline?: InlineTemplate;
   };
+  connectionId?: string;
   variables: TemplateVariables;
   options?: {
     scheduledAt?: string;

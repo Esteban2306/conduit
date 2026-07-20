@@ -70,6 +70,7 @@ export class BotRouter {
     if (!messageId) return;
 
     const phoneNumber = jid.replace('@s.whatsapp.net', '').replace('@lid', '');
+    const sessionKey = this.composeSessionKey(connectionId, jid);
 
     const botConfig = await this.botConfigService.getConfigById(botConfigId);
 
@@ -91,11 +92,11 @@ export class BotRouter {
       return;
     }
 
-    if (this.receiptTracker.isChatActive(jid, 60000)) {
+    if (this.receiptTracker.isChatActive(sessionKey, 60000)) {
       this.logger.debug(
-        `Chat ${jid} activo recientemente (dueño presente). Bot no procesa.`,
+        `Chat ${sessionKey} activo recientemente (dueño presente). Bot no procesa.`,
       );
-      this.debouncer.cancel(jid);
+      this.debouncer.cancel(sessionKey);
       return;
     }
 
@@ -117,13 +118,13 @@ export class BotRouter {
     const delaySeconds = (botConfig.botResponseDelaySeconds ?? 15) * 1000;
 
     this.debouncer.debounce(
-      jid,
+      sessionKey,
       text,
       hasImage,
       delaySeconds,
       async (texts, chatHasImage) => {
         await this.processAccumulatedMessages(
-          jid,
+          sessionKey,
           phoneNumber,
           texts,
           chatHasImage,
@@ -137,7 +138,7 @@ export class BotRouter {
   }
 
   private async processAccumulatedMessages(
-    jid: string,
+    sessionKey: string,
     phoneNumber: string,
     texts: string[],
     hasImage: boolean,
@@ -147,30 +148,32 @@ export class BotRouter {
   ): Promise<void> {
     if (
       this.receiptTracker.isChatActive(
-        jid,
+        sessionKey,
         (botConfig.botResponseDelaySeconds + 5) * 1000,
       )
     ) {
       this.logger.log(
-        `Dueño activo en ${jid} después del delay. Bot cancelado.`,
+        `Dueño activo en ${sessionKey} después del delay. Bot cancelado.`,
       );
       return;
     }
 
-    this.logger.debug(`Verificando isChatActive para JID: "${jid}"`);
+    this.logger.debug(`Verificando isChatActive para JID: "${sessionKey}"`);
 
-    if (this.receiptTracker.isTyping(jid)) {
-      this.logger.debug(`Usuario escribiendo en ${jid}. Esperando 3s más...`);
+    if (this.receiptTracker.isTyping(sessionKey)) {
+      this.logger.debug(
+        `Usuario escribiendo en ${sessionKey}. Esperando 3s más...`,
+      );
       await this.sleep(3000);
 
-      if (this.receiptTracker.isTyping(jid)) {
+      if (this.receiptTracker.isTyping(sessionKey)) {
         this.logger.debug(`Usuario sigue escribiendo. Cancelando respuesta.`);
         return;
       }
     }
 
     this.logger.debug(
-      `Chat activo result: ${this.receiptTracker.isChatActive(jid, (botConfig.botResponseDelaySeconds + 5) * 1000)}`,
+      `Chat activo result: ${this.receiptTracker.isChatActive(sessionKey, (botConfig.botResponseDelaySeconds + 5) * 1000)}`,
     );
 
     const humanActive = await this.isHumanActive(
@@ -187,6 +190,7 @@ export class BotRouter {
       botConfigId: botConfig.id,
       phoneNumber,
       tenantId: botConfig.tenantId,
+      connectionId,
     });
 
     const combinedText = texts.join('\n');
@@ -195,6 +199,7 @@ export class BotRouter {
       conversation.id,
       combinedText || '[imagen]',
       hasImage,
+      connectionId,
     );
 
     if (this.processingConversations.has(conversation.id)) {
@@ -271,7 +276,7 @@ export class BotRouter {
         }
       }
 
-      if (this.receiptTracker.isTyping(jid)) {
+      if (this.receiptTracker.isTyping(sessionKey)) {
         this.logger.debug(
           `Usuario escribiendo antes de llamar IA. Cancelando.`,
         );
@@ -307,7 +312,7 @@ export class BotRouter {
         temperature: builtPrompt.temperature,
       });
 
-      if (this.receiptTracker.isChatActive(jid, 30000)) {
+      if (this.receiptTracker.isChatActive(sessionKey, 30000)) {
         this.logger.log(
           `Dueño activo mientras IA procesaba. Respuesta descartada.`,
         );
@@ -392,12 +397,15 @@ export class BotRouter {
   async registerHumanMessage(
     message: WAMessage,
     botConfigId: string,
+    connectionId: string,
   ): Promise<void> {
     const jid = message.key.remoteJid;
     if (!jid || jid.endsWith('@g.us')) return;
 
-    this.debouncer.cancel(jid);
-    this.logger.debug(`Debounce cancelado por mensaje humano en ${jid}`);
+    const sessionKey = this.composeSessionKey(connectionId, jid);
+    this.debouncer.cancel(sessionKey);
+
+    this.logger.debug(`Debounce cancelado por mensaje humano en ${sessionKey}`);
 
     const phoneNumber = jid.replace('@s.whatsapp.net', '').replace('@lid', '');
     const { text } = this.extractContent(message);
@@ -518,6 +526,10 @@ export class BotRouter {
 
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private composeSessionKey(connectionId: string, jid: string): string {
+    return `${connectionId}:${jid}`;
   }
 
   private publishResponseRequest(

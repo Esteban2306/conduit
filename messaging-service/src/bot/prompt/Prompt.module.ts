@@ -10,9 +10,10 @@ import { PromptRenderer } from './PromptRenderer';
 import { PrismaService } from 'src/shared/prisma.service';
 import { KnowledgeAssembler } from '../knowledge/KnowledgeAssembler';
 import { ExternalDataModule } from 'src/external/ExternalData.module';
+import { BotConfigModule } from '../config/BotConfig.module';
 
 @Module({
-  imports: [ExternalDataModule],
+  imports: [ExternalDataModule, BotConfigModule],
   controllers: [PromptController],
   providers: [
     PrismaService,

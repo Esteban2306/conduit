@@ -43,6 +43,10 @@ export class MessageOrchestrator {
 
     this.validateChannel(payload.recipient.channel);
 
+    if (payload.recipient.channel === 'WHATSAPP') {
+      await this.validateConnection(payload.connectionId!, tenantId);
+    }
+
     const scheduledAt = payload.options?.scheduledAt
       ? new Date(payload.options.scheduledAt)
       : new Date();
@@ -52,6 +56,7 @@ export class MessageOrchestrator {
         tenantId,
         channel: payload.recipient.channel as MessageChannel,
         recipient: payload.recipient.address,
+        connectionId: payload.connectionId ?? null,
         templateId: payload.template.id ?? null,
         variables: (payload.variables ?? {}) as Prisma.InputJsonValue,
         meta: payload.meta
@@ -70,6 +75,7 @@ export class MessageOrchestrator {
       tenantId,
       channel: payload.recipient.channel,
       recipient: payload.recipient.address,
+      connectionId: payload.connectionId,
       templateId: payload.template.id ?? '',
       inlineBody: payload.template.inline?.body ?? '',
       inlineSubject: payload.template.inline?.subject ?? '',
@@ -395,6 +401,22 @@ export class MessageOrchestrator {
     if (!supported.includes(channel as MessageChannel)) {
       throw new BadRequestException(
         `Canal no soportado: ${channel}. Opciones: ${supported.join(', ')}`,
+      );
+    }
+  }
+
+  private async validateConnection(
+    connectionId: string,
+    tenantId: string,
+  ): Promise<void> {
+    const connection = await this.prisma.whatsAppConnection.findFirst({
+      where: { id: connectionId, tenantId },
+      select: { id: true },
+    });
+
+    if (!connection) {
+      throw new NotFoundException(
+        `Conexión de WhatsApp ${connectionId} no encontrada para este tenant.`,
       );
     }
   }

@@ -13,6 +13,7 @@ export interface MessageJobPayload {
   tenantId: string;
   channel: string;
   recipient: string;
+  connectionId: string | undefined;
   templateId: string;
   inlineBody: string;
   inlineSubject: string;

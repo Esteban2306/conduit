@@ -166,7 +166,7 @@ export class BaileysSessionManager {
           const jid = message.key.remoteJidAlt ?? message.key.remoteJid;
           if (jid) this.receiptTracker.markChatActive(jid);
           await this.botRouter
-            ?.registerHumanMessage(message, state.botConfigId)
+            ?.registerHumanMessage(message, state.botConfigId, connectionId)
             .catch(() => {});
           continue;
         }
