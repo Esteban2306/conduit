@@ -20,8 +20,19 @@ export class DLQHandler {
     reason?: string,
     errorCode?: string,
   ): Promise<void> {
-    try {
-      await this.prisma.message.update({
+    const existing = await this.prisma.message.findUnique({
+      where: { id: messageId },
+      select: { attempts: true },
+    });
+
+    if (!existing) {
+      throw new Error(
+        `No se puede mover a DLQ: Message ${messageId} no existe en DB`,
+      );
+    }
+
+    await this.prisma.$transaction([
+      this.prisma.message.update({
         where: { id: messageId },
         data: {
           status: MessageStatus.DEAD,
@@ -29,32 +40,25 @@ export class DLQHandler {
           resolvedAt: new Date(),
           lastError: reason,
         },
-      });
-
-      const message = await this.prisma.message.findUnique({
-        where: { id: messageId },
-        include: { attemptLogs: true },
-      });
-
-      await this.prisma.deadLetterMessage.create({
+      }),
+      this.prisma.deadLetterMessage.create({
         data: {
           messageId,
           reason: reason ?? 'Unknown',
           lastErrorCode: errorCode,
           lastErrorDetail: reason,
-          totalAttempts: message?.attempts ?? 0,
+          totalAttempts: existing.attempts,
         },
-      });
+      }),
+    ]);
 
-      await this.dlQueue.add(
-        'dead=message',
-        { messageId: messageId, errorCode },
-        { jobId: `dlq:${messageId}` },
-      );
-      this.logger.warn(`Mensaje ${messageId} movido a DLQ. Razón: ${reason}`);
-    } catch (error) {
-      this.logger.error(`Error al mover message a DLQ: ${error.message}`);
-    }
+    await this.dlQueue.add(
+      'dead-message',
+      { messageId, errorCode },
+      { jobId: `dlq-${messageId}` },
+    );
+
+    this.logger.warn(`Mensaje ${messageId} movido a DLQ. Razón: ${reason}`);
   }
 
   async requeue(messageId: string, reviewedBy?: string): Promise<void> {

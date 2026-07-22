@@ -1,15 +1,25 @@
 import { SourceVariable } from '@prisma/client';
-import { IsEnum, IsInt, IsObject, IsOptional } from 'class-validator';
+import { Type } from 'class-transformer';
+import {
+  IsEnum,
+  IsInt,
+  IsNotEmptyObject,
+  IsObject,
+  IsOptional,
+  IsPositive,
+} from 'class-validator';
 
 export class InjectDataDto {
   @IsObject()
+  @IsNotEmptyObject()
   variables: Record<string, string>;
 
-  @IsInt()
-  @IsOptional()
-  ttlSeconds?: number;
-
   @IsEnum(SourceVariable)
+  source: SourceVariable;
+
   @IsOptional()
-  source?: SourceVariable;
+  @Type(() => Number)
+  @IsInt()
+  @IsPositive()
+  ttlSeconds?: number;
 }

@@ -4,7 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import cookieParser from 'cookie-parser';
-import { ApiKeyGuard } from './api/middlewares/auth';
+import { GlobalExceptionFilter } from './shared/filters/global-exception.filter';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
@@ -31,6 +31,8 @@ async function bootstrap() {
     origin: config.get<string>('app.frontendUrl'),
     credentials: true,
   });
+
+  app.useGlobalFilters(new GlobalExceptionFilter());
 
   app.use((req: Request, res: any, next: any) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');

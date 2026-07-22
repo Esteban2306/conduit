@@ -10,9 +10,9 @@ import {
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from 'src/auth/decorators/current-user.decorator';
 import type { JwtPayload } from 'src/auth/types/jwt.types';
-import { BaileysSessionManager } from './baileys/BaileysSessionManager';
 import { CreateWhatsAppConnectionDto } from './dto/create-whatsapp-connection.dto';
 import { WhatsAppConnectionService } from './WhatsAppConnection.service';
+import { WhatsAppConnectionOrchestrator } from './WhatsAppConnectionOrchestrator';
 import { JwtGuard } from 'src/auth/guards/jwt-auth.guard';
 
 @UseGuards(JwtGuard)
@@ -21,19 +21,16 @@ import { JwtGuard } from 'src/auth/guards/jwt-auth.guard';
 export class ConnectionController {
   constructor(
     private readonly connections: WhatsAppConnectionService,
-    private readonly sessionManager: BaileysSessionManager,
+    private readonly orchestrator: WhatsAppConnectionOrchestrator,
   ) {}
 
   @Post()
   @ApiOperation({ summary: 'Crear e iniciar una conexión de WhatsApp' })
-  async create(
+  create(
     @CurrentUser() user: JwtPayload,
     @Body() dto: CreateWhatsAppConnectionDto,
   ) {
-    const connection = await this.connections.create(user.tenantId, dto);
-    await this.connections.connect(connection.id, user.tenantId);
-    await this.sessionManager.start(connection.id);
-    return this.connections.findOne(connection.id, user.tenantId);
+    return this.orchestrator.createAndStart(user.tenantId, dto);
   }
 
   @Get()
@@ -55,28 +52,22 @@ export class ConnectionController {
 
   @Post(':id/connect')
   @ApiOperation({ summary: 'Iniciar una conexión de WhatsApp' })
-  async connect(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
-    await this.connections.connect(id, user.tenantId);
-    await this.sessionManager.start(id);
-    return this.connections.findOne(id, user.tenantId);
+  connect(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
+    return this.orchestrator.connect(id, user.tenantId);
   }
 
   @Post(':id/disconnect')
   @ApiOperation({
     summary: 'Detener una conexión de WhatsApp sin borrar su sesión',
   })
-  async disconnect(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
-    await this.connections.findOne(id, user.tenantId);
-    await this.sessionManager.stop(id);
-    return this.connections.disconnect(id, user.tenantId);
+  disconnect(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
+    return this.orchestrator.disconnect(id, user.tenantId);
   }
 
   @Post(':id/reconnect')
   @ApiOperation({ summary: 'Reiniciar una conexión de WhatsApp' })
-  async reconnect(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
-    await this.connections.restart(id, user.tenantId);
-    await this.sessionManager.reconnect(id);
-    return this.connections.findOne(id, user.tenantId);
+  reconnect(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
+    return this.orchestrator.reconnect(id, user.tenantId);
   }
 
   @Get(':id')
@@ -87,10 +78,7 @@ export class ConnectionController {
 
   @Delete(':id')
   @ApiOperation({ summary: 'Eliminar una conexión y sus credenciales' })
-  async delete(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
-    await this.connections.findOne(id, user.tenantId);
-    await this.sessionManager.stop(id);
-    await this.connections.delete(id, user.tenantId);
-    return { id, deleted: true };
+  delete(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
+    return this.orchestrator.remove(id, user.tenantId);
   }
 }

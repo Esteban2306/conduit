@@ -15,6 +15,8 @@ import { JwtGuard } from 'src/auth/guards/jwt-auth.guard';
 import { CurrentUser } from 'src/auth/decorators/current-user.decorator';
 import type { JwtPayload } from 'src/auth/types/jwt.types';
 import { ExternalIntegrationSignatureGuard } from './integrations/ExternalIntegrationSignatureGuard';
+import { InjectDataDto } from './dto/InjectDataDto';
+import { UpsertMappingDto } from './dto/upsert-mapping.dto';
 
 @UseGuards(JwtGuard)
 @Controller('api/external-data')
@@ -35,20 +37,15 @@ export class ExternalDataController {
   @Post(':botId/variables')
   injectDirect(
     @Param('botId') botId: string,
-    @Body()
-    body: {
-      variables: Record<string, string>;
-      ttlSeconds?: number;
-      source: SourceVariable;
-    },
+    @Body() dto: InjectDataDto,
     @CurrentUser() user: JwtPayload,
   ) {
     return this.service.injectDirect(
       botId,
-      body.variables,
-      body.source,
+      dto.variables,
+      dto.source,
       user.tenantId,
-      body.ttlSeconds,
+      dto.ttlSeconds,
     );
   }
 
@@ -79,15 +76,15 @@ export class ExternalDataController {
   upsertMapping(
     @Param('botId') botId: string,
     @Param('eventType') eventType: string,
-    @Body() body: { rules: Record<string, string>; description?: string },
+    @Body() dto: UpsertMappingDto,
     @CurrentUser() user: JwtPayload,
   ) {
     return this.service.upsertMapping(
       botId,
       eventType,
-      body.rules,
+      dto.rules,
       user.tenantId,
-      body.description,
+      dto.description,
     );
   }
 

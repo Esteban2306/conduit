@@ -12,6 +12,12 @@ import { MessageJobPayload } from 'src/queue/queues';
 import { WebhookDispatcher } from 'src/webhooks/WebhookDispatcher';
 import { JobSigner, SignedJobPayload } from '../security/JobSigner';
 
+const TERMINAL_STATUSES: MessageStatus[] = [
+  MessageStatus.SENT,
+  MessageStatus.DEAD,
+  MessageStatus.CANCELLED,
+];
+
 @Injectable()
 export class MessageProcessor {
   private readonly logger = new Logger(MessageProcessor.name);
@@ -57,7 +63,7 @@ export class MessageProcessor {
 
     const dbMessage = await this.prisma.message.findUnique({
       where: { id: messageId },
-      select: { id: true, tenantId: true, connectionId: true },
+      select: { id: true, tenantId: true, connectionId: true, status: true },
     });
 
     if (!dbMessage || dbMessage.tenantId !== tenantId) {
@@ -68,6 +74,13 @@ export class MessageProcessor {
         messageId,
         'Inconsistencia de tenant entre job y registro de Message',
         'TENANT_MISMATCH',
+      );
+      return;
+    }
+
+    if (TERMINAL_STATUSES.includes(dbMessage.status)) {
+      this.logger.warn(
+        `Job ${job.id} ignorado: Message ${messageId} ya está en estado terminal (${dbMessage.status})`,
       );
       return;
     }

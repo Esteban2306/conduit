@@ -7,21 +7,20 @@ import {
   Delete,
   Query,
   UseInterceptors,
-  UploadedFiles,
+  UploadedFile,
   ParseFilePipe,
   MaxFileSizeValidator,
   FileTypeValidator,
+  ParseArrayPipe,
   UseGuards,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiTags, ApiOperation, ApiConsumes, ApiBody } from '@nestjs/swagger';
 import { MessageOrchestrator } from './MessageOrchestrator';
 import { ListMessageDto } from './dto/list-messages.dto';
-import { TemplateService } from '../templates/TemplateService';
 import { BulkDispatchDto } from './dto/bulk-dispatch.dto';
-import { FileParserService } from '../adapters/FileParserService';
 import { FileDispatchDto } from './dto/file-dispatch.dto';
-import { Public } from 'src/api/middlewares/auth';
+import { CreateMessageDto } from './dto/create-message.dto';
 import { JwtGuard } from 'src/auth/guards/jwt-auth.guard';
 import { CurrentUser } from 'src/auth/decorators/current-user.decorator';
 import type { JwtPayload } from 'src/auth/types/jwt.types';
@@ -30,48 +29,28 @@ import type { JwtPayload } from 'src/auth/types/jwt.types';
 @ApiTags('Messages')
 @Controller('messages')
 export class MessageController {
-  constructor(
-    private readonly orchestrator: MessageOrchestrator,
-    private readonly templateService: TemplateService,
-    private readonly fileParser: FileParserService,
-  ) {}
+  constructor(private readonly orchestrator: MessageOrchestrator) {}
 
   @Post()
   @ApiOperation({ summary: 'Encola un mensaje para envío' })
-  dispatch(@Body() body: unknown, @CurrentUser() user: JwtPayload) {
+  dispatch(@Body() body: CreateMessageDto, @CurrentUser() user: JwtPayload) {
     return this.orchestrator.dispatch(user.tenantId, body);
   }
 
   @Post('batch')
   @ApiOperation({ summary: 'Encola múltiples mensajes de una vez' })
-  dispatchBatch(@Body() body: unknown[], @CurrentUser() user: JwtPayload) {
+  dispatchBatch(
+    @Body(new ParseArrayPipe({ items: CreateMessageDto }))
+    body: CreateMessageDto[],
+    @CurrentUser() user: JwtPayload,
+  ) {
     return this.orchestrator.dispatchBatch(user.tenantId, body);
   }
 
   @Post('bulk')
   @ApiOperation({ summary: 'Envios masivos con templates en comun' })
-  async bulkDispatch(
-    @Body() body: BulkDispatchDto,
-    @CurrentUser() user: JwtPayload,
-  ) {
-    const { templateId, recipients, options } = body;
-
-    const template = await this.templateService.findOne(
-      templateId,
-      user.tenantId,
-    );
-
-    const payloads = recipients.map((r) => ({
-      recipient: {
-        channel: template.channel,
-        address: r.address,
-        name: r.name,
-      },
-      template: { id: templateId },
-      variables: r.variables,
-      options,
-    }));
-    return this.orchestrator.dispatchBatch(user.tenantId, payloads);
+  bulkDispatch(@Body() body: BulkDispatchDto, @CurrentUser() user: JwtPayload) {
+    return this.orchestrator.dispatchBulk(user.tenantId, body);
   }
 
   @Post('upload')
@@ -103,8 +82,8 @@ export class MessageController {
     },
   })
   @UseInterceptors(FileInterceptor('file'))
-  async uploadAndDispatch(
-    @UploadedFiles(
+  uploadAndDispatch(
+    @UploadedFile(
       new ParseFilePipe({
         validators: [
           new MaxFileSizeValidator({ maxSize: 10 * 1024 * 1024 }),
@@ -118,40 +97,7 @@ export class MessageController {
     @Body() dto: FileDispatchDto,
     @CurrentUser() user: JwtPayload,
   ) {
-    const parsed = this.fileParser.parse(
-      file.buffer,
-      file.mimetype,
-      file.originalname,
-    );
-
-    if (parsed.errors.length > 0) {
-      return {
-        warning: `${parsed.errors.length} filas tuvieron errores de parseo y fueron ignoradas`,
-        parseErrors: parsed.errors,
-      };
-    }
-
-    const payloads = this.fileParser.rowsToPayloads(
-      parsed.rows,
-      dto.templateId,
-      dto.extraVariables ?? {},
-      dto.scheduledAt ?? '',
-      dto.priority,
-    );
-
-    const result = await this.orchestrator.dispatchBatch(
-      user.tenantId,
-      payloads,
-    );
-
-    return {
-      ...result,
-      fileInfo: {
-        fileName: file.originalname,
-        totalRows: parsed.totalRows,
-        headers: parsed.headers,
-      },
-    };
+    return this.orchestrator.dispatchFromFile(user.tenantId, file, dto);
   }
 
   @Get()
@@ -188,6 +134,6 @@ export class MessageController {
   @Delete(':id')
   @ApiOperation({ summary: 'Cancela un mensaje pendiente o en cola' })
   cancel(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
-    return this.orchestrator.cancel(id);
+    return this.orchestrator.cancel(id, user.tenantId);
   }
 }

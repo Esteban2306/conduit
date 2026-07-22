@@ -11,10 +11,17 @@ import { Queue } from 'bullmq';
 import { MessageJobPayload, QUEUE_NAMES } from 'src/queue/queues';
 import { PrismaService } from 'src/shared/prisma.service';
 import { TemplateService } from '../templates/TemplateService';
-import { DataAdapterValidator } from '../adapters/DataAdapterValidator';
+import {
+  DataAdapterValidationError,
+  DataAdapterValidator,
+} from '../adapters/DataAdapterValidator';
 import { MessagePayload } from '../adapters/IDataAdapter';
 import { ListMessageDto } from './dto/list-messages.dto';
 import { JobSigner } from 'src/queue/security/JobSigner';
+import { BulkDispatchDto } from './dto/bulk-dispatch.dto';
+import { FileDispatchDto } from './dto/file-dispatch.dto';
+import type { FileParserService } from '../adapters/FileParserService';
+import { BatchResult } from './type/batch-result.type';
 
 @Injectable()
 export class MessageOrchestrator {
@@ -29,6 +36,7 @@ export class MessageOrchestrator {
     private readonly config: ConfigService,
     private readonly templateService: TemplateService,
     private readonly jobSigner: JobSigner,
+    private readonly fileParser: FileParserService,
   ) {}
 
   async dispatch(
@@ -44,7 +52,13 @@ export class MessageOrchestrator {
     this.validateChannel(payload.recipient.channel);
 
     if (payload.recipient.channel === 'WHATSAPP') {
-      await this.validateConnection(payload.connectionId!, tenantId);
+      if (!payload.connectionId) {
+        throw new BadRequestException(
+          'connectionId es obligatorio para mensajes del canal WHATSAPP. ' +
+            'Este tenant puede tener múltiples conexiones activas; especifica cuál usar.',
+        );
+      }
+      await this.validateConnection(payload.connectionId, tenantId);
     }
 
     const scheduledAt = payload.options?.scheduledAt
@@ -127,6 +141,65 @@ export class MessageOrchestrator {
     return this.processBatchInChunks(tenantId, raws);
   }
 
+  async dispatchBulk(
+    tenantId: string,
+    dto: BulkDispatchDto,
+  ): Promise<BatchResult> {
+    const template = await this.resolveTemplate(dto.templateId, tenantId);
+
+    const payloads = dto.recipients.map((r) => ({
+      recipient: {
+        channel: template.channel,
+        address: r.address,
+        name: r.name,
+      },
+      template: { id: dto.templateId },
+      connectionId: dto.connectionId,
+      variables: r.variables,
+      options: dto.options,
+    }));
+
+    return this.dispatchBatch(tenantId, payloads);
+  }
+
+  async dispatchFromFile(
+    tenantId: string,
+    file: Express.Multer.File,
+    dto: FileDispatchDto,
+  ) {
+    const parsed = this.fileParser.parse(
+      file.buffer,
+      file.mimetype,
+      file.originalname,
+    );
+
+    if (parsed.errors.length > 0) {
+      throw new BadRequestException({
+        message: `${parsed.errors.length} fila(s) del archivo tienen errores de formato.`,
+        parseErrors: parsed.errors,
+      });
+    }
+
+    const payloads = this.fileParser.rowsToPayloads(
+      parsed.rows,
+      dto.templateId,
+      dto.extraVariables ?? {},
+      dto.scheduledAt ?? '',
+      dto.priority,
+    );
+
+    const result = await this.dispatchBatch(tenantId, payloads);
+
+    return {
+      ...result,
+      fileInfo: {
+        fileName: file.originalname,
+        totalRows: parsed.totalRows,
+        headers: parsed.headers,
+      },
+    };
+  }
+
   async getStatus(messageId: string, tenantId: string) {
     const message = await this.prisma.message.findUnique({
       where: { id: messageId, tenantId },
@@ -161,9 +234,10 @@ export class MessageOrchestrator {
 
   async cancel(
     messageId: string,
+    tenantId: string,
   ): Promise<{ messageId: string; status: string }> {
     const message = await this.prisma.message.findUnique({
-      where: { id: messageId },
+      where: { id: messageId, tenantId },
     });
 
     if (!message) {
@@ -389,6 +463,30 @@ export class MessageOrchestrator {
   ): Promise<void> {
     try {
       await this.templateService.findOne(templateId, tenantId);
+    } catch {
+      throw new NotFoundException(
+        `Template ${templateId} no encontrado o inactivo`,
+      );
+    }
+  }
+
+  private parsePayload(raw: unknown): MessagePayload {
+    try {
+      return DataAdapterValidator.validate(raw);
+    } catch (error) {
+      if (error instanceof DataAdapterValidationError) {
+        throw new BadRequestException({
+          message: 'El payload del mensaje no cumple el formato esperado.',
+          errors: error.errors,
+        });
+      }
+      throw error;
+    }
+  }
+
+  private async resolveTemplate(templateId: string, tenantId: string) {
+    try {
+      return await this.templateService.findOne(templateId, tenantId);
     } catch {
       throw new NotFoundException(
         `Template ${templateId} no encontrado o inactivo`,

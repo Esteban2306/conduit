@@ -20,7 +20,6 @@ import { JwtGuard } from 'src/auth/guards/jwt-auth.guard';
 import { CurrentUser } from 'src/auth/decorators/current-user.decorator';
 import type { JwtPayload } from 'src/auth/types/jwt.types';
 
-@Public()
 @UseGuards(JwtGuard)
 @ApiTags('Templates')
 @Controller('templates')

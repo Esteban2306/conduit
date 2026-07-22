@@ -23,7 +23,6 @@ import { Public } from 'src/api/middlewares/auth';
 import { CurrentUser } from 'src/auth/decorators/current-user.decorator';
 import type { JwtPayload } from 'src/auth/types/jwt.types';
 
-@Public()
 @UseGuards(JwtGuard)
 @ApiTags('Tags')
 @Controller('tags')
@@ -80,7 +79,7 @@ export class TagController {
   @ApiOperation({ summary: 'Desasigna tags de un template' })
   unassignFromTemplate(
     @Param('templateId') templateId: string,
-
+    @CurrentUser() user: JwtPayload,
     @Body() dto: AssignTagDto,
   ) {
     return this.service.unassignFromTemplate(templateId, dto.tagIds);

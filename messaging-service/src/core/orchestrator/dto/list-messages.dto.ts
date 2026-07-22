@@ -1,5 +1,5 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { MessageStatus } from '@prisma/client';
+import { MessageChannel, MessageStatus } from '@prisma/client';
 import { Transform, Type } from 'class-transformer';
 import {
   IsDateString,

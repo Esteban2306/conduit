@@ -13,6 +13,7 @@ import { BaileysMessageSender } from './whatsapp/baileys/BaileysMessageSender';
 import { messageReceiptTracker } from './whatsapp/baileys/MessageReceiptTracker';
 import { ConnectionController } from './whatsapp/Connection.controller';
 import { WhatsAppConnectionService } from './whatsapp/WhatsAppConnection.service';
+import { WhatsAppConnectionOrchestrator } from './whatsapp/WhatsAppConnectionOrchestrator';
 
 @Module({
   imports: [forwardRef(() => BotModule), EventModule],
@@ -25,6 +26,7 @@ import { WhatsAppConnectionService } from './whatsapp/WhatsAppConnection.service
     ChannelRouter,
     BaileysMessageSender,
     ChannelPluginFactory,
+    WhatsAppConnectionOrchestrator,
     BaileysSessionManager,
     WhatsAppConnectionService,
     messageReceiptTracker,
