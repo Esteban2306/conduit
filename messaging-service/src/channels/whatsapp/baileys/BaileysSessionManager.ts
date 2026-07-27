@@ -11,6 +11,7 @@ import { WhatsAppConnectionService } from '../WhatsAppConnection.service';
 import { BaileysRateLimiter, WarmupLevel } from './BaileysRateLimiter';
 import { usePrismaAuthState } from './BaileysAuthState';
 import { messageReceiptTracker } from './MessageReceiptTracker';
+import { BaileysRateLimiterRegistry } from './BaileysRateLimiterRegistry';
 
 interface SocketState {
   botConfigId: string;
@@ -37,12 +38,9 @@ export class BaileysSessionManager {
     private readonly config: ConfigService,
     private readonly prisma: PrismaService,
     private readonly connections: WhatsAppConnectionService,
-    private readonly limiter: BaileysRateLimiter,
+    private readonly limiter: BaileysRateLimiterRegistry,
     private readonly receiptTracker: messageReceiptTracker,
-  ) {
-    const level = this.config.get<string>('whatsapp.warmupLevel') ?? 'NORMAL';
-    this.limiter.setWarmupLevel(level as WarmupLevel);
-  }
+  ) {}
 
   setBotRouter(router: BotRouter): void {
     this.botRouter = router;
@@ -81,6 +79,11 @@ export class BaileysSessionManager {
     }
   }
 
+  async remove(connectionId: string): Promise<void> {
+    await this.stop(connectionId);
+    this.limiter.remove(connectionId);
+  }
+
   async reconnect(connectionId: string): Promise<void> {
     await this.stop(connectionId);
     await this.start(connectionId);
@@ -100,6 +103,11 @@ export class BaileysSessionManager {
     if (!connection) {
       throw new Error(`La conexión ${connectionId} no existe.`);
     }
+
+    this.limiter.getOrCreate(
+      connectionId,
+      connection.warmupLevel as unknown as WarmupLevel,
+    );
 
     const { state: authState, saveCreds } = await usePrismaAuthState(
       this.prisma,
@@ -225,7 +233,9 @@ export class BaileysSessionManager {
           state.connectedAt = Date.now();
           state.lastReconnectAt = Date.now();
           state.connected = true;
-          if (state.reconnectCount > 1) this.limiter.enterReconnectThrottle();
+          if (state.reconnectCount > 1) {
+            this.limiter.enterReconnectThrottle(connectionId);
+          }
 
           const phoneNumber =
             socket.user?.id?.split('@')[0].split(':')[0] ?? null;
@@ -236,8 +246,14 @@ export class BaileysSessionManager {
         if (connection === 'close') {
           const code = (lastDisconnect?.error as Boom | undefined)?.output
             ?.statusCode;
+          const reason = (lastDisconnect?.error as Boom | undefined)?.output
+            ?.payload?.error;
           state.connected = false;
           this.sockets.delete(connectionId);
+
+          this.logger.warn(
+            `Conexión cerrada: ${connectionId} | código: ${code ?? 'desconocido'} | razón: ${reason ?? 'n/a'} | reconexión #${state.reconnectCount}`,
+          );
 
           await this.connections
             .updateStatus(connectionId, this.disconnectedStatus(), {
@@ -249,7 +265,7 @@ export class BaileysSessionManager {
               );
             });
 
-          this.reportDisconnect(code);
+          this.reportDisconnect(connectionId, code);
           if (this.INVALID_SESSION_CODES.includes(code ?? -1)) {
             await this.prisma.whatsAppSession.deleteMany({
               where: { connectionId },
@@ -284,11 +300,20 @@ export class BaileysSessionManager {
     return this.sockets.get(connectionId) === socket;
   }
 
-  private reportDisconnect(code: number | undefined): void {
+  private reportDisconnect(
+    connectionId: string,
+    code: number | undefined,
+  ): void {
     if (code && this.BAN_WARNING_CODES.includes(code)) {
-      this.limiter.reportDisconnect();
+      this.logger.warn(
+        `Código ${code} clasificado como señal de riesgo para ${connectionId}`,
+      );
+      this.limiter.reportDisconnect(connectionId);
+    } else {
+      this.logger.debug(
+        `Código ${code ?? 'desconocido'} no clasificado como riesgo para ${connectionId} — reconexión benigna`,
+      );
     }
-    this.limiter.reportDisconnect();
   }
 
   private disconnectedStatus() {
@@ -305,8 +330,8 @@ export class BaileysSessionManager {
       trace: () => {},
       debug: () => {},
       info: () => {},
-      warn: (message: unknown) => {
-        const text = this.errorMessage(message);
+      warn: (...args: unknown[]) => {
+        const text = this.errorMessage(args);
         if (
           !['failed to find key', 'msgId', 'no name present'].some((item) =>
             text.includes(item),
@@ -315,8 +340,8 @@ export class BaileysSessionManager {
           this.logger.warn(text);
         }
       },
-      error: (message: unknown) => {
-        const text = this.errorMessage(message);
+      error: (...args: unknown[]) => {
+        const text = this.errorMessage(args);
         if (
           !['PreKeyError', 'SessionError', 'isSessionRecordError'].some(
             (item) => text.includes(item),
@@ -325,11 +350,35 @@ export class BaileysSessionManager {
           this.logger.error(text);
         }
       },
-      fatal: (message: unknown) =>
-        this.logger.fatal(this.errorMessage(message)),
+      fatal: (...args: unknown[]) =>
+        this.logger.fatal(this.formatPinoArgs(args)),
     };
     silentLogger.child = () => silentLogger;
     return silentLogger;
+  }
+
+  private formatPinoArgs(args: unknown[]): string {
+    if (args.length === 0) return '';
+
+    const [first, second] = args;
+
+    if (typeof first === 'string') return first;
+
+    const objPart =
+      first && typeof first === 'object' ? this.safeStringify(first) : '';
+    const msgPart = typeof second === 'string' ? second : '';
+
+    return (
+      [msgPart, objPart].filter(Boolean).join(' | ') || this.errorMessage(first)
+    );
+  }
+
+  private safeStringify(obj: unknown): string {
+    try {
+      return JSON.stringify(obj);
+    } catch {
+      return String(obj);
+    }
   }
 
   private errorMessage(error: unknown): string {

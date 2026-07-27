@@ -12,6 +12,17 @@ export class FileDispatchDto {
 
   @ApiPropertyOptional({
     description:
+      'UUID de la conexión de WhatsApp a usar. Obligatorio si el archivo ' +
+      'contiene destinatarios con channel=WHATSAPP, dado que un tenant puede ' +
+      'tener múltiples conexiones activas.',
+    example: 'e503eb66-bf29-4044-ad47-b3c102b406f6',
+  })
+  @IsUUID()
+  @IsOptional()
+  connectionId?: string;
+
+  @ApiPropertyOptional({
+    description:
       'Variables fijas que se aplican a todos los destinatarios (además de las columnas del archivo)',
     example: { empresa: 'Mi Negocio', promocion: '20% descuento' },
   })
@@ -29,9 +40,15 @@ export class FileDispatchDto {
   scheduledAt?: string;
 
   @ApiPropertyOptional({
-    description: 'Prioridad de envío',
     enum: ['low', 'normal', 'high'],
     default: 'normal',
+    description:
+      'Prioridad relativa dentro de la cola de envío. NO es una garantía de ' +
+      'tiempo de entrega ni de SLA — es "mejor esfuerzo": un mensaje "high" ' +
+      'se procesa antes que uno "normal" en igualdad de condiciones, pero si ' +
+      'la cola está saturada, todos los mensajes (incluidos los "high") ' +
+      'pueden demorar. Para tiempos garantizados, hablá de SLA con el equipo ' +
+      'de infraestructura antes de comprometerlo con un cliente.',
   })
   @IsString()
   @IsOptional()

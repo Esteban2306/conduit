@@ -42,6 +42,8 @@ export const configValidationSchema = Joi.object({
 
   QUEUE_MAX_ATTEMPTS: Joi.number().default(5),
   QUEUE_BACKOFF_DELAY: Joi.number().default(120000),
+
+  MESSAGING_MAX_FILE_UPLOAD_ROWS: Joi.number().default(5000),
 });
 
 export interface AppConfig {
@@ -90,6 +92,9 @@ export interface AppConfig {
   queue: {
     maxAttempts: number;
     backoffDelay: number;
+  };
+  messaging: {
+    maxFileUploadRows: number;
   };
 }
 
@@ -142,5 +147,12 @@ export const configFactory = (): AppConfig => ({
   queue: {
     maxAttempts: parseInt(process.env.QUEUE_MAX_ATTEMPTS ?? '5', 10),
     backoffDelay: parseInt(process.env.QUEUE_BACKOFF_DELAY ?? '120000', 10),
+  },
+
+  messaging: {
+    maxFileUploadRows: parseInt(
+      process.env.MESSAGING_MAX_FILE_UPLOAD_ROWS ?? '5000',
+      10,
+    ),
   },
 });

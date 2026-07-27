@@ -1,8 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { WhatsAppConnectionStatus } from '@prisma/client';
+import { WhatsAppConnectionStatus, WhatsAppWarmupLevel } from '@prisma/client';
 import { WhatsAppConnectionService } from './WhatsAppConnection.service';
 import { BaileysSessionManager } from './baileys/BaileysSessionManager';
 import { CreateWhatsAppConnectionDto } from './dto/create-whatsapp-connection.dto';
+import { BaileysRateLimiterRegistry } from './baileys/BaileysRateLimiterRegistry';
+import { WarmupLevel } from './baileys/BaileysRateLimiter';
 
 @Injectable()
 export class WhatsAppConnectionOrchestrator {
@@ -11,6 +13,7 @@ export class WhatsAppConnectionOrchestrator {
   constructor(
     private readonly connections: WhatsAppConnectionService,
     private readonly sessionManager: BaileysSessionManager,
+    private readonly limiters: BaileysRateLimiterRegistry,
   ) {}
 
   async createAndStart(tenantId: string, dto: CreateWhatsAppConnectionDto) {
@@ -40,6 +43,20 @@ export class WhatsAppConnectionOrchestrator {
       throw error;
     }
     return this.connections.findOne(id, tenantId);
+  }
+
+  async updateWarmupLevel(
+    id: string,
+    tenantId: string,
+    warmupLevel: WhatsAppWarmupLevel,
+  ) {
+    const connection = await this.connections.updateWarmupLevel(
+      id,
+      tenantId,
+      warmupLevel,
+    );
+    this.limiters.updateWarmupLevel(id, warmupLevel as unknown as WarmupLevel);
+    return connection;
   }
 
   async remove(id: string, tenantId: string) {

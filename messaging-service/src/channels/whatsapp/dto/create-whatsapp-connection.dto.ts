@@ -1,5 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsString, MaxLength } from 'class-validator';
+import { WhatsAppWarmupLevel } from '@prisma/client';
+import { IsEnum, IsOptional, IsString, MaxLength } from 'class-validator';
 
 export class CreateWhatsAppConnectionDto {
   @ApiProperty({ example: 'uuid-del-bot-config' })
@@ -10,4 +11,8 @@ export class CreateWhatsAppConnectionDto {
   @IsString()
   @MaxLength(120)
   name: string;
+
+  @IsOptional()
+  @IsEnum(WhatsAppWarmupLevel)
+  warmupLevel?: WhatsAppWarmupLevel;
 }

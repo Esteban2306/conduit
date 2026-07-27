@@ -29,7 +29,17 @@ class RecipientDto {
 }
 
 class BulkOptionsDto {
-  @ApiPropertyOptional({ enum: ['low', 'normal', 'high'], default: 'normal' })
+  @ApiPropertyOptional({
+    enum: ['low', 'normal', 'high'],
+    default: 'normal',
+    description:
+      'Prioridad relativa dentro de la cola de envío. NO es una garantía de ' +
+      'tiempo de entrega ni de SLA — es "mejor esfuerzo": un mensaje "high" ' +
+      'se procesa antes que uno "normal" en igualdad de condiciones, pero si ' +
+      'la cola está saturada, todos los mensajes (incluidos los "high") ' +
+      'pueden demorar. Para tiempos garantizados, hablá de SLA con el equipo ' +
+      'de infraestructura antes de comprometerlo con un cliente.',
+  })
   @IsString()
   @IsOptional()
   priority?: 'low' | 'normal' | 'high';

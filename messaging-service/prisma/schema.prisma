@@ -73,6 +73,12 @@ enum ConversationStatus {
   ABANDONED
 }
 
+enum WhatsAppWarmupLevel {
+  FRESH
+  NORMAL
+  TRUSTED
+}
+
 enum AiModelTier {
   FREE        
   PAID        
@@ -549,6 +555,7 @@ model WhatsAppConnection {
   name            String
   phoneNumber     String?
   status          WhatsAppConnectionStatus  @default(DISCONNECTED)
+  warmupLevel     WhatsAppWarmupLevel @default(NORMAL)
   lastQr          String?
   connectedAt     DateTime?
   disconnectedAt  DateTime?

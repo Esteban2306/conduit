@@ -2,7 +2,7 @@ import { forwardRef, Module, OnModuleInit } from '@nestjs/common';
 import { GmailResendPlugin } from './email/resend/GmailResendPlugin';
 import { SmtpPlugin } from './email/smtp/SmtpBrevoPlugin';
 import { BaileysPlugin } from './whatsapp/baileys/BaileysPlugin';
-import { BaileysRateLimiter } from './whatsapp/baileys/BaileysRateLimiter';
+import { BaileysRateLimiterRegistry } from './whatsapp/baileys/BaileysRateLimiterRegistry';
 import { ChannelRouter } from './router/ChannelRouter';
 import { ChannelPluginFactory } from './factories/ChannelPluginFactory';
 import { BaileysSessionManager } from './whatsapp/baileys/BaileysSessionManager';
@@ -22,7 +22,7 @@ import { WhatsAppConnectionOrchestrator } from './whatsapp/WhatsAppConnectionOrc
     GmailResendPlugin,
     SmtpPlugin,
     BaileysPlugin,
-    BaileysRateLimiter,
+    BaileysRateLimiterRegistry,
     ChannelRouter,
     BaileysMessageSender,
     ChannelPluginFactory,
@@ -54,9 +54,7 @@ export class ChannelsModule implements OnModuleInit {
     const connections = await this.connections.findConnectionsToRestore();
     await Promise.all(
       connections.map(({ id }) =>
-        this.sessionManager.start(id).catch(() => {
-          // El manager registra el error de cada conexión sin impedir el arranque.
-        }),
+        this.sessionManager.start(id).catch(() => {}),
       ),
     );
   }

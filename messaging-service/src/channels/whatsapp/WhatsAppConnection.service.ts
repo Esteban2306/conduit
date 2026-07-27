@@ -1,5 +1,9 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma, WhatsAppConnectionStatus } from '@prisma/client';
+import {
+  Prisma,
+  WhatsAppConnectionStatus,
+  WhatsAppWarmupLevel,
+} from '@prisma/client';
 import { PrismaService } from 'src/shared/prisma.service';
 import { CreateWhatsAppConnectionDto } from './dto/create-whatsapp-connection.dto';
 import * as QRCode from 'qrcode';
@@ -71,6 +75,20 @@ export class WhatsAppConnectionService {
       tenantId,
       WhatsAppConnectionStatus.CONNECTING,
     );
+  }
+
+  async updateWarmupLevel(
+    id: string,
+    tenantId: string,
+    warmupLevel: WhatsAppWarmupLevel,
+  ) {
+    const { count } = await this.prisma.whatsAppConnection.updateMany({
+      where: { id, tenantId },
+      data: { warmupLevel },
+    });
+    if (!count)
+      throw new NotFoundException('Conexión de WhatsApp no encontrada.');
+    return this.prisma.whatsAppConnection.findUniqueOrThrow({ where: { id } });
   }
 
   async disconnect(id: string, tenantId: string) {

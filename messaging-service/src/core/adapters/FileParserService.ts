@@ -1,6 +1,7 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import * as xlsx from 'xlsx';
 import * as Papa from 'papaparse';
+import { ConfigService } from '@nestjs/config';
 
 export interface FileParseResult {
   rows: Record<string, unknown>[];
@@ -10,9 +11,12 @@ export interface FileParseResult {
 }
 
 const REQUIRED_COLUMNS = ['address', 'channel'];
+const DEFAULT_MAX_ROWS = 5000;
 
 @Injectable()
 export class FileParserService {
+  constructor(private readonly config: ConfigService) {}
+
   parse(
     buffer: Buffer,
     mimetype: string,
@@ -20,27 +24,30 @@ export class FileParserService {
   ): FileParseResult {
     const extension = originalName.split('.').pop()?.toLocaleLowerCase();
 
+    let result: FileParseResult;
+
     if (
       mimetype === 'text/csv' ||
       mimetype === 'application/csv' ||
       extension === 'csv'
     ) {
-      this.parseCsv(buffer);
-    }
-
-    if (
+      result = this.parseCsv(buffer);
+    } else if (
       mimetype ===
         'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
       mimetype === 'application/vnd.ms-excel' ||
       extension === 'xlsx' ||
       extension === 'xls'
     ) {
-      return this.parseExcel(buffer);
+      result = this.parseExcel(buffer);
+    } else {
+      throw new BadRequestException(
+        `Formato no soportado: ${mimetype}. Usa CSV o Excel (.xlsx/.xls)`,
+      );
     }
 
-    throw new BadRequestException(
-      `Formato no soportado: ${mimetype}. Usa CSV o Excel (.xlsx/.xls)`,
-    );
+    this.validateRowCount(result.totalRows);
+    return result;
   }
 
   rowsToPayloads(
@@ -49,6 +56,7 @@ export class FileParserService {
     extraVariables: Record<string, unknown>,
     scheduledAt: string,
     priority?: 'low' | 'normal' | 'high',
+    connectionId?: string,
   ): unknown[] {
     return rows.map((row) => {
       const { address, channel, name, ...templateVariables } = row;
@@ -59,7 +67,8 @@ export class FileParserService {
           address: String(address),
           ...(name ? { name: String(name) } : {}),
         },
-        templateId,
+        template: { id: templateId },
+        connectionId,
         variables: {
           ...templateVariables,
           ...extraVariables,
@@ -101,7 +110,7 @@ export class FileParserService {
     const sheetName = workbook.SheetNames[0];
 
     if (!sheetName) {
-      throw new BadRequestException('excel file dont has laves');
+      throw new BadRequestException('excel file dont has sheets');
     }
 
     const sheet = workbook.Sheets[sheetName];
@@ -143,6 +152,19 @@ export class FileParserService {
       throw new BadRequestException(
         `El archivo debe tener las columnas: ${REQUIRED_COLUMNS.join(', ')}. ` +
           `Faltan: ${missing.join(', ')}`,
+      );
+    }
+  }
+
+  private validateRowCount(rowCount: number): void {
+    const maxRows =
+      this.config.get<number>('messaging.maxFileUploadRows') ??
+      DEFAULT_MAX_ROWS;
+
+    if (rowCount > maxRows) {
+      throw new BadRequestException(
+        `El archivo contiene ${rowCount} filas, supera el límite de ${maxRows} ` +
+          'por carga. Dividí el archivo en lotes más pequeños.',
       );
     }
   }

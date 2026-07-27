@@ -4,6 +4,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Param,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { MessageChannel, MessageStatus, Prisma } from '@prisma/client';
@@ -20,8 +21,13 @@ import { ListMessageDto } from './dto/list-messages.dto';
 import { JobSigner } from 'src/queue/security/JobSigner';
 import { BulkDispatchDto } from './dto/bulk-dispatch.dto';
 import { FileDispatchDto } from './dto/file-dispatch.dto';
-import type { FileParserService } from '../adapters/FileParserService';
+import { FileParserService } from '../adapters/FileParserService';
 import { BatchResult } from './type/batch-result.type';
+
+export interface DuplicateInfo {
+  index: number;
+  address: string;
+}
 
 @Injectable()
 export class MessageOrchestrator {
@@ -43,97 +49,20 @@ export class MessageOrchestrator {
     tenantId: string,
     raw: unknown,
   ): Promise<{ messageId: string; status: string }> {
-    const payload = DataAdapterValidator.validate(raw);
+    const payload = await this.validatePayload(tenantId, raw);
 
-    if (payload.template.id) {
-      await this.validateTemplate(payload.template.id, tenantId);
-    }
-
-    this.validateChannel(payload.recipient.channel);
-
-    if (payload.recipient.channel === 'WHATSAPP') {
-      if (!payload.connectionId) {
-        throw new BadRequestException(
-          'connectionId es obligatorio para mensajes del canal WHATSAPP. ' +
-            'Este tenant puede tener múltiples conexiones activas; especifica cuál usar.',
-        );
-      }
-      await this.validateConnection(payload.connectionId, tenantId);
-    }
-
-    const scheduledAt = payload.options?.scheduledAt
-      ? new Date(payload.options.scheduledAt)
-      : new Date();
-
-    const message = await this.prisma.message.create({
-      data: {
-        tenantId,
-        channel: payload.recipient.channel as MessageChannel,
-        recipient: payload.recipient.address,
-        connectionId: payload.connectionId ?? null,
-        templateId: payload.template.id ?? null,
-        variables: (payload.variables ?? {}) as Prisma.InputJsonValue,
-        meta: payload.meta
-          ? (payload.meta as Prisma.InputJsonValue)
-          : Prisma.JsonNull,
-        status: MessageStatus.PENDING,
-        scheduledAt,
-        maxAttempts: this.config.get<number>('queue.maxAttempts') ?? 5,
-        renderedSubject: payload.template.inline?.subject ?? '',
-        renderedBody: payload.template.inline?.body ?? '',
-      },
-    });
-
-    const jobPayload: MessageJobPayload = {
-      messageId: message.id,
-      tenantId,
-      channel: payload.recipient.channel,
-      recipient: payload.recipient.address,
-      connectionId: payload.connectionId,
-      templateId: payload.template.id ?? '',
-      inlineBody: payload.template.inline?.body ?? '',
-      inlineSubject: payload.template.inline?.subject ?? '',
-      variables: payload.variables ?? {},
-      meta: payload.meta,
-      sheduledAt: payload.options?.scheduledAt,
-    };
-
-    const jobOptions = this.buildJobOptions(payload, scheduledAt);
-    const isScheduled = scheduledAt.getTime() - Date.now() > 1000;
-
-    const targetQueue = isScheduled ? this.scheduledQueue : this.messageQueue;
-
-    const signedPayload = this.jobSigner.sign({ ...jobPayload, isScheduled });
-
-    const job = await targetQueue.add(
-      `message:${payload.recipient.channel}`,
-      signedPayload,
-      jobOptions,
-    );
-
-    await this.prisma.message.update({
-      where: { id: message.id },
-      data: { status: MessageStatus.QUEUED },
-    });
-
-    this.logger.log(
-      `Mensaje encolado: ${message.id} | Canal: ${payload.recipient.channel} | Job: ${job.id}`,
-    );
-
-    return {
-      messageId: message.id,
-      status: MessageStatus.QUEUED,
-    };
+    return this.commitDispatch(tenantId, payload);
   }
 
   async dispatchBatch(
     tenantId: string,
     raws: unknown[],
-  ): Promise<{
-    total: number;
-    queued: number;
-    failed: Array<{ index: number; error: string }>;
-  }> {
+    strict = false,
+  ): Promise<BatchResult> {
+    if (strict) {
+      return this.dispatchBatchStrict(tenantId, raws);
+    }
+
     if (raws.length <= this.BATCH_CHUNK_SIZE) {
       return this.processBatchDirect(tenantId, raws);
     }
@@ -144,10 +73,15 @@ export class MessageOrchestrator {
   async dispatchBulk(
     tenantId: string,
     dto: BulkDispatchDto,
-  ): Promise<BatchResult> {
+  ): Promise<BatchResult & { duplicatesSkipped: DuplicateInfo[] }> {
     const template = await this.resolveTemplate(dto.templateId, tenantId);
 
-    const payloads = dto.recipients.map((r) => ({
+    const { unique, duplicates } = this.dedupeBy(
+      dto.recipients,
+      (r) => r.address,
+    );
+
+    const payloads = unique.map((r) => ({
       recipient: {
         channel: template.channel,
         address: r.address,
@@ -159,7 +93,9 @@ export class MessageOrchestrator {
       options: dto.options,
     }));
 
-    return this.dispatchBatch(tenantId, payloads);
+    const result = await this.dispatchBatch(tenantId, payloads);
+
+    return { ...result, duplicatesSkipped: duplicates };
   }
 
   async dispatchFromFile(
@@ -180,18 +116,24 @@ export class MessageOrchestrator {
       });
     }
 
+    const { unique, duplicates } = this.dedupeBy(parsed.rows, (row) =>
+      String(row.address ?? ''),
+    );
+
     const payloads = this.fileParser.rowsToPayloads(
-      parsed.rows,
+      unique,
       dto.templateId,
       dto.extraVariables ?? {},
       dto.scheduledAt ?? '',
       dto.priority,
+      dto.connectionId,
     );
 
     const result = await this.dispatchBatch(tenantId, payloads);
 
     return {
       ...result,
+      duplicatesSkipped: duplicates,
       fileInfo: {
         fileName: file.originalname,
         totalRows: parsed.totalRows,
@@ -377,6 +319,161 @@ export class MessageOrchestrator {
   }
 
   private readonly BATCH_CHUNK_SIZE = 50;
+
+  private async validatePayload(
+    tenantId: string,
+    raw: unknown,
+  ): Promise<MessagePayload> {
+    const payload = this.parsePayload(raw);
+
+    if (payload.template.id) {
+      await this.validateTemplate(payload.template.id, tenantId);
+    }
+
+    this.validateChannel(payload.recipient.channel);
+
+    if (payload.recipient.channel === 'WHATSAPP') {
+      if (!payload.connectionId) {
+        throw new BadRequestException(
+          'connectionId es obligatorio para mensajes del canal WHATSAPP. ' +
+            'Este tenant puede tener múltiples conexiones activas; especifica cuál usar.',
+        );
+      }
+      await this.validateConnection(payload.connectionId, tenantId);
+    }
+
+    return payload;
+  }
+
+  private async commitDispatch(
+    tenantId: string,
+    payload: MessagePayload,
+  ): Promise<{ messageId: string; status: string }> {
+    const scheduledAt = payload.options?.scheduledAt
+      ? new Date(payload.options.scheduledAt)
+      : new Date();
+
+    const message = await this.prisma.message.create({
+      data: {
+        tenantId,
+        channel: payload.recipient.channel,
+        recipient: payload.recipient.address,
+        connectionId: payload.connectionId ?? null,
+        templateId: payload.template.id ?? null,
+        variables: (payload.variables ?? {}) as Prisma.InputJsonValue,
+        meta: payload.meta
+          ? (payload.meta as Prisma.InputJsonValue)
+          : Prisma.JsonNull,
+        status: MessageStatus.PENDING,
+        scheduledAt,
+        maxAttempts: this.config.get<number>('queue.maxAttempts') ?? 5,
+        renderedSubject: payload.template.inline?.subject ?? '',
+        renderedBody: payload.template.inline?.body ?? '',
+      },
+    });
+
+    const jobPayload: MessageJobPayload = {
+      messageId: message.id,
+      tenantId,
+      channel: payload.recipient.channel,
+      recipient: payload.recipient.address,
+      connectionId: payload.connectionId,
+      templateId: payload.template.id ?? '',
+      inlineBody: payload.template.inline?.body ?? '',
+      inlineSubject: payload.template.inline?.subject ?? '',
+      variables: payload.variables ?? {},
+      meta: payload.meta,
+      sheduledAt: payload.options?.scheduledAt,
+    };
+
+    const jobOptions = this.buildJobOptions(payload, scheduledAt);
+    const isScheduled = scheduledAt.getTime() - Date.now() > 1000;
+
+    const targetQueue = isScheduled ? this.scheduledQueue : this.messageQueue;
+    const signedPayload = this.jobSigner.sign({ ...jobPayload, isScheduled });
+
+    const job = await targetQueue.add(
+      `message:${payload.recipient.channel}`,
+      signedPayload,
+      jobOptions,
+    );
+
+    await this.prisma.message.update({
+      where: { id: message.id },
+      data: { status: MessageStatus.QUEUED },
+    });
+
+    this.logger.log(
+      `Mensaje encolado: ${message.id} | Canal: ${payload.recipient.channel} | Job: ${job.id}`,
+    );
+
+    return {
+      messageId: message.id,
+      status: MessageStatus.QUEUED,
+    };
+  }
+
+  private async dispatchBatchStrict(
+    tenantId: string,
+    raws: unknown[],
+  ): Promise<BatchResult> {
+    const validations = await Promise.allSettled(
+      raws.map((r) => this.validatePayload(tenantId, r)),
+    );
+
+    const validationFailures: Array<{ index: number; error: string }> = [];
+    validations.forEach((result, index) => {
+      if (result.status === 'rejected') {
+        validationFailures.push({
+          index,
+          error: result.reason?.message ?? 'Error desconocido',
+        });
+      }
+    });
+
+    if (validationFailures.length > 0) {
+      throw new BadRequestException({
+        message:
+          `${validationFailures.length} de ${raws.length} mensajes no pasaron ` +
+          'validación. Modo estricto: no se encoló ningún mensaje del lote.',
+        failed: validationFailures,
+      });
+    }
+
+    const payloads = validations.map(
+      (r) => (r as PromiseFulfilledResult<MessagePayload>).value,
+    );
+
+    const results = await Promise.allSettled(
+      payloads.map((payload) => this.commitDispatch(tenantId, payload)),
+    );
+
+    return this.buildBatchResult(results);
+  }
+
+  private dedupeBy<T>(
+    items: T[],
+    keyExtractor: (item: T) => string,
+  ): { unique: T[]; duplicates: DuplicateInfo[] } {
+    const seen = new Set<string>();
+    const unique: T[] = [];
+    const duplicates: DuplicateInfo[] = [];
+
+    items.forEach((item, index) => {
+      const rawKey = keyExtractor(item);
+      const key = rawKey.trim().toLowerCase();
+
+      if (seen.has(key)) {
+        duplicates.push({ index, address: rawKey });
+        return;
+      }
+
+      seen.add(key);
+      unique.push(item);
+    });
+
+    return { unique, duplicates };
+  }
 
   private async processBatchDirect(
     tenantId: string,

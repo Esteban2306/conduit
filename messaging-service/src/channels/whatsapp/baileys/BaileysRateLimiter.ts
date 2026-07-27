@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Logger } from '@nestjs/common';
 
 export enum WarmupLevel {
   FRESH = 'FRESH',
@@ -43,12 +43,21 @@ interface QueuedJob {
   retryable: boolean;
 }
 
-@Injectable()
+interface FailureResult {
+  success: false;
+  retryable?: boolean;
+  error?: string;
+}
+
+/**
+ * Rate limiter anti-ban de WhatsApp, con estado (cola, riesgo, contadores)
+ * aislado por conexión. Instanciado y gestionado exclusivamente por
+ * BaileysRateLimiterRegistry — nunca se inyecta directo en un provider.
+ */
 export class BaileysRateLimiter {
-  private readonly logger = new Logger(BaileysRateLimiter.name);
+  private readonly logger: Logger;
 
   private queue: QueuedJob[] = [];
-
   private processing = false;
 
   private readonly ACTIVE_HOUR_START = 8;
@@ -62,10 +71,6 @@ export class BaileysRateLimiter {
     { min: 180000, max: 420000, weight: 2 },
   ];
 
-  private readonly BURST_CHANCE = 0.12;
-
-  private readonly MAX_PER_DAY = 180;
-
   private sentTimestamps: number[] = [];
   private dailySentCount = 0;
   private lastDayRest = new Date().toDateString();
@@ -74,13 +79,11 @@ export class BaileysRateLimiter {
   private readonly DISCONNECT_DEBOUNCE_MS = 3000;
 
   private messagesSinceBreak = 0;
-  private readonly BREAK_EVERY_MIN = 8;
-  private readonly BREAK_EVERY_MAX = 15;
-  private nextBreakAt = this.randomInt(8, 15);
+  private nextBreakAt: number;
   private readonly BREAK_DURATION_MIN = 120000;
   private readonly BREAK_DURATION_MAX = 600000;
 
-  private warmupLevel: WarmupLevel = WarmupLevel.NORMAL;
+  private warmupLevel: WarmupLevel;
 
   private riskLevel = 1;
   private readonly MAX_RISK_LEVEL = 5;
@@ -90,6 +93,22 @@ export class BaileysRateLimiter {
   private readonly DISCONNECT_THRESHOLD = 2;
   private lastRiskReset = Date.now();
   private readonly RISK_RESET_INTERVAL = 3600000;
+
+  private reconnectThrottleUntil: number | null = null;
+  private readonly RECONNECT_THROTTLE_MS = 60000;
+
+  constructor(
+    private readonly connectionId: string,
+    initialLevel: WarmupLevel = WarmupLevel.NORMAL,
+  ) {
+    this.logger = new Logger(`BaileysRateLimiter:${connectionId.slice(0, 8)}`);
+    this.warmupLevel = initialLevel;
+    const config = WARMUP_CONFIG[initialLevel];
+    this.nextBreakAt = this.randomInt(
+      config.breakEveryMin,
+      config.breakEveryMax,
+    );
+  }
 
   async enqueue<T>(
     execute: () => Promise<T>,
@@ -143,6 +162,10 @@ export class BaileysRateLimiter {
     this.logger.log(`Warmup level configurado: ${level}`);
   }
 
+  getWarmupLevel(): WarmupLevel {
+    return this.warmupLevel;
+  }
+
   getRiskLevel(): number {
     return this.riskLevel;
   }
@@ -153,14 +176,12 @@ export class BaileysRateLimiter {
 
   private async process() {
     if (this.processing) return;
-
     this.processing = true;
 
     while (this.queue.length > 0) {
       const config = WARMUP_CONFIG[this.warmupLevel];
 
       const waitTime = this.getTimeUntilActiveHour();
-
       if (waitTime > 0) {
         this.logger.log(
           `Fuera de horario activo. Esperando ${Math.round(waitTime / 60000)} minutos para reintentar...`,
@@ -169,7 +190,6 @@ export class BaileysRateLimiter {
       }
 
       this.resetDailyCountIfNeeded();
-
       this.tryResetRisk();
 
       if (this.riskLevel >= 4) {
@@ -181,10 +201,10 @@ export class BaileysRateLimiter {
         continue;
       }
 
-      if (this.dailySentCount >= this.MAX_PER_DAY) {
+      if (this.dailySentCount >= config.maxPerDay) {
         const waitTomorrow = this.getWaitUntilTomorrow();
         this.logger.warn(
-          `Tope diario alcanzado (${this.MAX_PER_DAY} mensajes). Esperando ${Math.round(waitTomorrow / 3600000)} horas para reintentar...`,
+          `Tope diario alcanzado (${config.maxPerDay} mensajes, nivel ${this.warmupLevel}). Esperando ${Math.round(waitTomorrow / 3600000)} horas...`,
         );
         await this.sleep(waitTomorrow);
         continue;
@@ -192,9 +212,8 @@ export class BaileysRateLimiter {
 
       if (this.isRateLimited()) {
         const waitMs = this.getTimeUntilRateLimitReset();
-
         this.logger.log(
-          `Límite de tasa alcanzado. Esperando ${Math.round(waitMs / 1000)} segundos para reintentar...`,
+          `Límite de tasa alcanzado. Esperando ${Math.round(waitMs / 1000)} segundos...`,
         );
         await this.sleep(waitMs);
         continue;
@@ -219,16 +238,12 @@ export class BaileysRateLimiter {
       const job = this.queue.shift();
       if (!job) break;
 
-      try {
-        await this.executeJob(job);
-      } catch (error) {
-        job.reject(error);
-      }
+      await this.executeJob(job);
 
       if (this.queue.length > 0) {
         const delay = this.calculateDelay();
         this.logger.debug(
-          `Esperando ${Math.round(delay / 1000)}s antes de procesar el siguiente mensaje...`,
+          `Esperando ${Math.round(delay / 1000)}s antes del siguiente mensaje...`,
         );
         await this.sleep(delay);
       }
@@ -239,34 +254,61 @@ export class BaileysRateLimiter {
   private async executeJob(job: QueuedJob): Promise<void> {
     job.attempts++;
 
+    let result: unknown;
     try {
-      const result = await job.execute();
-      this.recordSent();
-      this.onSuccessfulSend();
-      job.resolve(result);
+      result = await job.execute();
     } catch (error) {
-      this.recentFailures++;
+      this.handleFailure(job, { retryable: job.retryable, rejectWith: error });
+      return;
+    }
+
+    if (this.isFailureResult(result)) {
+      this.handleFailure(job, {
+        retryable: job.retryable && result.retryable !== false,
+        resolveWith: result,
+      });
+      return;
+    }
+
+    this.recordSent();
+    this.onSuccessfulSend();
+    job.resolve(result);
+  }
+
+  private isFailureResult(value: unknown): value is FailureResult {
+    return (
+      !!value &&
+      typeof value === 'object' &&
+      (value as Record<string, unknown>).success === false
+    );
+  }
+
+  private handleFailure(
+    job: QueuedJob,
+    opts: { retryable: boolean; rejectWith?: unknown; resolveWith?: unknown },
+  ): void {
+    this.recentFailures++;
+    this.logger.warn(`Fallo en job. Fallos recientes: ${this.recentFailures}`);
+
+    if (this.recentFailures >= this.FAILURE_THRESHOLD) {
+      this.escalateRisk('múltiples fallos de envío');
+    }
+
+    const canRetry = opts.retryable && job.attempts < job.maxAttempts;
+
+    if (canRetry) {
       this.logger.warn(
-        `Fallo en job. Fallos recientes: ${this.recentFailures}`,
+        `Job falló (intento ${job.attempts}/${job.maxAttempts}). Reencolar al final.`,
       );
+      this.queue.push(job);
+      return;
+    }
 
-      if (this.recentFailures >= this.FAILURE_THRESHOLD) {
-        this.escalateRisk('múltiples fallos de envío');
-      }
-
-      const isRetryable = job.retryable && job.attempts < job.maxAttempts;
-
-      if (isRetryable) {
-        this.logger.warn(
-          `Job falló (intento ${job.attempts}/${job.maxAttempts}). Reencolar al final.`,
-        );
-        this.queue.push(job);
-      } else {
-        this.logger.error(
-          `Job descartado tras ${job.attempts} intento(s): ${error?.message}`,
-        );
-        job.reject(error);
-      }
+    if ('resolveWith' in opts) {
+      job.resolve(opts.resolveWith);
+    } else {
+      this.logger.error(`Job descartado tras ${job.attempts} intento(s).`);
+      job.reject(opts.rejectWith);
     }
   }
 
@@ -305,11 +347,10 @@ export class BaileysRateLimiter {
     }
 
     const withWarmup = baseDelay * config.delayMultiplier;
-
     const riskMultiplier = Math.pow(1.5, this.riskLevel - 1);
     const withRisk = withWarmup * riskMultiplier;
-
     const jitter = 0.85 + Math.random() * 0.3;
+
     return Math.floor(withRisk * jitter);
   }
 
@@ -339,8 +380,7 @@ export class BaileysRateLimiter {
 
   private tryResetRisk(): void {
     const now = Date.now();
-    const sinceReset = now - this.lastRiskReset;
-    if (sinceReset > this.RISK_RESET_INTERVAL) {
+    if (now - this.lastRiskReset > this.RISK_RESET_INTERVAL) {
       this.recentFailures = 0;
       this.recentDisconnects = 0;
       this.lastDisconnectReportedAt = 0;
@@ -395,6 +435,7 @@ export class BaileysRateLimiter {
       this.recentDisconnects = 0;
       this.lastDisconnectReportedAt = 0;
       this.lastDayRest = today;
+
       if (this.riskLevel > 2) {
         this.riskLevel = 2;
         this.logger.log(
@@ -416,12 +457,7 @@ export class BaileysRateLimiter {
     return Math.floor(Math.random() * (max - min + 1)) + min;
   }
 
-  private reconnectThrottleUntil: number | null = null;
-  private readonly RECONNECT_THROTTLE_MS = 60000;
-
   private sleep(ms: number) {
-    return new Promise((r) => {
-      setTimeout(r, ms);
-    });
+    return new Promise((r) => setTimeout(r, ms));
   }
 }

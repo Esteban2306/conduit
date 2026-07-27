@@ -14,6 +14,7 @@ import { CreateWhatsAppConnectionDto } from './dto/create-whatsapp-connection.dt
 import { WhatsAppConnectionService } from './WhatsAppConnection.service';
 import { WhatsAppConnectionOrchestrator } from './WhatsAppConnectionOrchestrator';
 import { JwtGuard } from 'src/auth/guards/jwt-auth.guard';
+import { UpdateWarmupLevelDto } from './dto/update-warmup-level.dto';
 
 @UseGuards(JwtGuard)
 @ApiTags('WhatsApp Connections')
@@ -68,6 +69,22 @@ export class ConnectionController {
   @ApiOperation({ summary: 'Reiniciar una conexión de WhatsApp' })
   reconnect(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
     return this.orchestrator.reconnect(id, user.tenantId);
+  }
+
+  @Post(':id/warmup-level')
+  @ApiOperation({
+    summary: 'Configura el nivel de calentamiento anti-ban de la conexión',
+  })
+  updateWarmupLevel(
+    @Param('id') id: string,
+    @Body() dto: UpdateWarmupLevelDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.orchestrator.updateWarmupLevel(
+      id,
+      user.tenantId,
+      dto.warmupLevel,
+    );
   }
 
   @Get(':id')

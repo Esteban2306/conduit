@@ -1,5 +1,5 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsIn, IsISO8601, IsOptional, IsUrl } from 'class-validator';
+import { IsIn, IsISO8601, IsOptional, IsString, IsUrl } from 'class-validator';
 
 export class MessageOptionsDto {
   @ApiPropertyOptional({
@@ -14,11 +14,15 @@ export class MessageOptionsDto {
   @ApiPropertyOptional({
     enum: ['low', 'normal', 'high'],
     default: 'normal',
-    example: 'high',
+    description:
+      'Prioridad relativa dentro de la cola de envío. NO es una garantía de ' +
+      'tiempo de entrega ni de SLA — es "mejor esfuerzo": un mensaje "high" ' +
+      'se procesa antes que uno "normal" en igualdad de condiciones, pero si ' +
+      'la cola está saturada, todos los mensajes (incluidos los "high") ' +
+      'pueden demorar. Para tiempos garantizados, hablá de SLA con el equipo ' +
+      'de infraestructura antes de comprometerlo con un cliente.',
   })
-  @IsIn(['low', 'normal', 'high'], {
-    message: 'priority debe ser low, normal o high',
-  })
+  @IsString()
   @IsOptional()
   priority?: 'low' | 'normal' | 'high';
 
