@@ -148,7 +148,7 @@ export class BotConfigService {
     id: string,
     tenantId: string,
   ): Promise<{ id: string; status: BotStatus }> {
-    await this.findOne(id, tenantId); // valida ownership
+    await this.findOne(id, tenantId);
 
     const config = await this.prisma.botConfig.findUnique({ where: { id } });
     if (!config) throw new NotFoundException(`BotConfig ${id} no encontrado`);
@@ -177,6 +177,25 @@ export class BotConfigService {
           orderBy: [{ role: 'asc' }, { priority: 'asc' }],
         },
       },
+    });
+  }
+
+  async getConfigForRouting(botConfigId: string, tenantId: string) {
+    return this.prisma.botConfig.findFirst({
+      where: { id: botConfigId, tenantId },
+      include: {
+        aiModels: {
+          where: { isActive: true },
+          orderBy: [{ role: 'asc' }, { priority: 'asc' }],
+        },
+      },
+    });
+  }
+
+  async findActiveForTenant(tenantId: string) {
+    return this.prisma.botConfig.findFirst({
+      where: { tenantId, status: BotStatus.ACTIVE },
+      select: { id: true, name: true },
     });
   }
 

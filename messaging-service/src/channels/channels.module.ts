@@ -14,6 +14,7 @@ import { messageReceiptTracker } from './whatsapp/baileys/MessageReceiptTracker'
 import { ConnectionController } from './whatsapp/Connection.controller';
 import { WhatsAppConnectionService } from './whatsapp/WhatsAppConnection.service';
 import { WhatsAppConnectionOrchestrator } from './whatsapp/WhatsAppConnectionOrchestrator';
+import { BotSentMessageRegistry } from 'src/channels/whatsapp/baileys/BotSentMessageRegistry';
 
 @Module({
   imports: [forwardRef(() => BotModule), EventModule],
@@ -30,6 +31,7 @@ import { WhatsAppConnectionOrchestrator } from './whatsapp/WhatsAppConnectionOrc
     BaileysSessionManager,
     WhatsAppConnectionService,
     messageReceiptTracker,
+    BotSentMessageRegistry,
   ],
   exports: [
     ChannelPluginFactory,
@@ -39,6 +41,7 @@ import { WhatsAppConnectionOrchestrator } from './whatsapp/WhatsAppConnectionOrc
     BaileysSessionManager,
     WhatsAppConnectionService,
     messageReceiptTracker,
+    BotSentMessageRegistry,
   ],
 })
 export class ChannelsModule implements OnModuleInit {

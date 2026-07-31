@@ -13,6 +13,17 @@ export class WhatsAppConnectionService {
   constructor(private readonly prisma: PrismaService) {}
 
   async create(tenantId: string, dto: CreateWhatsAppConnectionDto) {
+    if (!dto.botConfigId) {
+      return this.prisma.whatsAppConnection.create({
+        data: {
+          tenantId,
+          name: dto.name,
+          status: WhatsAppConnectionStatus.DISCONNECTED,
+          warmupLevel: dto.warmupLevel ?? WhatsAppWarmupLevel.NORMAL,
+        },
+      });
+    }
+
     return this.prisma.$transaction(async (tx) => {
       const botConfig = await tx.botConfig.findFirst({
         where: { id: dto.botConfigId, tenantId },
@@ -30,8 +41,35 @@ export class WhatsAppConnectionService {
           botConfigId: botConfig.id,
           name: dto.name,
           status: WhatsAppConnectionStatus.DISCONNECTED,
+          warmupLevel: dto.warmupLevel ?? WhatsAppWarmupLevel.NORMAL,
         },
       });
+    });
+  }
+
+  async assignBotConfig(id: string, tenantId: string, botConfigId: string) {
+    const connection = await this.findOne(id, tenantId);
+
+    const botConfig = await this.prisma.botConfig.findFirst({
+      where: { id: botConfigId, tenantId },
+      select: { id: true },
+    });
+
+    if (!botConfig) {
+      throw new NotFoundException('BotConfig no encontrado para este tenant.');
+    }
+
+    return this.prisma.whatsAppConnection.update({
+      where: { id: connection.id },
+      data: { botConfigId },
+    });
+  }
+
+  async unassignBotConfig(id: string, tenantId: string) {
+    await this.findOne(id, tenantId);
+    return this.prisma.whatsAppConnection.update({
+      where: { id },
+      data: { botConfigId: null },
     });
   }
 

@@ -1,10 +1,37 @@
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+} from '@nestjs/common';
 import { BaileysRateLimiter, WarmupLevel } from './BaileysRateLimiter';
 
 @Injectable()
-export class BaileysRateLimiterRegistry {
+export class BaileysRateLimiterRegistry
+  implements OnModuleInit, OnModuleDestroy
+{
   private readonly logger = new Logger(BaileysRateLimiterRegistry.name);
   private readonly limiters = new Map<string, BaileysRateLimiter>();
+  private sweepInterval: NodeJS.Timeout | null = null;
+
+  private readonly SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+
+  onModuleInit(): void {
+    this.sweepInterval = setInterval(
+      () => this.sweepAll(),
+      this.SWEEP_INTERVAL_MS,
+    );
+  }
+
+  onModuleDestroy(): void {
+    if (this.sweepInterval) clearInterval(this.sweepInterval);
+  }
+
+  private sweepAll(): void {
+    for (const limiter of this.limiters.values()) {
+      limiter.tick();
+    }
+  }
 
   getOrCreate(
     connectionId: string,

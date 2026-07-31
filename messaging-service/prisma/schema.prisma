@@ -288,7 +288,7 @@ model BotConfig {
   intentEndpoints    Json @default("{}")
   
   maxHistoryMessages         Int @default(6)
-  maxMessageAgeMinutes Int @default(1440)
+  maxMessageAgeMinutes Int @default(60)
   humanTakeoverMinutes Int @default(10)
   botResponseDelaySeconds Int @default(8)
   conversationTimeoutMinutes Int @default(60)
@@ -551,7 +551,7 @@ model ExternalDataEvent {
 model WhatsAppConnection {
   id              String      @id @default(uuid())
   tenantId        String      
-  botConfigId     String
+  botConfigId     String?
   name            String
   phoneNumber     String?
   status          WhatsAppConnectionStatus  @default(DISCONNECTED)
@@ -563,11 +563,12 @@ model WhatsAppConnection {
   updatedAt       DateTime @updatedAt
 
   tenant          Tenant   @relation(fields: [tenantId], references: [id])
-  botConfig       BotConfig  @relation(fields: [botConfigId], references: [id])
+  botConfig       BotConfig?  @relation(fields: [botConfigId], references: [id])
   sessions        WhatsAppSession[] 
 
   @@index([tenantId])
   @@index([tenantId, status])
+  @@index([botConfigId])
 }
 
 model ExternalIntegration {

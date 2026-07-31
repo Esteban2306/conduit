@@ -49,6 +49,22 @@ interface FailureResult {
   error?: string;
 }
 
+export enum JobPriority {
+  CONVERSATION = 0,
+  CAMPAIGN = 10,
+}
+
+interface QueuedJob {
+  execute: () => Promise<unknown>;
+  resolve: (value: unknown) => void;
+  reject: (reason?: unknown) => void;
+  enqueuedAt: number;
+  attempts: number;
+  maxAttempts: number;
+  retryable: boolean;
+  priority: number;
+}
+
 /**
  * Rate limiter anti-ban de WhatsApp, con estado (cola, riesgo, contadores)
  * aislado por conexión. Instanciado y gestionado exclusivamente por
@@ -112,10 +128,14 @@ export class BaileysRateLimiter {
 
   async enqueue<T>(
     execute: () => Promise<T>,
-    options: { retryable?: boolean; maxAttempts?: number } = {},
+    options: {
+      retryable?: boolean;
+      maxAttempts?: number;
+      priority?: JobPriority;
+    } = {},
   ): Promise<T> {
     return new Promise((resolve, reject) => {
-      this.queue.push({
+      const job: QueuedJob = {
         execute: execute as () => Promise<unknown>,
         resolve: resolve as (value: unknown) => void,
         reject,
@@ -123,7 +143,17 @@ export class BaileysRateLimiter {
         attempts: 0,
         maxAttempts: options.maxAttempts ?? 3,
         retryable: options.retryable ?? true,
-      });
+        priority: options.priority ?? JobPriority.CAMPAIGN,
+      };
+
+      const insertIndex = this.queue.findIndex(
+        (j) => j.priority > job.priority,
+      );
+      if (insertIndex === -1) {
+        this.queue.push(job);
+      } else {
+        this.queue.splice(insertIndex, 0, job);
+      }
 
       this.process();
     });
@@ -172,6 +202,11 @@ export class BaileysRateLimiter {
 
   getQueueSize(): number {
     return this.queue.length;
+  }
+
+  tick(): void {
+    this.resetDailyCountIfNeeded();
+    this.tryResetRisk();
   }
 
   private async process() {

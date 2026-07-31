@@ -22,6 +22,22 @@ export class WhatsAppConnectionOrchestrator {
     return this.connections.findOne(connection.id, tenantId);
   }
 
+  async assignBotConfig(id: string, tenantId: string, botConfigId: string) {
+    const connection = await this.connections.assignBotConfig(
+      id,
+      tenantId,
+      botConfigId,
+    );
+    this.sessionManager.refreshBotConfigId(id, botConfigId);
+    return connection;
+  }
+
+  async unassignBotConfig(id: string, tenantId: string) {
+    const connection = await this.connections.unassignBotConfig(id, tenantId);
+    this.sessionManager.refreshBotConfigId(id, null);
+    return connection;
+  }
+
   async connect(id: string, tenantId: string) {
     await this.connections.connect(id, tenantId);
     await this.startWithRollback(id, tenantId);

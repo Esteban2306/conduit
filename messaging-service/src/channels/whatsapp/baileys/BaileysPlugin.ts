@@ -5,9 +5,10 @@ import {
   IChannelPlugin,
 } from 'src/channels/types/IChannelPlugin';
 import { BaileysRateLimiterRegistry } from './BaileysRateLimiterRegistry';
-import { WarmupLevel } from './BaileysRateLimiter';
+import { JobPriority, WarmupLevel } from './BaileysRateLimiter';
 import { BaileysSessionManager } from './BaileysSessionManager';
 import { WASocket } from '@whiskeysockets/baileys';
+import { BotSentMessageRegistry } from 'src/channels/whatsapp/baileys/BotSentMessageRegistry';
 
 @Injectable()
 export class BaileysPlugin implements IChannelPlugin {
@@ -19,6 +20,7 @@ export class BaileysPlugin implements IChannelPlugin {
   constructor(
     private readonly limiters: BaileysRateLimiterRegistry,
     private readonly session: BaileysSessionManager,
+    private readonly botSentRegistry: BotSentMessageRegistry,
   ) {}
 
   validateRecipient(address: string): boolean {
@@ -69,7 +71,12 @@ export class BaileysPlugin implements IChannelPlugin {
       limiter = this.limiters.getOrCreate(connectionId, WarmupLevel.NORMAL);
     }
 
-    return limiter.enqueue(() => this.sendFlow(sock, payload));
+    return limiter.enqueue(() => this.sendFlow(sock, payload), {
+      priority:
+        payload.priority === 'conversation'
+          ? JobPriority.CONVERSATION
+          : JobPriority.CAMPAIGN,
+    });
   }
 
   private async sendFlow(
@@ -104,6 +111,10 @@ export class BaileysPlugin implements IChannelPlugin {
       await sock.sendPresenceUpdate('paused', jid);
 
       const response = await sock.sendMessage(jid, { text });
+
+      if (response?.key?.id) {
+        this.botSentRegistry.register(response.key.id);
+      }
 
       return {
         success: true,

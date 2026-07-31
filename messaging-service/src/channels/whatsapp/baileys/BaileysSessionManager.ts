@@ -1,8 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import makeWASocket, {
-  DisconnectReason,
   WASocket,
+  DisconnectReason,
+  fetchLatestBaileysVersion,
 } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import { PrismaService } from 'src/shared/prisma.service';
@@ -12,9 +13,11 @@ import { BaileysRateLimiter, WarmupLevel } from './BaileysRateLimiter';
 import { usePrismaAuthState } from './BaileysAuthState';
 import { messageReceiptTracker } from './MessageReceiptTracker';
 import { BaileysRateLimiterRegistry } from './BaileysRateLimiterRegistry';
+import { BotSentMessageRegistry } from 'src/channels/whatsapp/baileys/BotSentMessageRegistry';
 
 interface SocketState {
-  botConfigId: string;
+  botConfigId: string | null;
+  tenantId: string;
   reconnectCount: number;
   lastReconnectAt: number | null;
   connectedAt: number | null;
@@ -34,12 +37,25 @@ export class BaileysSessionManager {
   private readonly BAN_WARNING_CODES = [403, 405, 408, 440, 500, 515];
   private readonly INVALID_SESSION_CODES = [DisconnectReason.loggedOut, 401];
 
+  private readonly reconnectAttempts = new Map<string, number>();
+  private readonly streakStartedAt = new Map<string, number>();
+  private readonly stabilityTimers = new Map<string, NodeJS.Timeout>();
+  private readonly STABLE_CONNECTION_MS = 5 * 60 * 1000;
+  private readonly MAX_BACKOFF_MS = 5 * 60 * 1000;
+
+  private readonly MAX_CONSECUTIVE_FAILURES = 6;
+  private readonly STORM_WINDOW_MS = 5 * 60 * 1000;
+
+  private readonly lastRiskReportAt = new Map<string, number>();
+  private readonly RISK_REPORT_COOLDOWN_MS = 5 * 60 * 1000;
+
   constructor(
     private readonly config: ConfigService,
     private readonly prisma: PrismaService,
     private readonly connections: WhatsAppConnectionService,
     private readonly limiter: BaileysRateLimiterRegistry,
     private readonly receiptTracker: messageReceiptTracker,
+    private readonly botSentRegistry: BotSentMessageRegistry,
   ) {}
 
   setBotRouter(router: BotRouter): void {
@@ -77,11 +93,14 @@ export class BaileysSessionManager {
         );
       });
     }
+
+    this.clearRetryState(connectionId);
   }
 
   async remove(connectionId: string): Promise<void> {
     await this.stop(connectionId);
     this.limiter.remove(connectionId);
+    this.lastRiskReportAt.delete(connectionId);
   }
 
   async reconnect(connectionId: string): Promise<void> {
@@ -95,6 +114,15 @@ export class BaileysSessionManager {
 
   isConnected(connectionId: string): boolean {
     return this.states.get(connectionId)?.connected ?? false;
+  }
+
+  refreshBotConfigId(connectionId: string, botConfigId: string | null): void {
+    const state = this.states.get(connectionId);
+    if (!state) return;
+    state.botConfigId = botConfigId;
+    this.logger.log(
+      `botConfigId actualizado en caliente para ${connectionId}: ${botConfigId ?? '(sin bot)'}`,
+    );
   }
 
   private async createSocket(connectionId: string): Promise<void> {
@@ -113,8 +141,24 @@ export class BaileysSessionManager {
       this.prisma,
       connectionId,
     );
+
+    let version: [number, number, number] | undefined;
+
+    try {
+      const versionInfo = await fetchLatestBaileysVersion();
+      version = versionInfo.version;
+      this.logger.log(
+        `Versión de protocolo WhatsApp Web: ${version.join('.')} | ¿es la más reciente conocida por la librería?: ${versionInfo.isLatest}`,
+      );
+    } catch (error) {
+      this.logger.warn(
+        `No fue posible consultar la versión vigente de WhatsApp Web, usando el valor por defecto de la librería: ${this.errorMessage(error)}`,
+      );
+    }
+
     const socket = makeWASocket({
       auth: authState,
+      version,
       printQRInTerminal: false,
       logger: this.buildSilentLogger(),
       markOnlineOnConnect: false,
@@ -124,7 +168,8 @@ export class BaileysSessionManager {
     });
 
     const state: SocketState = {
-      botConfigId: connection.botConfigId,
+      botConfigId: connection.botConfigId ?? null,
+      tenantId: connection.tenantId,
       reconnectCount: 0,
       lastReconnectAt: null,
       connectedAt: null,
@@ -171,26 +216,48 @@ export class BaileysSessionManager {
 
       for (const message of messages) {
         if (message.key.fromMe) {
-          const jid = message.key.remoteJidAlt ?? message.key.remoteJid;
-          if (jid) this.receiptTracker.markChatActive(jid);
-          await this.botRouter
-            ?.registerHumanMessage(message, state.botConfigId, connectionId)
-            .catch(() => {});
+          const messageId = message.key.id;
+          const isSelfOriginated = messageId
+            ? this.botSentRegistry.consume(messageId)
+            : false;
+
+          if (!isSelfOriginated && state.botConfigId) {
+            const jid = message.key.remoteJidAlt ?? message.key.remoteJid;
+            if (jid) this.receiptTracker.markChatActive(jid);
+            await this.botRouter
+              ?.registerHumanMessage(
+                message,
+                state.botConfigId,
+                connectionId,
+                state.tenantId,
+              )
+              .catch(() => {});
+          }
           continue;
         }
 
+        if (!state.botConfigId) {
+          this.logger.debug(
+            `Mensaje entrante en ${connectionId} ignorado: conexión sin bot asignado.`,
+          );
+          continue;
+        }
+
+        const MAX_MESSAGE_AGE_MS = 60 * 60 * 1000;
+
         const ageMs = Date.now() - Number(message.messageTimestamp ?? 0) * 1000;
-        const isStartupCatchup =
-          state.connectedAt !== null &&
-          Date.now() - state.connectedAt < 30000 &&
-          ageMs > 5 * 60 * 1000;
-        if (isStartupCatchup) continue;
+        if (ageMs > MAX_MESSAGE_AGE_MS) {
+          this.logger.debug(
+            `Mensaje descartado en ${connectionId}: antigüedad de ${Math.round(ageMs / 1000)}s supera el máximo permitido (posible backlog mal etiquetado por WhatsApp como 'notify').`,
+          );
+          continue;
+        }
 
         if (message.key.remoteJid) {
           socket.presenceSubscribe(message.key.remoteJid).catch(() => {});
         }
         await this.botRouter
-          ?.route([message], state.botConfigId, connectionId)
+          ?.route([message], state.botConfigId, connectionId, state.tenantId)
           .catch((error: unknown) => {
             this.logger.error(`BotRouter error: ${this.errorMessage(error)}`);
           });
@@ -241,6 +308,24 @@ export class BaileysSessionManager {
             socket.user?.id?.split('@')[0].split(':')[0] ?? null;
           await this.connections.markConnected(connectionId, phoneNumber);
           this.logger.log(`WhatsApp conectado: ${connectionId}`);
+
+          if (!state.botConfigId) {
+            this.logger.warn(
+              `Conexión ${connectionId} conectada sin bot asignado. ` +
+                `Los mensajes entrantes no tendrán respuesta automática hasta asignar un bot.`,
+            );
+          }
+
+          const existingTimer = this.stabilityTimers.get(connectionId);
+          if (existingTimer) clearTimeout(existingTimer);
+
+          const stabilityTimer = setTimeout(() => {
+            this.clearRetryState(connectionId);
+            this.logger.debug(
+              `Conexión ${connectionId} estable por ${this.STABLE_CONNECTION_MS / 60000}min. Historial de reintentos limpiado.`,
+            );
+          }, this.STABLE_CONNECTION_MS);
+          this.stabilityTimers.set(connectionId, stabilityTimer);
         }
 
         if (connection === 'close') {
@@ -252,7 +337,7 @@ export class BaileysSessionManager {
           this.sockets.delete(connectionId);
 
           this.logger.warn(
-            `Conexión cerrada: ${connectionId} | código: ${code ?? 'desconocido'} | razón: ${reason ?? 'n/a'} | reconexión #${state.reconnectCount}`,
+            `Conexión cerrada: ${connectionId} | código: ${code ?? 'desconocido'} | razón: ${reason ?? 'n/a'}`,
           );
 
           await this.connections
@@ -265,7 +350,6 @@ export class BaileysSessionManager {
               );
             });
 
-          this.reportDisconnect(connectionId, code);
           if (this.INVALID_SESSION_CODES.includes(code ?? -1)) {
             await this.prisma.whatsAppSession.deleteMany({
               where: { connectionId },
@@ -274,10 +358,71 @@ export class BaileysSessionManager {
 
           if (code === DisconnectReason.loggedOut || state.stopped) return;
 
+          const existingTimer = this.stabilityTimers.get(connectionId);
+          if (existingTimer) {
+            clearTimeout(existingTimer);
+            this.stabilityTimers.delete(connectionId);
+          }
+
+          const attempts = (this.reconnectAttempts.get(connectionId) ?? 0) + 1;
+          this.reconnectAttempts.set(connectionId, attempts);
+
+          if (attempts === 1) {
+            this.streakStartedAt.set(connectionId, Date.now());
+          }
+
+          const streakStart =
+            this.streakStartedAt.get(connectionId) ?? Date.now();
+          const streakDurationMs = Date.now() - streakStart;
+
+          if (
+            attempts >= this.MAX_CONSECUTIVE_FAILURES &&
+            streakDurationMs < this.STORM_WINDOW_MS
+          ) {
+            const neverAuthenticated = state.connectedAt === null;
+
+            if (neverAuthenticated) {
+              this.logger.error(
+                `Conexión ${connectionId} nunca logró autenticarse en ${attempts} intentos. ` +
+                  `Purgando credenciales — se requerirá escanear un QR nuevo.`,
+              );
+              await this.prisma.whatsAppSession
+                .deleteMany({ where: { connectionId } })
+                .catch((error: unknown) => {
+                  this.logger.error(
+                    `No fue posible purgar sesión corrupta de ${connectionId}: ${this.errorMessage(error)}`,
+                  );
+                });
+            }
+
+            this.logger.error(
+              `Conexión ${connectionId} entra en CUARENTENA tras ${attempts} fallos consecutivos en ${Math.round(streakDurationMs / 1000)}s (código más reciente: ${code}). ` +
+                `Auto-reconexión detenida. Requiere reconexión manual vía API.`,
+            );
+
+            await this.connections
+              .updateStatus(connectionId, 'ERROR' as const)
+              .catch(() => {});
+
+            this.reportRiskOncePerCooldown(connectionId, code);
+
+            state.stopped = true;
+            this.states.delete(connectionId);
+            this.clearRetryState(connectionId);
+            return;
+          }
+
+          this.reportDisconnect(connectionId, code);
+
           const backoff = Math.min(
-            5000 * Math.pow(2, Math.max(state.reconnectCount - 1, 0)),
-            60000,
+            5000 * Math.pow(2, Math.max(attempts - 1, 0)),
+            this.MAX_BACKOFF_MS,
           );
+
+          this.logger.debug(
+            `Reintento #${attempts} para ${connectionId} en ${Math.round(backoff / 1000)}s`,
+          );
+
           await this.sleep(backoff);
           if (state.stopped) return;
 
@@ -304,16 +449,39 @@ export class BaileysSessionManager {
     connectionId: string,
     code: number | undefined,
   ): void {
-    if (code && this.BAN_WARNING_CODES.includes(code)) {
-      this.logger.warn(
-        `Código ${code} clasificado como señal de riesgo para ${connectionId}`,
-      );
-      this.limiter.reportDisconnect(connectionId);
-    } else {
+    if (!code || !this.BAN_WARNING_CODES.includes(code)) {
       this.logger.debug(
         `Código ${code ?? 'desconocido'} no clasificado como riesgo para ${connectionId} — reconexión benigna`,
       );
+      return;
     }
+    this.reportRiskOncePerCooldown(connectionId, code);
+  }
+
+  private reportRiskOncePerCooldown(
+    connectionId: string,
+    code: number | undefined,
+  ): void {
+    const lastReport = this.lastRiskReportAt.get(connectionId) ?? 0;
+    if (Date.now() - lastReport < this.RISK_REPORT_COOLDOWN_MS) {
+      this.logger.debug(
+        `Código ${code} detectado, pero suprimido por cooldown de riesgo (racha ya reportada) para ${connectionId}`,
+      );
+      return;
+    }
+    this.lastRiskReportAt.set(connectionId, Date.now());
+    this.logger.warn(
+      `Código ${code} clasificado como señal de riesgo para ${connectionId}`,
+    );
+    this.limiter.reportDisconnect(connectionId);
+  }
+
+  private clearRetryState(connectionId: string): void {
+    const stabilityTimer = this.stabilityTimers.get(connectionId);
+    if (stabilityTimer) clearTimeout(stabilityTimer);
+    this.stabilityTimers.delete(connectionId);
+    this.reconnectAttempts.delete(connectionId);
+    this.streakStartedAt.delete(connectionId);
   }
 
   private disconnectedStatus() {
@@ -331,7 +499,7 @@ export class BaileysSessionManager {
       debug: () => {},
       info: () => {},
       warn: (...args: unknown[]) => {
-        const text = this.errorMessage(args);
+        const text = this.formatPinoArgs(args);
         if (
           !['failed to find key', 'msgId', 'no name present'].some((item) =>
             text.includes(item),
@@ -341,7 +509,7 @@ export class BaileysSessionManager {
         }
       },
       error: (...args: unknown[]) => {
-        const text = this.errorMessage(args);
+        const text = this.formatPinoArgs(args);
         if (
           !['PreKeyError', 'SessionError', 'isSessionRecordError'].some(
             (item) => text.includes(item),

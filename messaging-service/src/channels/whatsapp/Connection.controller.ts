@@ -11,6 +11,7 @@ import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from 'src/auth/decorators/current-user.decorator';
 import type { JwtPayload } from 'src/auth/types/jwt.types';
 import { CreateWhatsAppConnectionDto } from './dto/create-whatsapp-connection.dto';
+import { AssignBotConfigDto } from './dto/assign-bot-config.dto';
 import { WhatsAppConnectionService } from './WhatsAppConnection.service';
 import { WhatsAppConnectionOrchestrator } from './WhatsAppConnectionOrchestrator';
 import { JwtGuard } from 'src/auth/guards/jwt-auth.guard';
@@ -26,7 +27,11 @@ export class ConnectionController {
   ) {}
 
   @Post()
-  @ApiOperation({ summary: 'Crear e iniciar una conexión de WhatsApp' })
+  @ApiOperation({
+    summary: 'Crear e iniciar una conexión de WhatsApp',
+    description:
+      'botConfigId es opcional. Sin él, la conexión queda operativa para envíos por API/campaña, sin bot respondiendo mensajes entrantes hasta que se le asigne uno.',
+  })
   create(
     @CurrentUser() user: JwtPayload,
     @Body() dto: CreateWhatsAppConnectionDto,
@@ -85,6 +90,30 @@ export class ConnectionController {
       user.tenantId,
       dto.warmupLevel,
     );
+  }
+
+  @Post(':id/assign-bot')
+  @ApiOperation({
+    summary: 'Asigna (o reasigna) un BotConfig a una conexión existente',
+  })
+  assignBotConfig(
+    @Param('id') id: string,
+    @Body() dto: AssignBotConfigDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.orchestrator.assignBotConfig(
+      id,
+      user.tenantId,
+      dto.botConfigId,
+    );
+  }
+
+  @Delete(':id/assign-bot')
+  @ApiOperation({
+    summary: 'Quita el bot asignado — la conexión sigue activa para envíos',
+  })
+  unassignBotConfig(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
+    return this.orchestrator.unassignBotConfig(id, user.tenantId);
   }
 
   @Get(':id')

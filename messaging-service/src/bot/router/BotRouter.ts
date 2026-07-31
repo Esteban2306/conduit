@@ -43,15 +43,19 @@ export class BotRouter {
     messages: WAMessage[],
     botConfigId: string,
     connectionId: string,
+    tenantId: string,
   ): Promise<void> {
     for (const message of messages) {
-      await this.handleMessage(message, botConfigId, connectionId).catch(
-        (err) => {
-          this.logger.error(
-            `Error procesando mensaje ${message.key.id}: ${err.message}`,
-          );
-        },
-      );
+      await this.handleMessage(
+        message,
+        botConfigId,
+        connectionId,
+        tenantId,
+      ).catch((err) => {
+        this.logger.error(
+          `Error procesando mensaje ${message.key.id}: ${err.message}`,
+        );
+      });
     }
   }
 
@@ -59,6 +63,7 @@ export class BotRouter {
     message: WAMessage,
     botConfigId: string,
     connectionId: string,
+    tenantId: string,
   ): Promise<void> {
     if (message.key.fromMe) return;
 
@@ -72,10 +77,48 @@ export class BotRouter {
     const phoneNumber = jid.replace('@s.whatsapp.net', '').replace('@lid', '');
     const sessionKey = this.composeSessionKey(connectionId, jid);
 
-    const botConfig = await this.botConfigService.getConfigById(botConfigId);
+    const botConfig = await this.botConfigService.getConfigForRouting(
+      botConfigId,
+      tenantId,
+    );
 
-    if (!botConfig || botConfig.status !== BotStatus.ACTIVE) {
-      this.logger.debug(`Sin bot activo. Ignorando mensaje de ${phoneNumber}`);
+    if (!botConfig) {
+      this.logger.error(
+        `Inconsistencia de datos: la conexión ${connectionId} (tenant ${tenantId}) ` +
+          `apunta a botConfigId ${botConfigId}, que no existe o no pertenece a ` +
+          `este tenant. Revisa WhatsAppConnection.botConfigId para esta conexión. ` +
+          `Mensaje de ${phoneNumber} ignorado.`,
+      );
+      return;
+    }
+
+    if (botConfig.status !== BotStatus.ACTIVE) {
+      const activeBot =
+        await this.botConfigService.findActiveForTenant(tenantId);
+
+      if (!activeBot) {
+        this.logger.warn(
+          `Tenant ${tenantId} no tiene ningún bot registrado como ACTIVE. ` +
+            `El bot vinculado a esta conexión ("${botConfig.name}", ${botConfig.id}) ` +
+            `está en estado ${botConfig.status}. Actívalo desde el panel para que ` +
+            `responda a los mensajes. Mensaje de ${phoneNumber} ignorado.`,
+        );
+      } else if (activeBot.id === botConfig.id) {
+        this.logger.warn(
+          `Estado inconsistente detectado para el bot ${botConfig.id}: se ` +
+            `reporta como activo en otra consulta pero como "${botConfig.status}" aquí. ` +
+            `Posible condición de carrera — reintenta el mensaje.`,
+        );
+      } else {
+        this.logger.warn(
+          `El bot vinculado a esta conexión ("${botConfig.name}", ${botConfig.id}) ` +
+            `está en estado ${botConfig.status}, no ACTIVE. Este tenant SÍ tiene un ` +
+            `bot activo — "${activeBot.name}" (${activeBot.id}) — pero no está ` +
+            `vinculado a esta conexión (${connectionId}). Verifica ` +
+            `WhatsAppConnection.botConfigId o activa "${botConfig.name}" si es el ` +
+            `bot correcto para esta conexión. Mensaje de ${phoneNumber} ignorado.`,
+        );
+      }
       return;
     }
 
@@ -218,6 +261,15 @@ export class BotRouter {
     }
 
     try {
+      if (!botConfig.aiModels || botConfig.aiModels.length === 0) {
+        this.logger.error(
+          `El bot "${botConfig.name}" (${botConfig.id}) está ACTIVE pero no tiene ` +
+            `ningún modelo de IA activo configurado. Agrega al menos un AiModelConfig ` +
+            `con role CONVERSATION desde el panel. Mensaje de ${phoneNumber} sin responder.`,
+        );
+        return;
+      }
+
       const aiData = await this.conversationService.getConversationForAI(
         conversation.id,
         botConfig.maxHistoryMessages,
@@ -398,8 +450,9 @@ export class BotRouter {
     message: WAMessage,
     botConfigId: string,
     connectionId: string,
+    tenantId: string,
   ): Promise<void> {
-    const jid = message.key.remoteJid;
+    const jid = message.key.remoteJidAlt ?? message.key.remoteJid;
     if (!jid || jid.endsWith('@g.us')) return;
 
     const sessionKey = this.composeSessionKey(connectionId, jid);
@@ -411,7 +464,10 @@ export class BotRouter {
     const { text } = this.extractContent(message);
     if (!text) return;
 
-    const botConfig = await this.botConfigService.getConfigById(botConfigId);
+    const botConfig = await this.botConfigService.getConfigForRouting(
+      botConfigId,
+      tenantId,
+    );
 
     if (!botConfig) return;
 

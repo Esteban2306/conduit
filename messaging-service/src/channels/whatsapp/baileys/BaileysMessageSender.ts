@@ -40,6 +40,7 @@ export class BaileysMessageSender {
         content,
         subject: '',
         connectionId,
+        priority: 'conversation',
       });
 
       if (result.success) {

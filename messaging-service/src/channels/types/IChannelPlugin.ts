@@ -9,6 +9,8 @@ export interface ChannelSendPayload {
 
   connectionId?: string;
 
+  priority?: 'conversation' | 'campaign';
+
   meta?: Record<string, unknown>;
 }
 
