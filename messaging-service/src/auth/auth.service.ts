@@ -12,6 +12,7 @@ import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { JwtPayload } from './types/jwt.types';
 import { BotStatus, PromptTemplateType, UserRole } from '@prisma/client';
+import { createHash } from 'crypto';
 
 @Injectable()
 export class AuthService {
@@ -21,11 +22,21 @@ export class AuthService {
   ) {}
 
   private signAccessToken(payload: JwtPayload) {
-    return this.jwtService.sign(payload, { expiresIn: '1h' });
+    return this.jwtService.sign(
+      { ...payload, type: 'access' },
+      { expiresIn: '1h' },
+    );
   }
 
   private signRefreshToken(payload: JwtPayload) {
-    return this.jwtService.sign(payload, { expiresIn: '7d' });
+    return this.jwtService.sign(
+      { ...payload, type: 'refresh' },
+      { expiresIn: '7d' },
+    );
+  }
+
+  private hashToken(token: string): string {
+    return createHash('sha256').update(token).digest('hex');
   }
 
   async register(dto: RegisterDto) {
@@ -126,6 +137,18 @@ export class AuthService {
       role: user.role,
     };
 
+    const accessToken = this.signAccessToken(payload);
+    const refreshToken = this.signRefreshToken(payload);
+
+    const decoded = this.jwtService.decode(refreshToken) as { exp: number };
+    await this.prisma.refreshToken.create({
+      data: {
+        userId: user.id,
+        tokenHash: this.hashToken(refreshToken),
+        expiresAt: new Date(decoded.exp * 1000),
+      },
+    });
+
     return {
       user: {
         id: user.id,
@@ -136,8 +159,8 @@ export class AuthService {
         tenantSlug: tenant.slug,
         tenantName: tenant.name,
       },
-      accessToken: this.signAccessToken(payload),
-      refreshToken: this.signRefreshToken(payload),
+      accessToken,
+      refreshToken,
     };
   }
 
@@ -156,16 +179,45 @@ export class AuthService {
     return { ...user, tenantSlug: tenant?.slug, tenantName: tenant?.name };
   }
 
-  async refresh(refreshToken: string) {
+  async refresh(refreshToken: string): Promise<string> {
+    let payload: JwtPayload & { type?: string };
+
     try {
-      const payload = this.jwtService.verify<JwtPayload>(refreshToken);
-      return this.signAccessToken({
-        sub: payload.sub,
-        tenantId: payload.tenantId,
-        role: payload.role,
-      });
+      payload = this.jwtService.verify(refreshToken);
     } catch {
       throw new UnauthorizedException();
     }
+
+    if (payload.type !== 'refresh') {
+      throw new UnauthorizedException();
+    }
+
+    const stored = await this.prisma.refreshToken.findUnique({
+      where: { tokenHash: this.hashToken(refreshToken) },
+      include: { user: { include: { tenant: true } } },
+    });
+
+    if (!stored || stored.revokedAt || stored.expiresAt < new Date()) {
+      throw new UnauthorizedException();
+    }
+
+    if (!stored.user.isActive || !stored.user.tenant.isActive) {
+      throw new UnauthorizedException();
+    }
+
+    return this.signAccessToken({
+      sub: payload.sub,
+      tenantId: payload.tenantId,
+      role: payload.role,
+    });
+  }
+
+  async logout(refreshToken: string | undefined): Promise<void> {
+    if (!refreshToken) return;
+
+    await this.prisma.refreshToken.updateMany({
+      where: { tokenHash: this.hashToken(refreshToken), revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
   }
 }

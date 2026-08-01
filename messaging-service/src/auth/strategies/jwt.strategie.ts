@@ -17,8 +17,9 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     });
   }
 
-  async validate(payload: JwtPayload): Promise<JwtPayload> {
+  async validate(payload: JwtPayload & { type?: string }): Promise<JwtPayload> {
     if (!payload?.sub || !payload?.tenantId) throw new UnauthorizedException();
+    if (payload.type !== 'access') throw new UnauthorizedException();
     return payload;
   }
 }

@@ -130,6 +130,20 @@ model Tenant {
   whatsappConnections WhatsAppConnection[]
 }
 
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
 model User {
   id        String   @id @default(uuid())
   tenantId  String
@@ -140,6 +154,8 @@ model User {
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  refreshTokens RefreshToken[]
 
   tenant Tenant @relation(fields: [tenantId], references: [id])
 
