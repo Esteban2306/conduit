@@ -276,6 +276,7 @@ export class BotRouter {
       );
 
       let userMessageForAI = combinedText || '[imagen recibida]';
+      let imageVerified: boolean | undefined;
 
       if (hasImage && botConfig.imageAnalysisEnabled) {
         const analysisResult =
@@ -313,10 +314,6 @@ export class BotRouter {
             tokensUsed: 0,
           });
 
-          await this.conversationService.saveOutbound(
-            conversation.id,
-            fallbackMsg,
-          );
           return;
         } else {
           this.logger.warn(
@@ -407,15 +404,8 @@ export class BotRouter {
             conversationId: conversation.id,
             connectionId,
             tokensUsed: retryResult.tokensUsed,
+            imageVerified,
           });
-
-          await this.conversationService.saveOutbound(
-            conversation.id,
-            retryResult.content,
-            {
-              tokensUsed: retryResult.tokensUsed,
-            },
-          );
         } catch (retryErr) {
           this.logger.error(
             `Error en reintento de respuesta: ${retryErr.message}`,
@@ -432,14 +422,6 @@ export class BotRouter {
         connectionId,
         tokensUsed: aiResult.tokensUsed,
       });
-
-      await this.conversationService.saveOutbound(
-        conversation.id,
-        aiResult.content,
-        {
-          tokensUsed: aiResult.tokensUsed,
-        },
-      );
     } finally {
       this.processingConversations.delete(conversation.id);
       await this.conversationService.releaseLock(conversation.id);

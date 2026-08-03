@@ -206,6 +206,7 @@ export class ConversationService {
       intent?: string;
       tokensUsed?: number;
       imageVerified?: boolean;
+      connectionId?: string;
     },
   ) {
     const [, message] = await this.prisma.$transaction([

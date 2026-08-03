@@ -47,6 +47,7 @@ export class BaileysMessageSender {
         await this.conversationService.saveOutbound(conversationId, content, {
           tokensUsed,
           imageVerified,
+          connectionId,
         });
 
         this.eventBus.publish(EVENT_TYPES.CHANNEL_SEND_COMPLETED, {
