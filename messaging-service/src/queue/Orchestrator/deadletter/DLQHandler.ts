@@ -1,9 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
-import { QUEUE_NAMES } from 'src/queue/queues';
+import { MessageJobPayload, QUEUE_NAMES } from 'src/queue/queues';
 import { Queue } from 'bullmq';
 import { PrismaService } from 'src/shared/prisma.service';
 import { MessageStatus } from '@prisma/client';
+import { JobSigner } from 'src/queue/security/JobSigner';
 
 @Injectable()
 export class DLQHandler {
@@ -12,7 +13,10 @@ export class DLQHandler {
   constructor(
     @InjectQueue(QUEUE_NAMES.DEAD_LETTER)
     private readonly dlQueue: Queue,
+    @InjectQueue(QUEUE_NAMES.MESSAGES)
+    private readonly messageQueue: Queue<MessageJobPayload>,
     private readonly prisma: PrismaService,
+    private readonly jobSigner: JobSigner,
   ) {}
 
   async handle(
@@ -71,6 +75,8 @@ export class DLQHandler {
       throw new Error(`No existe mensaje muerto con id: ${messageId}`);
     }
 
+    const message = deadLetter.message;
+
     await this.prisma.deadLetterMessage.update({
       where: { messageId },
       data: {
@@ -90,6 +96,28 @@ export class DLQHandler {
         resolvedAt: null,
       },
     });
+
+    const jobPayload: MessageJobPayload = {
+      messageId: message.id,
+      tenantId: message.tenantId,
+      channel: message.channel,
+      recipient: message.recipient,
+      connectionId: message.connectionId ?? undefined,
+      templateId: message.templateId ?? '',
+      inlineBody: message.renderedBody ?? '',
+      inlineSubject: message.renderedSubject ?? '',
+      variables: (message.variables as Record<string, unknown>) ?? {},
+      meta: (message.meta as Record<string, unknown>) ?? undefined,
+      sheduledAt: undefined,
+    };
+
+    const signedPayload = this.jobSigner.sign(jobPayload);
+
+    await this.messageQueue.add(
+      `message:${message.channel}:requeue`,
+      signedPayload,
+      { jobId: `requeue-${messageId}-${Date.now()}` },
+    );
 
     this.logger.log(
       `Mensaje ${messageId} re-encolado manualmente por: ${reviewedBy ?? 'sistema'}`,
