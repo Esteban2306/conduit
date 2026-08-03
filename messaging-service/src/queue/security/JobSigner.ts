@@ -10,7 +10,7 @@ export interface SignedJobPayload extends MessageJobPayload {
 
 @Injectable()
 export class JobSigner {
-  private readonly MAX_JOB_AGE_MS = 24 * 60 * 60 * 1000;
+  private readonly MAX_JOB_AGE_MS = 72 * 60 * 60 * 1000;
 
   constructor(private readonly config: ConfigService) {}
 

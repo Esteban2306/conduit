@@ -14,10 +14,10 @@ import { CreateWhatsAppConnectionDto } from './dto/create-whatsapp-connection.dt
 import { AssignBotConfigDto } from './dto/assign-bot-config.dto';
 import { WhatsAppConnectionService } from './WhatsAppConnection.service';
 import { WhatsAppConnectionOrchestrator } from './WhatsAppConnectionOrchestrator';
-import { JwtGuard } from 'src/auth/guards/jwt-auth.guard';
 import { UpdateWarmupLevelDto } from './dto/update-warmup-level.dto';
+import { ApiAuthGuard } from 'src/auth/guards/api-auth.guard';
 
-@UseGuards(JwtGuard)
+@UseGuards(ApiAuthGuard)
 @ApiTags('WhatsApp Connections')
 @Controller('whatsapp/connections')
 export class ConnectionController {
