@@ -56,6 +56,15 @@ export class ConnectionController {
     };
   }
 
+  @Get(':id/health')
+  @ApiOperation({
+    summary:
+      'Estado operativo de la conexión: nivel de riesgo anti-ban, warmup y tamaño de cola',
+  })
+  getHealth(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
+    return this.orchestrator.getHealth(id, user.tenantId);
+  }
+
   @Post(':id/connect')
   @ApiOperation({ summary: 'Iniciar una conexión de WhatsApp' })
   connect(@Param('id') id: string, @CurrentUser() user: JwtPayload) {

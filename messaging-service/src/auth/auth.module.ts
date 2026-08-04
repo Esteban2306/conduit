@@ -8,6 +8,7 @@ import { PrismaService } from 'src/shared/prisma.service';
 import { ApiKeyService } from './api/ApiKeyService';
 import { ApiKeyGuard } from './api/ApiKeyGuard';
 import { ApiAuthGuard } from './guards/api-auth.guard';
+import { ApiKeyController } from './api-key.controller';
 
 @Module({
   imports: [
@@ -15,7 +16,7 @@ import { ApiAuthGuard } from './guards/api-auth.guard';
       secret: process.env.JWT_SECRET,
     }),
   ],
-  controllers: [AuthController],
+  controllers: [AuthController, ApiKeyController],
   providers: [
     AuthService,
     JwtStrategy,

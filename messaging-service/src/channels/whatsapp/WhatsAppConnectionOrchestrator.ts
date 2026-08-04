@@ -75,6 +75,22 @@ export class WhatsAppConnectionOrchestrator {
     return connection;
   }
 
+  async getHealth(id: string, tenantId: string) {
+    const connection = await this.connections.findOne(id, tenantId);
+    const isConnected = this.sessionManager.isConnected(id);
+    const limiterStatus = this.limiters.getStatus(id);
+
+    return {
+      id: connection.id,
+      status: connection.status,
+      isConnected,
+      rateLimiter: limiterStatus ?? {
+        message:
+          'Sin actividad de rate limiter — la conexión no está corriendo actualmente.',
+      },
+    };
+  }
+
   async remove(id: string, tenantId: string) {
     await this.connections.findOne(id, tenantId);
     await this.sessionManager.stop(id);

@@ -11,14 +11,13 @@ import {
 import { ExternalDataService } from './ExternalData.service';
 import { SourceVariable } from '@prisma/client';
 import { Public } from 'src/api/middlewares/auth';
-import { JwtGuard } from 'src/auth/guards/jwt-auth.guard';
 import { CurrentUser } from 'src/auth/decorators/current-user.decorator';
 import type { JwtPayload } from 'src/auth/types/jwt.types';
 import { ExternalIntegrationSignatureGuard } from './integrations/ExternalIntegrationSignatureGuard';
 import { InjectDataDto } from './dto/InjectDataDto';
 import { UpsertMappingDto } from './dto/upsert-mapping.dto';
+import { ApiAuthGuard } from 'src/auth/guards/api-auth.guard';
 
-@UseGuards(JwtGuard)
 @Controller('api/external-data')
 export class ExternalDataController {
   constructor(private readonly service: ExternalDataService) {}
@@ -34,6 +33,7 @@ export class ExternalDataController {
     return this.service.receiveWebhook(botId, eventType, payload);
   }
 
+  @UseGuards(ApiAuthGuard)
   @Post(':botId/variables')
   injectDirect(
     @Param('botId') botId: string,
@@ -49,6 +49,7 @@ export class ExternalDataController {
     );
   }
 
+  @UseGuards(ApiAuthGuard)
   @Get(':botId/variables')
   getVariables(
     @Param('botId') botId: string,
@@ -58,6 +59,7 @@ export class ExternalDataController {
     return this.service.getVariables(botId, user.tenantId, namespace);
   }
 
+  @UseGuards(ApiAuthGuard)
   @Delete(':botId/variables')
   deleteVariables(
     @Param('botId') botId: string,
@@ -67,11 +69,13 @@ export class ExternalDataController {
     return this.service.deleteVariables(botId, user.tenantId, keys?.split(','));
   }
 
+  @UseGuards(ApiAuthGuard)
   @Get(':botId/mappings')
   getMappings(@Param('botId') botId: string, @CurrentUser() user: JwtPayload) {
     return this.service.getAllMappings(botId, user.tenantId);
   }
 
+  @UseGuards(ApiAuthGuard)
   @Post(':botId/mappings/:eventType')
   upsertMapping(
     @Param('botId') botId: string,
@@ -88,6 +92,7 @@ export class ExternalDataController {
     );
   }
 
+  @UseGuards(ApiAuthGuard)
   @Delete(':botId/mappings/:eventType')
   deleteMapping(
     @Param('botId') botId: string,
@@ -97,6 +102,7 @@ export class ExternalDataController {
     return this.service.deleteMapping(botId, eventType, user.tenantId);
   }
 
+  @UseGuards(ApiAuthGuard)
   @Get(':botId/events')
   getEvents(
     @Param('botId') botId: string,

@@ -7,13 +7,13 @@ import {
   Post,
   UseGuards,
 } from '@nestjs/common';
-import { JwtGuard } from 'src/auth/guards/jwt-auth.guard';
 import { CurrentUser } from 'src/auth/decorators/current-user.decorator';
 import type { JwtPayload } from 'src/auth/types/jwt.types';
 import { WebhookService } from './Webhook.service';
 import { CreateWebhookDto } from './dto/CreateWebhook.dto';
+import { ApiAuthGuard } from 'src/auth/guards/api-auth.guard';
 
-@UseGuards(JwtGuard)
+@UseGuards(ApiAuthGuard)
 @Controller('webhooks')
 export class WebhookController {
   constructor(private readonly service: WebhookService) {}

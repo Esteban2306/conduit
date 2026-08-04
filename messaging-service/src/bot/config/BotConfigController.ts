@@ -15,9 +15,9 @@ import { CreateBotConfigDto } from '../dto/create-bot-config.dto';
 import { CreateAiModelDto } from '../dto/create-ai-model.dto';
 import { CurrentUser } from 'src/auth/decorators/current-user.decorator';
 import type { JwtPayload } from 'src/auth/types/jwt.types';
-import { JwtGuard } from 'src/auth/guards/jwt-auth.guard';
+import { ApiAuthGuard } from 'src/auth/guards/api-auth.guard';
 
-@UseGuards(JwtGuard)
+@UseGuards(ApiAuthGuard)
 @ApiTags('Bot Config')
 @Controller('bot/config')
 export class BotConfigController {

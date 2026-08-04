@@ -15,12 +15,11 @@ import { CreateTemplateDto } from './dto/create-template.dto';
 import { UpdateTemplateDto } from './dto/update-template.dto';
 import { PreviewTemplateDto } from './dto/preview-template.dto';
 import { FilterTemplateDto } from './dto/filter-template.dto';
-import { Public } from 'src/api/middlewares/auth';
-import { JwtGuard } from 'src/auth/guards/jwt-auth.guard';
 import { CurrentUser } from 'src/auth/decorators/current-user.decorator';
 import type { JwtPayload } from 'src/auth/types/jwt.types';
+import { ApiAuthGuard } from 'src/auth/guards/api-auth.guard';
 
-@UseGuards(JwtGuard)
+@UseGuards(ApiAuthGuard)
 @ApiTags('Templates')
 @Controller('templates')
 export class TemplateController {

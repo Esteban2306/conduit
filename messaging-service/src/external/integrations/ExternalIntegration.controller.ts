@@ -7,13 +7,13 @@ import {
   Post,
   UseGuards,
 } from '@nestjs/common';
-import { JwtGuard } from 'src/auth/guards/jwt-auth.guard';
 import { CurrentUser } from 'src/auth/decorators/current-user.decorator';
 import type { JwtPayload } from 'src/auth/types/jwt.types';
 import { ExternalIntegrationService } from './ExternalIntegration.service';
 import { CreateExternalIntegrationDto } from './dto/create-external-integration.dto';
+import { ApiAuthGuard } from 'src/auth/guards/api-auth.guard';
 
-@UseGuards(JwtGuard)
+@UseGuards(ApiAuthGuard)
 @Controller('bots/:botId/integrations')
 export class ExternalIntegrationController {
   constructor(private readonly service: ExternalIntegrationService) {}

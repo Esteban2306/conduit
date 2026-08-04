@@ -18,12 +18,11 @@ import { CreateTagDto } from './dto/create-tag.dto';
 import { UpdateTagDto } from './dto/update-tag.dto';
 
 import { AssignTagDto } from './dto/assign-tag.dto';
-import { JwtGuard } from 'src/auth/guards/jwt-auth.guard';
-import { Public } from 'src/api/middlewares/auth';
 import { CurrentUser } from 'src/auth/decorators/current-user.decorator';
 import type { JwtPayload } from 'src/auth/types/jwt.types';
+import { ApiAuthGuard } from 'src/auth/guards/api-auth.guard';
 
-@UseGuards(JwtGuard)
+@UseGuards(ApiAuthGuard)
 @ApiTags('Tags')
 @Controller('tags')
 export class TagController {

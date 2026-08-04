@@ -21,11 +21,11 @@ import { ListMessageDto } from './dto/list-messages.dto';
 import { BulkDispatchDto } from './dto/bulk-dispatch.dto';
 import { FileDispatchDto } from './dto/file-dispatch.dto';
 import { CreateMessageDto } from './dto/create-message.dto';
-import { JwtGuard } from 'src/auth/guards/jwt-auth.guard';
 import { CurrentUser } from 'src/auth/decorators/current-user.decorator';
 import type { JwtPayload } from 'src/auth/types/jwt.types';
+import { ApiAuthGuard } from 'src/auth/guards/api-auth.guard';
 
-@UseGuards(JwtGuard)
+@UseGuards(ApiAuthGuard)
 @ApiTags('Messages')
 @Controller('messages')
 export class MessageController {
