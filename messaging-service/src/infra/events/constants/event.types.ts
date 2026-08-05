@@ -55,6 +55,10 @@ export const EVENT_TYPES = {
   VARIABLES_DELETED: 'variables.deleted',
 
   MAPPING_UPDATED: 'mapping.updated',
+
+  //Webhook
+
+  WEBHOOK_ACTION_TRIGGERED: 'webhook.action.triggered',
 } as const;
 
 export type EventType = (typeof EVENT_TYPES)[keyof typeof EVENT_TYPES];
@@ -218,5 +222,16 @@ export interface EventPayloadMap {
   [EVENT_TYPES.MAPPING_UPDATED]: {
     botConfigId: string;
     eventType: string;
+  };
+
+  [EVENT_TYPES.WEBHOOK_ACTION_TRIGGERED]: {
+    tenantId: string;
+    connectionId: string;
+    recipient: string;
+    templateId?: string;
+    inlineBody?: string;
+    variables: Record<string, unknown>;
+    scheduledAt?: string; // ISO 8601, ausente = inmediato
+    priority?: 'low' | 'normal' | 'high';
   };
 }

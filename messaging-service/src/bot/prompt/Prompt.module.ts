@@ -11,9 +11,10 @@ import { PrismaService } from 'src/shared/prisma.service';
 import { KnowledgeAssembler } from '../knowledge/KnowledgeAssembler';
 import { ExternalDataModule } from 'src/external/ExternalData.module';
 import { BotConfigModule } from '../config/BotConfig.module';
+import { AuthModule } from 'src/auth/auth.module';
 
 @Module({
-  imports: [ExternalDataModule, BotConfigModule],
+  imports: [ExternalDataModule, BotConfigModule, AuthModule],
   controllers: [PromptController],
   providers: [
     PrismaService,

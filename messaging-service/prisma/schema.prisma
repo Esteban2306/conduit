@@ -537,6 +537,7 @@ model WebhookMapping {
   eventType   String   
   
   rules       Json
+  action      Json?
   
   isActive    Boolean  @default(true)
   description String?  

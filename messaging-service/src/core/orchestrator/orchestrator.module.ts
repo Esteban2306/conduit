@@ -6,6 +6,8 @@ import { QUEUE_NAMES } from 'src/queue/queues';
 import { TemplateModule } from 'src/core/templates/template.module';
 import { FileParserService } from '../adapters/FileParserService';
 import { JobSigner } from 'src/queue/security/JobSigner';
+import { WebhookActionDispatcher } from './WebhookActionDispatcher';
+import { AuthModule } from 'src/auth/auth.module';
 
 @Module({
   imports: [
@@ -14,9 +16,15 @@ import { JobSigner } from 'src/queue/security/JobSigner';
       { name: QUEUE_NAMES.MESSAGES_SCHEDULED },
     ),
     TemplateModule,
+    AuthModule,
   ],
   controllers: [MessageController],
-  providers: [MessageOrchestrator, FileParserService, JobSigner],
+  providers: [
+    MessageOrchestrator,
+    FileParserService,
+    JobSigner,
+    WebhookActionDispatcher,
+  ],
   exports: [MessageOrchestrator],
 })
 export class OrchestratorModule {}

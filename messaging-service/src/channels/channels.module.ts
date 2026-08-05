@@ -15,9 +15,10 @@ import { ConnectionController } from './whatsapp/Connection.controller';
 import { WhatsAppConnectionService } from './whatsapp/WhatsAppConnection.service';
 import { WhatsAppConnectionOrchestrator } from './whatsapp/WhatsAppConnectionOrchestrator';
 import { BotSentMessageRegistry } from 'src/channels/whatsapp/baileys/BotSentMessageRegistry';
+import { AuthModule } from 'src/auth/auth.module';
 
 @Module({
-  imports: [forwardRef(() => BotModule), EventModule],
+  imports: [forwardRef(() => BotModule), EventModule, AuthModule],
   controllers: [ConnectionController],
   providers: [
     GmailResendPlugin,

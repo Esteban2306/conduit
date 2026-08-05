@@ -93,6 +93,7 @@ export class ExternalDataController {
       dto.rules,
       user.tenantId,
       dto.description,
+      dto.action,
     );
   }
 

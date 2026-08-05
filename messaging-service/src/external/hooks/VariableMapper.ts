@@ -20,7 +20,7 @@ export class VariableMapper {
     for (const [sourcePath, targetPattern] of Object.entries(rules)) {
       const value = this.getNestedValue(payload, sourcePath);
 
-      if (value === undefined || value || null) {
+      if (value === undefined || value === null) {
         this.logger.debug(
           `VariableMapper: path "${sourcePath}" no encontrado en payload`,
         );

@@ -15,9 +15,12 @@ import {
   ExternalIntegrationSignatureGuard,
 } from './integrations/ExternalIntegrationSignatureGuard';
 import { BotConfigModule } from 'src/bot/config/BotConfig.module';
+import { WhatsAppConnectionService } from 'src/channels/whatsapp/WhatsAppConnection.service';
+import { TemplateModule } from 'src/core/templates/template.module';
+import { AuthModule } from 'src/auth/auth.module';
 
 @Module({
-  imports: [SecurityModule, BotConfigModule],
+  imports: [SecurityModule, BotConfigModule, TemplateModule, AuthModule],
   controllers: [ExternalDataController, ExternalIntegrationController],
   providers: [
     PrismaService,
@@ -30,6 +33,7 @@ import { BotConfigModule } from 'src/bot/config/BotConfig.module';
     ExternalIntegrationService,
     ExternalIntegrationSecretResolver,
     ExternalIntegrationSignatureGuard,
+    WhatsAppConnectionService,
   ],
   exports: [ExternalDataResolver, ExternalDataService],
 })
