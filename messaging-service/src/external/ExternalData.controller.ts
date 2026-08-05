@@ -3,14 +3,13 @@ import {
   Controller,
   Delete,
   Get,
+  Headers,
   Param,
   Post,
   Query,
   UseGuards,
 } from '@nestjs/common';
 import { ExternalDataService } from './ExternalData.service';
-import { SourceVariable } from '@prisma/client';
-import { Public } from 'src/api/middlewares/auth';
 import { CurrentUser } from 'src/auth/decorators/current-user.decorator';
 import type { JwtPayload } from 'src/auth/types/jwt.types';
 import { ExternalIntegrationSignatureGuard } from './integrations/ExternalIntegrationSignatureGuard';
@@ -22,15 +21,20 @@ import { ApiAuthGuard } from 'src/auth/guards/api-auth.guard';
 export class ExternalDataController {
   constructor(private readonly service: ExternalDataService) {}
 
-  @Public()
   @UseGuards(ExternalIntegrationSignatureGuard)
   @Post(':botId/webhook/:eventType')
   receiveWebhook(
     @Param('botId') botId: string,
     @Param('eventType') eventType: string,
     @Body() payload: Record<string, any>,
+    @Headers('x-conduit-event-id') externalEventId?: string,
   ) {
-    return this.service.receiveWebhook(botId, eventType, payload);
+    return this.service.receiveWebhook(
+      botId,
+      eventType,
+      payload,
+      externalEventId,
+    );
   }
 
   @UseGuards(ApiAuthGuard)

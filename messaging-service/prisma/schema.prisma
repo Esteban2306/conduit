@@ -552,14 +552,17 @@ model WebhookMapping {
 model ExternalDataEvent {
   id          String   @id @default(uuid())
   botConfigId String
-  eventType   String   
+  eventType   String 
+  idempotencyKey String  
   payload     Json
+  mappedCount    Int?
   source      String   
   processedAt DateTime?
   failedAt    DateTime?
   error       String?
   createdAt   DateTime @default(now())
 
+  @@unique([botConfigId, idempotencyKey])
   @@index([botConfigId, processedAt])
   @@index([processedAt, createdAt]) 
 }

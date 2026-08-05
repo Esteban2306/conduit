@@ -5,8 +5,16 @@ import { VariableMapper } from './hooks/VariableMapper';
 import { VariableStore } from './VariableStore';
 import { MappingRepository } from './MappingRepository';
 import { MappingRule } from './hooks/VariableMapper';
-import { SourceVariable } from '@prisma/client';
+import { Prisma, SourceVariable } from '@prisma/client';
 import { BotConfigService } from 'src/bot/config/BotConfigService';
+import { computePayloadHash } from './utils/idempotency.util';
+
+export interface ReceiveWebhookResult {
+  received: boolean;
+  eventId: string;
+  mapped: number;
+  duplicate: boolean;
+}
 
 @Injectable()
 export class ExternalDataService {
@@ -25,20 +33,38 @@ export class ExternalDataService {
     botConfigId: string,
     eventType: string,
     payload: Record<string, any>,
-  ): Promise<{ received: boolean; eventId: string; mapped: number }> {
+    externalEventId?: string,
+  ): Promise<ReceiveWebhookResult> {
     try {
       await this.botConfigService.findOneForBot(botConfigId);
     } catch {
       throw new NotFoundException(`Bot ${botConfigId} no encontrado`);
     }
-    const event = await this.prisma.externalDataEvent.create({
-      data: {
-        botConfigId,
-        eventType,
-        payload: payload as any,
-        source: 'webhook',
-      },
-    });
+
+    const idempotencyKey = externalEventId
+      ? `ext:${externalEventId}`
+      : `hash:${computePayloadHash(eventType, payload)}`;
+
+    const event = await this.createEventIdempotent(
+      botConfigId,
+      eventType,
+      payload,
+      idempotencyKey,
+    );
+
+    if (event.isDuplicate) {
+      this.logger.debug(
+        `Webhook duplicado ignorado: bot ${botConfigId}, eventType "${eventType}", clave ${idempotencyKey} (evento original: ${event.record.id})`,
+      );
+      return {
+        received: true,
+        eventId: event.record.id,
+        mapped: event.record.mappedCount ?? 0,
+        duplicate: true,
+      };
+    }
+
+    const eventId = event.record.id;
 
     try {
       const rules = await this.mappings.find(botConfigId, eventType);
@@ -58,24 +84,24 @@ export class ExternalDataService {
       }
 
       await this.prisma.externalDataEvent.update({
-        where: { id: event.id },
+        where: { id: eventId },
         data: { processedAt: new Date() },
       });
 
       this.eventBus.publish('external_data.processed', {
-        eventId: event.id,
+        eventId,
         botConfigId,
         eventType,
         mapped,
       });
 
-      return { received: true, eventId: event.id, mapped };
+      return { received: true, eventId, mapped, duplicate: false };
     } catch (err) {
       await this.prisma.externalDataEvent.update({
-        where: { id: event.id },
+        where: { id: eventId },
         data: { failedAt: new Date(), error: err.message },
       });
-      this.logger.error(`Error procesando webhook ${event.id}: ${err.message}`);
+      this.logger.error(`Error procesando webhook ${eventId}: ${err.message}`);
       throw err;
     }
   }
@@ -178,5 +204,41 @@ export class ExternalDataService {
         createdAt: true,
       },
     });
+  }
+
+  private async createEventIdempotent(
+    botConfigId: string,
+    eventType: string,
+    payload: Record<string, any>,
+    idempotencyKey: string,
+  ): Promise<
+    | { isDuplicate: false; record: { id: string; mappedCount: number | null } }
+    | { isDuplicate: true; record: { id: string; mappedCount: number | null } }
+  > {
+    try {
+      const record = await this.prisma.externalDataEvent.create({
+        data: {
+          botConfigId,
+          eventType,
+          idempotencyKey,
+          payload: payload as any,
+          source: 'webhook',
+        },
+        select: { id: true, mappedCount: true },
+      });
+      return { isDuplicate: false, record };
+    } catch (err) {
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2002'
+      ) {
+        const existing = await this.prisma.externalDataEvent.findFirst({
+          where: { botConfigId, idempotencyKey },
+          select: { id: true, mappedCount: true },
+        });
+        if (existing) return { isDuplicate: true, record: existing };
+      }
+      throw err;
+    }
   }
 }
