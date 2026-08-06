@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import OpenAI from 'openai';
 import {
   AiProvider,
@@ -10,8 +10,15 @@ import {
 @Injectable()
 export class CustomProvider implements AiProvider {
   readonly providerName = 'CUSTOM';
+  private readonly logger = new Logger(CustomProvider.name);
+  readonly supportsTools = false;
 
   async generateText(input: GenerateTextInput): Promise<GenerateTextResult> {
+    if (input.tools?.length) {
+      this.logger.warn(
+        `${this.providerName} no soporta tool calling — se ignoran ${input.tools.length} tool(s) definida(s) para este bot.`,
+      );
+    }
     if (!input.baseUrl)
       throw new Error('CUSTOM provider requiere baseUrl en AiModelConfig');
     const start = Date.now();

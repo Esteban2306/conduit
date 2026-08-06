@@ -1,5 +1,6 @@
 import { ConversationContext } from 'src/bot/conversation/interfaces/ConversationContext';
 import { HistoryMessage } from 'src/bot/conversation/interfaces/ConversationHistory';
+import { ToolExecutor, ToolSpec } from './AiProvider';
 
 export interface GenerateResponseInput {
   botConfigId: string;
@@ -10,6 +11,8 @@ export interface GenerateResponseInput {
   summary?: string | null;
   maxTokens?: number;
   temperature?: number;
+  tools?: ToolSpec[];
+  toolExecutor?: ToolExecutor;
 }
 
 export interface AnalyzeImageInput {
@@ -27,4 +30,9 @@ export interface OrchestratorResult {
   providerUsed: string;
   latencyMs: number;
   modelConfigId: string;
+  toolCallsExecuted?: Array<{
+    name: string;
+    arguments: Record<string, unknown>;
+    ok: boolean;
+  }>;
 }

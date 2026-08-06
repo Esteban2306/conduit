@@ -84,8 +84,8 @@ export interface EventPayloadMap {
   [EVENT_TYPES.CHANNEL_SEND_REQUESTED]: {
     phoneNumber: string;
     content: string;
-    conversationId: string;
-    connectionId: string;
+    conversationId: string | null;
+    connectionId: string | null;
     tokensUsed?: number;
     imageVerified?: boolean;
   };

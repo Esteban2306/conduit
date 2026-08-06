@@ -39,16 +39,22 @@ export class BaileysMessageSender {
         to: phoneNumber,
         content,
         subject: '',
-        connectionId,
+        connectionId: connectionId ?? '',
         priority: 'conversation',
       });
 
       if (result.success) {
-        await this.conversationService.saveOutbound(conversationId, content, {
-          tokensUsed,
-          imageVerified,
-          connectionId,
-        });
+        if (conversationId) {
+          await this.conversationService.saveOutbound(conversationId, content, {
+            tokensUsed,
+            imageVerified,
+            connectionId: connectionId ?? undefined,
+          });
+        } else {
+          this.logger.debug(
+            `Mensaje enviado a ${phoneNumber} sin conversationId — no se persiste en historial de conversación (envío administrativo/proactivo).`,
+          );
+        }
 
         this.eventBus.publish(EVENT_TYPES.CHANNEL_SEND_COMPLETED, {
           phoneNumber,

@@ -113,6 +113,12 @@ enum EmojiLevel {
   HIGH
 }
 
+enum ToolInvocationStatus {
+  SUCCESS
+  BUSINESS_ERROR 
+  TECHNICAL_ERROR 
+}
+
 model Tenant {
   id        String   @id @default(uuid())
   name      String
@@ -321,6 +327,8 @@ model BotConfig {
   promptTemplates BotPromptTemplate[]
   whatsappConnection WhatsAppConnection[]
   externalIntegrations ExternalIntegration[]
+  toolDefinitions ToolDefinition[]
+  escalationContacts BotEscalationContact[]
 }
 
 model BotAiSettings {
@@ -405,6 +413,7 @@ model Conversation {
 
   botConfig BotConfig    @relation(fields: [botConfigId], references: [id])
   messages  BotMessage[]
+  toolInvocations ToolInvocation[]
 
   @@unique([botConfigId, phoneNumber])
   @@index([tenantId])
@@ -623,4 +632,58 @@ model ApiKey {
 
   @@index([tenantId])
   @@index([keyPrefix])
+}
+
+model ToolDefinition {
+  id            String   @id @default(uuid())
+  botConfigId   String
+  name          String                       
+  description   String   @db.Text            
+  parametersSchema Json                       
+  endpointUrl   String
+  httpMethod    String   @default("POST")
+  authHeaderName   String?                    
+  authSecretEncrypted String? @db.Text        
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  botConfig BotConfig @relation(fields: [botConfigId], references: [id])
+  invocations ToolInvocation[]
+
+  @@unique([botConfigId, name])
+  @@index([botConfigId, isActive])
+}
+
+model ToolInvocation {
+  id             String   @id @default(uuid())
+  toolDefinitionId String
+  conversationId String
+  idempotencyKey String   @unique             
+  requestParams  Json                         
+  status         ToolInvocationStatus
+  responseBody   Json?
+  httpStatus     Int?
+  errorDetail    String?  @db.Text
+  attempts       Int      @default(1)
+  createdAt      DateTime @default(now())
+
+  toolDefinition ToolDefinition @relation(fields: [toolDefinitionId], references: [id])
+  conversation   Conversation   @relation(fields: [conversationId], references: [id])
+
+  @@index([conversationId])
+  @@index([toolDefinitionId, status])
+}
+
+model BotEscalationContact {
+  id          String   @id @default(uuid())
+  botConfigId String
+  label       String                          
+  phoneNumber String
+  connectionId String?                         
+  notifyOn    Json     @default("[\"TECHNICAL_ERROR\"]") 
+
+  botConfig BotConfig @relation(fields: [botConfigId], references: [id])
+
+  @@index([botConfigId])
 }

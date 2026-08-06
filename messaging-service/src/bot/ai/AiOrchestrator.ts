@@ -66,6 +66,8 @@ export class AiOrchestrator {
           baseUrl: config.baseUrl ?? '',
           maxTokens: input.maxTokens ?? 400,
           temperature: input.temperature ?? 0.7,
+          tools: input.tools,
+          toolExecutor: input.toolExecutor,
         });
 
         return { result, config };
@@ -132,7 +134,10 @@ export class AiOrchestrator {
         await this.selector.recordUsage(config.id, result.tokensUsed);
 
         this.logger.log(
-          `IA: ${config.provider}/${config.model} | tokens: ${result.tokensUsed} | ${result.latencyMs}ms`,
+          `IA: ${config.provider}/${config.model} | tokens: ${result.tokensUsed} | ${result.latencyMs}ms` +
+            (result.toolCallsExecuted?.length
+              ? ` | tools: ${result.toolCallsExecuted.map((t) => t.name).join(', ')}`
+              : ''),
         );
 
         return {
@@ -142,6 +147,7 @@ export class AiOrchestrator {
           providerUsed: result.provider,
           latencyMs: result.latencyMs,
           modelConfigId: config.id,
+          toolCallsExecuted: result.toolCallsExecuted,
         };
       } catch (error) {
         this.logger.error(

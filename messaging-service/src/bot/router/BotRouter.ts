@@ -11,6 +11,9 @@ import { BaileysSessionManager } from 'src/channels/whatsapp/baileys/BaileysSess
 import { messageReceiptTracker } from 'src/channels/whatsapp/baileys/MessageReceiptTracker';
 import { MessageDebouncer } from './MessageDebouncer';
 import { PromptEngine } from '../prompt/PromptEngine';
+import { ToolDefinitionService } from '../tools/ToolDefinitionService';
+import { ToolExecutorService } from '../tools/ToolExecutor.service';
+import { BotEscalationService } from '../tools/BotEscalation.service';
 
 export interface IncomingMessageDto {
   phoneNumber: string;
@@ -37,6 +40,9 @@ export class BotRouter {
     private readonly receiptTracker: messageReceiptTracker,
     private readonly debouncer: MessageDebouncer,
     private readonly promptEngine: PromptEngine,
+    private readonly toolDefinitionService: ToolDefinitionService,
+    private readonly toolExecutor: ToolExecutorService,
+    private readonly botEscalation: BotEscalationService,
   ) {}
 
   async route(
@@ -167,6 +173,7 @@ export class BotRouter {
       delaySeconds,
       async (texts, chatHasImage) => {
         await this.processAccumulatedMessages(
+          tenantId,
           sessionKey,
           phoneNumber,
           texts,
@@ -181,6 +188,7 @@ export class BotRouter {
   }
 
   private async processAccumulatedMessages(
+    tenantId: string,
     sessionKey: string,
     phoneNumber: string,
     texts: string[],
@@ -339,6 +347,13 @@ export class BotRouter {
         hasImage,
       );
 
+      const tools = await this.toolDefinitionService.getActiveToolsForBot(
+        botConfig.id,
+      );
+      const toolIdByName = new Map(
+        tools.map((t) => [t.spec.name, t.definitionId]),
+      );
+
       const builtPrompt = await this.promptEngine.buildConversationPrompt(
         botConfig.id,
         {
@@ -347,8 +362,48 @@ export class BotRouter {
           context: aiData.context,
           summary: aiData.summary,
           hasImage: hasImage,
+          hasTools: tools.length > 0,
         },
       );
+
+      const toolExecutor = tools.length
+        ? async (req: { name: string; arguments: Record<string, unknown> }) => {
+            const definitionId = toolIdByName.get(req.name);
+            if (!definitionId) {
+              return {
+                ok: false,
+                content: { error: true, message: 'Tool desconocida.' },
+              };
+            }
+
+            const outcome = await this.toolExecutor.execute({
+              toolDefinitionId: definitionId,
+              conversationId: conversation.id,
+              params: req.arguments,
+            });
+
+            if (outcome.status === 'TECHNICAL_ERROR') {
+              await this.botEscalation.notifyToolFailure(
+                tenantId,
+                botConfig.id,
+                outcome.status,
+                req.name,
+                phoneNumber,
+                outcome.errorDetail,
+              );
+            }
+
+            return {
+              ok: outcome.status === 'SUCCESS',
+              content: {
+                status: outcome.status,
+                data: outcome.responseBody,
+                error: outcome.status !== 'SUCCESS',
+                errorDetail: outcome.errorDetail,
+              },
+            };
+          }
+        : undefined;
 
       const aiResult = await this.aiOrchestrator.generateResponse({
         botConfigId: botConfig.id,
@@ -359,7 +414,25 @@ export class BotRouter {
         summary: aiData.summary,
         maxTokens: builtPrompt.maxTokens,
         temperature: builtPrompt.temperature,
+        tools: tools.length ? tools.map((t) => t.spec) : undefined,
+        toolExecutor,
       });
+
+      const hasFailedToolCall = aiResult.toolCallsExecuted?.some((t) => !t.ok);
+
+      let finalContent = aiResult.content;
+
+      if (hasFailedToolCall) {
+        this.logger.warn(
+          `Tool call fallida detectada en la respuesta para ${phoneNumber} — se ` +
+            `sustituye el mensaje generado por uno honesto, sin importar el ` +
+            `contenido que el modelo haya producido.`,
+        );
+
+        finalContent =
+          'Tuvimos un inconveniente al procesar tu solicitud. Una persona de ' +
+          'nuestro equipo se pondrá en contacto contigo en breve para ayudarte. 🙏';
+      }
 
       if (this.receiptTracker.isChatActive(sessionKey, 30000)) {
         this.logger.log(
@@ -400,7 +473,7 @@ export class BotRouter {
 
           this.eventBus.publish(EVENT_TYPES.CHANNEL_SEND_REQUESTED, {
             phoneNumber,
-            content: retryResult.content,
+            content: finalContent,
             conversationId: conversation.id,
             connectionId,
             tokensUsed: retryResult.tokensUsed,

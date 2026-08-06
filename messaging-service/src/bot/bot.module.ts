@@ -17,9 +17,20 @@ import { ImageAnalysisService } from './ai/ImageAnalysisService';
 import { MessageDebouncer } from './router/MessageDebouncer';
 import { OpenRouterProvider } from './ai/providers/OpenRouterProvider';
 import { PromptModule } from './prompt/Prompt.module';
+import { ToolDefinitionService } from './tools/ToolDefinitionService';
+import { ToolExecutorService } from './tools/ToolExecutor.service';
+import { BotEscalationService } from './tools/BotEscalation.service';
+import { SecurityModule } from 'src/shared/security/security.module';
+import { OrchestratorModule } from 'src/core/orchestrator/orchestrator.module';
 
 @Module({
-  imports: [BotConfigModule, forwardRef(() => ChannelsModule), PromptModule],
+  imports: [
+    BotConfigModule,
+    forwardRef(() => ChannelsModule),
+    PromptModule,
+    SecurityModule,
+    OrchestratorModule,
+  ],
   controllers: [],
   providers: [
     ConversationService,
@@ -36,6 +47,9 @@ import { PromptModule } from './prompt/Prompt.module';
     CustomProvider,
     ImageAnalysisService,
     MessageDebouncer,
+    ToolDefinitionService,
+    ToolExecutorService,
+    BotEscalationService,
   ],
   exports: [
     BotConfigModule,

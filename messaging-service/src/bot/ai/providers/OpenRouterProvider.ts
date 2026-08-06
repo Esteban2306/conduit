@@ -12,11 +12,17 @@ export class OpenRouterProvider implements AiProvider {
   readonly providerName = 'OPENROUTER';
 
   private readonly logger = new Logger(OpenRouterProvider.name);
+  readonly supportsTools = false;
 
   private readonly BASE_URL = 'https://openrouter.ai/api/v1/chat/completions';
   private readonly DEFAULT_IMAGE_MODEL = 'nvidia/nemotron-nano-12b-v2-vl:free';
 
   async generateText(input: GenerateTextInput): Promise<GenerateTextResult> {
+    if (input.tools?.length) {
+      this.logger.warn(
+        `${this.providerName} no soporta tool calling — se ignoran ${input.tools.length} tool(s) definida(s) para este bot.`,
+      );
+    }
     const start = Date.now();
     const apiKey = input.apiKey ?? process.env.OPENROUTER_API_KEY;
     if (!apiKey) throw new Error('OPENROUTER_API_KEY no configurada');

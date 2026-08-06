@@ -210,10 +210,11 @@ export class ConversationService {
     },
   ) {
     const [, message] = await this.prisma.$transaction([
-      this.touchActivity(conversationId),
+      this.touchActivity(conversationId, options?.connectionId),
       this.prisma.botMessage.create({
         data: {
           conversationId,
+          connectionId: options?.connectionId ?? null,
           direction: MessageDirection.OUTBOUND,
           content,
           processedBy: 'bot',
