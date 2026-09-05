@@ -235,3 +235,10 @@ export interface EventPayloadMap {
     priority?: 'low' | 'normal' | 'high';
   };
 }
+
+/* **"EventBusService en memoria, sin outbox transaccional, sin DLQ de eventos".** Es cierto y es una limitación real. Pero antes 
+de construir un patrón outbox completo (que es trabajo no trivial), la pregunta es: ¿con cuántas réplicas del servidor vas a correr 
+para un negocio? Si es una sola instancia (razonable para un primer cliente), el riesgo real es "el proceso se cae entre que actualizo 
+la DB y disparo el evento" — una ventana de milisegundos, no un problema estructural constante. Es una mejora de robustez legítima 
+para cuando tengas múltiples clientes con alta concurrencia, no un bloqueante para lanzar con el spa. No dejes que la auditoría te 
+empuje a sobre-ingeniería antes de necesitarla.  */

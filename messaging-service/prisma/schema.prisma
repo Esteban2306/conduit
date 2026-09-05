@@ -286,6 +286,7 @@ model AiModelConfig {
   requestsThisMinute Int @default(0)
   lastResetAt        DateTime @default(now())
   lastMinuteResetAt  DateTime @default(now())
+  unavailableUntil DateTime?
   
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -645,6 +646,13 @@ model ToolDefinition {
   authHeaderName   String?                    
   authSecretEncrypted String? @db.Text        
   isActive      Boolean  @default(true)
+
+  requiresImageAttachment Boolean @default(false)
+  imageParamName          String? @default("imageBase64")
+  maxImageSizeBytes       Int?    @default(8388608)
+
+  injectPhoneParamName    String?
+
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 

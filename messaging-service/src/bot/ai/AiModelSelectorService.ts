@@ -81,6 +81,10 @@ export class AiModelSelectorService {
 
     const now = new Date();
 
+    if (model.unavailableUntil && model.unavailableUntil > now) {
+      return false;
+    }
+
     if (now.getTime() - model.lastResetAt.getTime() >= 86400000) {
       await this.prisma.aiModelConfig.update({
         where: { id: model.id },
@@ -95,6 +99,24 @@ export class AiModelSelectorService {
         data: { requestsThisMinute: 0, lastMinuteResetAt: now },
       });
       model.requestsThisMinute = 0;
+    }
+
+    if (model.unavailableUntil && model.unavailableUntil <= now) {
+      await this.prisma.aiModelConfig.update({
+        where: { id: model.id },
+        data: {
+          unavailableUntil: null,
+        },
+      });
+
+      model.unavailableUntil = null;
+    }
+
+    if (model.unavailableUntil && model.unavailableUntil > now) {
+      this.logger.warn(
+        `${model.provider}/${model.model}: en cooldown por rate limit hasta ${model.unavailableUntil.toISOString()}`,
+      );
+      return false;
     }
 
     if (
@@ -130,10 +152,23 @@ export class AiModelSelectorService {
     });
   }
 
-  async markUnavailable(modelId: string): Promise<void> {
+  async markRateLimited(modelId: string, retryAfterMs = 60_000): Promise<void> {
+    const unavailableUntil = new Date(Date.now() + retryAfterMs);
+
     await this.prisma.aiModelConfig.update({
       where: { id: modelId },
-      data: { requestsThisMinute: 999999 },
+      data: {
+        unavailableUntil,
+      },
+    });
+  }
+
+  async markDisabled(modelId: string): Promise<void> {
+    await this.prisma.aiModelConfig.update({
+      where: { id: modelId },
+      data: {
+        isActive: false,
+      },
     });
   }
 }

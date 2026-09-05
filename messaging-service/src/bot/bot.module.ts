@@ -22,6 +22,8 @@ import { ToolExecutorService } from './tools/ToolExecutor.service';
 import { BotEscalationService } from './tools/BotEscalation.service';
 import { SecurityModule } from 'src/shared/security/security.module';
 import { OrchestratorModule } from 'src/core/orchestrator/orchestrator.module';
+import { AiErrorClassifier } from './ai/AiErrorClassifier';
+import { ToolDefinitionController } from './tools/ToolDefinition.controller';
 
 @Module({
   imports: [
@@ -31,7 +33,7 @@ import { OrchestratorModule } from 'src/core/orchestrator/orchestrator.module';
     SecurityModule,
     OrchestratorModule,
   ],
-  controllers: [],
+  controllers: [ToolDefinitionController],
   providers: [
     ConversationService,
     BotRouter,
@@ -50,6 +52,7 @@ import { OrchestratorModule } from 'src/core/orchestrator/orchestrator.module';
     ToolDefinitionService,
     ToolExecutorService,
     BotEscalationService,
+    AiErrorClassifier,
   ],
   exports: [
     BotConfigModule,

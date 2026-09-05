@@ -15,6 +15,8 @@ import {
 } from './interface/AiOrchestator.types';
 import { AiProviderType } from './interface/AiProviderType';
 import { resolveModel } from '../helper/model-resolver';
+import { AiErrorClassifier } from './AiErrorClassifier';
+import { AiErrorAction, ClassifiedAiError } from './interface/AiError';
 
 @Injectable()
 export class AiOrchestrator {
@@ -23,6 +25,7 @@ export class AiOrchestrator {
   constructor(
     private readonly selector: AiModelSelectorService,
     private readonly providerFactory: AiProviderFactory,
+    private readonly errorClassifier: AiErrorClassifier,
   ) {}
 
   async generateResponse(
@@ -121,22 +124,31 @@ export class AiOrchestrator {
       config: AiModelConfig,
     ) => Promise<{ result: GenerateTextResult; config: AiModelConfig }>,
   ): Promise<OrchestratorResult> {
-    const start = Date.now();
     const attempted = new Set<string>();
 
     let currentModel: AiModelConfig | null = initialModel;
+    let lastError: ClassifiedAiError | null = null;
 
     while (currentModel) {
+      if (attempted.has(currentModel.id)) {
+        break;
+      }
+
       attempted.add(currentModel.id);
 
       try {
         const { result, config } = await execute(currentModel);
+
         await this.selector.recordUsage(config.id, result.tokensUsed);
 
         this.logger.log(
-          `IA: ${config.provider}/${config.model} | tokens: ${result.tokensUsed} | ${result.latencyMs}ms` +
+          `IA: ${config.provider}/${config.model} | ` +
+            `tokens: ${result.tokensUsed} | ` +
+            `${result.latencyMs}ms` +
             (result.toolCallsExecuted?.length
-              ? ` | tools: ${result.toolCallsExecuted.map((t) => t.name).join(', ')}`
+              ? ` | tools: ${result.toolCallsExecuted
+                  .map((t) => t.name)
+                  .join(', ')}`
               : ''),
         );
 
@@ -149,28 +161,72 @@ export class AiOrchestrator {
           modelConfigId: config.id,
           toolCallsExecuted: result.toolCallsExecuted,
         };
-      } catch (error) {
+      } catch (error: unknown) {
+        const classified = this.errorClassifier.classify(error);
+
+        lastError = classified;
+
         this.logger.error(
-          `Fallo en ${currentModel.provider}/${currentModel.model}: ${error.message}`,
+          `Fallo ${currentModel.provider}/${currentModel.model} | ` +
+            `tipo=${classified.type} | ` +
+            `acción=${classified.action} | ` +
+            `status=${classified.statusCode ?? 'N/A'} | ` +
+            `${classified.message}`,
         );
 
-        await this.selector.markUnavailable(currentModel.id);
+        switch (classified.action) {
+          case AiErrorAction.DISABLE_TEMPORARILY: {
+            await this.selector.markRateLimited(
+              currentModel.id,
+              classified.retryAfterMs ?? 60_000,
+            );
+
+            break;
+          }
+
+          case AiErrorAction.DISABLE: {
+            await this.selector.markDisabled(currentModel.id);
+
+            break;
+          }
+
+          case AiErrorAction.ABORT: {
+            throw classified.originalError;
+          }
+
+          case AiErrorAction.RETRY:
+          case AiErrorAction.FALLBACK:
+          default:
+            break;
+        }
+
+        if (
+          classified.action !== AiErrorAction.FALLBACK &&
+          classified.action !== AiErrorAction.DISABLE_TEMPORARILY
+        ) {
+          throw classified.originalError;
+        }
 
         const next = await this.selector.selectModel(botConfigId, role);
 
         if (!next || attempted.has(next.id)) {
-          throw new Error(
-            `Todos los modelos fallaron. Último error (${currentModel.provider}): ${error.message}`,
-          );
+          break;
         }
 
         this.logger.warn(
-          `Fallback: ${currentModel.provider} → ${next.provider}/${next.model}`,
+          `Fallback: ` +
+            `${currentModel.provider}/${currentModel.model} → ` +
+            `${next.provider}/${next.model} ` +
+            `(${classified.type})`,
         );
+
         currentModel = next;
       }
     }
 
-    throw new Error('Sin modelos de IA disponibles');
+    throw new Error(
+      `Todos los modelos disponibles fallaron. ` +
+        `Último error: ${lastError?.message ?? 'desconocido'}`,
+    );
   }
 }

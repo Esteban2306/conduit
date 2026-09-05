@@ -12,6 +12,11 @@ export interface ToolSpec {
 export interface ToolExecutionRequest {
   name: string;
   arguments: Record<string, unknown>;
+  attachedImage?: {
+    dataUri: string;
+    mimeType: string;
+    sizeBytes: number;
+  };
 }
 
 export interface ToolExecutionResult {

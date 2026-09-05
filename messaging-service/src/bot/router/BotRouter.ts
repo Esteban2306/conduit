@@ -1,7 +1,7 @@
 import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import { BotConfigService } from '../config/BotConfigService';
 import { ConversationService } from '../conversation/ConversationService';
-import { WAMessage } from '@whiskeysockets/baileys';
+import { downloadMediaMessage, WAMessage } from '@whiskeysockets/baileys';
 import { BotStatus } from '@prisma/client';
 import { EventBusService } from 'src/infra/events/event.service';
 import { EVENT_TYPES } from 'src/infra/events/constants/event.types';
@@ -12,7 +12,10 @@ import { messageReceiptTracker } from 'src/channels/whatsapp/baileys/MessageRece
 import { MessageDebouncer } from './MessageDebouncer';
 import { PromptEngine } from '../prompt/PromptEngine';
 import { ToolDefinitionService } from '../tools/ToolDefinitionService';
-import { ToolExecutorService } from '../tools/ToolExecutor.service';
+import {
+  ToolExecutorService,
+  AttachedImage,
+} from '../tools/ToolExecutor.service';
 import { BotEscalationService } from '../tools/BotEscalation.service';
 
 export interface IncomingMessageDto {
@@ -41,7 +44,7 @@ export class BotRouter {
     private readonly debouncer: MessageDebouncer,
     private readonly promptEngine: PromptEngine,
     private readonly toolDefinitionService: ToolDefinitionService,
-    private readonly toolExecutor: ToolExecutorService,
+    private readonly toolExecutorService: ToolExecutorService,
     private readonly botEscalation: BotEscalationService,
   ) {}
 
@@ -295,6 +298,8 @@ export class BotRouter {
           );
 
         if (analysisResult.status === 'SUCCESS') {
+          imageVerified = analysisResult.valid;
+
           await this.conversationService.updateContext(conversation.id, {
             contextPatch: {
               imageVerified: analysisResult.valid,
@@ -350,9 +355,7 @@ export class BotRouter {
       const tools = await this.toolDefinitionService.getActiveToolsForBot(
         botConfig.id,
       );
-      const toolIdByName = new Map(
-        tools.map((t) => [t.spec.name, t.definitionId]),
-      );
+      const toolByName = new Map(tools.map((t) => [t.spec.name, t]));
 
       const builtPrompt = await this.promptEngine.buildConversationPrompt(
         botConfig.id,
@@ -366,20 +369,70 @@ export class BotRouter {
         },
       );
 
-      const toolExecutor = tools.length
+      const toolExecutorFn = tools.length
         ? async (req: { name: string; arguments: Record<string, unknown> }) => {
-            const definitionId = toolIdByName.get(req.name);
-            if (!definitionId) {
+            const resolved = toolByName.get(req.name);
+            if (!resolved) {
               return {
                 ok: false,
                 content: { error: true, message: 'Tool desconocida.' },
               };
             }
 
-            const outcome = await this.toolExecutor.execute({
-              toolDefinitionId: definitionId,
+            let attachedImage: AttachedImage | undefined;
+
+            if (resolved.requiresImageAttachment) {
+              if (!hasImage) {
+                return {
+                  ok: false,
+                  content: {
+                    error: true,
+                    status: 'MISSING_ATTACHMENT',
+                    message:
+                      'El cliente no ha enviado ninguna imagen en este mensaje.',
+                  },
+                };
+              }
+
+              try {
+                const buffer = (await downloadMediaMessage(
+                  lastMessage,
+                  'buffer',
+                  {},
+                )) as Buffer;
+
+                attachedImage = {
+                  dataUri: `data:image/jpeg;base64,${buffer.toString('base64')}`,
+                  mimeType: 'image/jpeg',
+                  sizeBytes: buffer.length,
+                };
+              } catch (err) {
+                this.logger.error(
+                  `Error descargando imagen para tool "${req.name}": ${err.message}`,
+                );
+                return {
+                  ok: false,
+                  content: {
+                    error: true,
+                    status: 'IMAGE_DOWNLOAD_FAILED',
+                    message:
+                      'No fue posible descargar la imagen enviada por el cliente.',
+                  },
+                };
+              }
+            }
+
+            const outcome = await this.toolExecutorService.execute({
+              toolDefinitionId: resolved.definitionId,
               conversationId: conversation.id,
               params: req.arguments,
+              attachedImage,
+              imageParamName: resolved.imageParamName ?? undefined,
+              maxImageSizeBytes: resolved.maxImageSizeBytes ?? undefined,
+              injectedPhone: resolved.injectPhoneParamName
+                ? phoneNumber
+                : undefined,
+              phoneParamName: resolved.injectPhoneParamName ?? undefined,
             });
 
             if (outcome.status === 'TECHNICAL_ERROR') {
@@ -415,24 +468,13 @@ export class BotRouter {
         maxTokens: builtPrompt.maxTokens,
         temperature: builtPrompt.temperature,
         tools: tools.length ? tools.map((t) => t.spec) : undefined,
-        toolExecutor,
+        toolExecutor: toolExecutorFn,
       });
 
-      const hasFailedToolCall = aiResult.toolCallsExecuted?.some((t) => !t.ok);
-
-      let finalContent = aiResult.content;
-
-      if (hasFailedToolCall) {
-        this.logger.warn(
-          `Tool call fallida detectada en la respuesta para ${phoneNumber} — se ` +
-            `sustituye el mensaje generado por uno honesto, sin importar el ` +
-            `contenido que el modelo haya producido.`,
-        );
-
-        finalContent =
-          'Tuvimos un inconveniente al procesar tu solicitud. Una persona de ' +
-          'nuestro equipo se pondrá en contacto contigo en breve para ayudarte. 🙏';
-      }
+      const finalContent = this.applyToolFailureDiscipline(
+        aiResult,
+        phoneNumber,
+      );
 
       if (this.receiptTracker.isChatActive(sessionKey, 30000)) {
         this.logger.log(
@@ -471,9 +513,14 @@ export class BotRouter {
             return;
           }
 
+          const retryFinalContent = this.applyToolFailureDiscipline(
+            retryResult,
+            phoneNumber,
+          );
+
           this.eventBus.publish(EVENT_TYPES.CHANNEL_SEND_REQUESTED, {
             phoneNumber,
-            content: finalContent,
+            content: retryFinalContent,
             conversationId: conversation.id,
             connectionId,
             tokensUsed: retryResult.tokensUsed,
@@ -490,15 +537,36 @@ export class BotRouter {
 
       this.eventBus.publish(EVENT_TYPES.CHANNEL_SEND_REQUESTED, {
         phoneNumber,
-        content: aiResult.content,
+        content: finalContent,
         conversationId: conversation.id,
         connectionId,
         tokensUsed: aiResult.tokensUsed,
+        imageVerified,
       });
     } finally {
       this.processingConversations.delete(conversation.id);
       await this.conversationService.releaseLock(conversation.id);
     }
+  }
+
+  private applyToolFailureDiscipline(
+    result: { content: string; toolCallsExecuted?: Array<{ ok: boolean }> },
+    phoneNumber: string,
+  ): string {
+    const hasFailedToolCall = result.toolCallsExecuted?.some((t) => !t.ok);
+
+    if (!hasFailedToolCall) return result.content;
+
+    this.logger.warn(
+      `Tool call fallida detectada en la respuesta para ${phoneNumber} — se ` +
+        `sustituye el mensaje generado por uno honesto, sin importar el ` +
+        `contenido que el modelo haya producido.`,
+    );
+
+    return (
+      'Tuvimos un inconveniente al procesar tu solicitud. Una persona de ' +
+      'nuestro equipo se pondrá en contacto contigo en breve para ayudarte. 🙏'
+    );
   }
 
   async registerHumanMessage(

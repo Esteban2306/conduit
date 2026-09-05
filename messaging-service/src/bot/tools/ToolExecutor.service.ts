@@ -4,10 +4,21 @@ import { createHash } from 'crypto';
 import { PrismaService } from 'src/shared/prisma.service';
 import { SecretEncryptionService } from 'src/shared/security/secret-encryption.service';
 
+export interface AttachedImage {
+  dataUri: string;
+  mimeType: string;
+  sizeBytes: number;
+}
+
 export interface ToolCallRequest {
   toolDefinitionId: string;
   conversationId: string;
   params: Record<string, unknown>;
+  attachedImage?: AttachedImage;
+  imageParamName?: string;
+  maxImageSizeBytes?: number;
+  injectedPhone?: string;
+  phoneParamName?: string;
 }
 
 export interface ToolCallOutcome {
@@ -15,14 +26,17 @@ export interface ToolCallOutcome {
   responseBody: unknown;
   httpStatus: number | null;
   errorDetail: string | null;
-  invocationId: string;
+  invocationId: string | null;
 }
+
+const READ_ONLY_METHODS = new Set(['GET', 'HEAD']);
 
 @Injectable()
 export class ToolExecutorService {
   private readonly logger = new Logger(ToolExecutorService.name);
 
-  private readonly TIMEOUT_MS = 10_000;
+  private readonly DEFAULT_TIMEOUT_MS = 10_000;
+  private readonly IMAGE_TIMEOUT_MS = 25_000;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -36,8 +50,7 @@ export class ToolExecutorService {
 
     if (!tool || !tool.isActive) {
       return this.fail(
-        request,
-        this.computeIdempotencyKey(request),
+        null,
         ToolInvocationStatus.TECHNICAL_ERROR,
         null,
         null,
@@ -45,29 +58,72 @@ export class ToolExecutorService {
       );
     }
 
-    const idempotencyKey = this.computeIdempotencyKey(request);
+    if (request.attachedImage) {
+      const limit =
+        request.maxImageSizeBytes ?? tool.maxImageSizeBytes ?? 8_388_608;
+      if (request.attachedImage.sizeBytes > limit) {
+        return this.fail(
+          null,
+          ToolInvocationStatus.BUSINESS_ERROR,
+          null,
+          null,
+          `La imagen supera el límite permitido (${Math.round(limit / 1024 / 1024)}MB). ` +
+            `Pide al cliente una foto de menor tamaño o resolución.`,
+        );
+      }
+    }
 
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    };
+    const finalParams = { ...request.params };
+
+    if (request.attachedImage && request.imageParamName) {
+      finalParams[request.imageParamName] = request.attachedImage.dataUri;
+    }
+    if (request.injectedPhone && request.phoneParamName) {
+      finalParams[request.phoneParamName] = request.injectedPhone;
+    }
+
+    const method = (tool.httpMethod ?? 'POST').toUpperCase();
+    const isReadOnly = READ_ONLY_METHODS.has(method);
+
+    const headers: Record<string, string> = {};
+    if (!isReadOnly) headers['Content-Type'] = 'application/json';
 
     if (tool.authHeaderName && tool.authSecretEncrypted) {
       headers[tool.authHeaderName] = this.encryption.decrypt(
         tool.authSecretEncrypted,
       );
     }
-    headers['X-Conduit-Idempotency-Key'] = idempotencyKey;
+
+    let idempotencyKey: string | null = null;
+    if (!isReadOnly) {
+      idempotencyKey = this.computeIdempotencyKey(request, finalParams);
+      headers['X-Conduit-Idempotency-Key'] = idempotencyKey;
+    }
+
+    const timeoutMs = request.attachedImage
+      ? this.IMAGE_TIMEOUT_MS
+      : this.DEFAULT_TIMEOUT_MS;
 
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), this.TIMEOUT_MS);
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
-      const response = await fetch(tool.endpointUrl, {
-        method: tool.httpMethod,
+      const requestUrl = isReadOnly
+        ? this.buildUrlWithQuery(tool.endpointUrl, finalParams)
+        : tool.endpointUrl;
+
+      const fetchOptions: RequestInit = {
+        method,
         headers,
-        body: JSON.stringify(request.params),
         signal: controller.signal,
-      }).finally(() => clearTimeout(timeout));
+      };
+      if (!isReadOnly) {
+        fetchOptions.body = JSON.stringify(finalParams);
+      }
+
+      const response = await fetch(requestUrl, fetchOptions).finally(() =>
+        clearTimeout(timeout),
+      );
 
       const body = await response.json().catch(() => null);
 
@@ -77,9 +133,20 @@ export class ToolExecutorService {
           ? ToolInvocationStatus.BUSINESS_ERROR
           : ToolInvocationStatus.TECHNICAL_ERROR;
 
+      if (isReadOnly) {
+        return {
+          status,
+          responseBody: body,
+          httpStatus: response.status,
+          errorDetail: null,
+          invocationId: null,
+        };
+      }
+
       return this.persist(
         request,
-        idempotencyKey,
+        finalParams,
+        idempotencyKey!,
         status,
         body,
         response.status,
@@ -87,9 +154,23 @@ export class ToolExecutorService {
       );
     } catch (err) {
       const isTimeout = err.name === 'AbortError';
+      const errorDetail = isTimeout
+        ? 'Timeout al invocar la tool'
+        : err.message;
+
+      if (isReadOnly) {
+        return {
+          status: ToolInvocationStatus.TECHNICAL_ERROR,
+          responseBody: null,
+          httpStatus: null,
+          errorDetail,
+          invocationId: null,
+        };
+      }
       return this.persist(
         request,
-        idempotencyKey,
+        finalParams,
+        idempotencyKey!,
         ToolInvocationStatus.TECHNICAL_ERROR,
         null,
         null,
@@ -98,20 +179,52 @@ export class ToolExecutorService {
     }
   }
 
-  private computeIdempotencyKey(request: ToolCallRequest): string {
-    const normalizedParams = JSON.stringify(
-      request.params,
-      Object.keys(request.params).sort(),
+  private computeIdempotencyKey(
+    request: ToolCallRequest,
+    finalParams: Record<string, unknown>,
+  ): string {
+    const paramsForHash = this.redactImageFields(finalParams);
+    const normalized = JSON.stringify(
+      paramsForHash,
+      Object.keys(paramsForHash).sort(),
     );
     return createHash('sha256')
       .update(
-        `${request.toolDefinitionId}:${request.conversationId}:${normalizedParams}`,
+        `${request.toolDefinitionId}:${request.conversationId}:${normalized}`,
       )
       .digest('hex');
   }
 
+  private buildUrlWithQuery(
+    baseUrl: string,
+    params: Record<string, unknown>,
+  ): string {
+    const url = new URL(baseUrl);
+    for (const [key, value] of Object.entries(params)) {
+      if (value === undefined || value === null) continue;
+      if (typeof value === 'string' && value.startsWith('data:image/'))
+        continue;
+      url.searchParams.set(key, String(value));
+    }
+    return url.toString();
+  }
+  private redactImageFields(
+    params: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const redacted: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(params)) {
+      if (typeof value === 'string' && value.startsWith('data:image/')) {
+        redacted[key] = `[imagen omitida, ${value.length} caracteres]`;
+      } else {
+        redacted[key] = value;
+      }
+    }
+    return redacted;
+  }
+
   private async persist(
     request: ToolCallRequest,
+    finalParams: Record<string, unknown>,
     idempotencyKey: string,
     status: ToolInvocationStatus,
     responseBody: unknown,
@@ -124,7 +237,7 @@ export class ToolExecutorService {
 
     if (existing) {
       this.logger.debug(
-        `Reintento detectado para idempotencyKey ${idempotencyKey} — reutilizando invocación ${existing.id} sin duplicar.`,
+        `Reintento detectado para idempotencyKey ${idempotencyKey} — reutilizando invocación ${existing.id}.`,
       );
       return {
         status: existing.status,
@@ -140,7 +253,7 @@ export class ToolExecutorService {
         toolDefinitionId: request.toolDefinitionId,
         conversationId: request.conversationId,
         idempotencyKey,
-        requestParams: request.params as any,
+        requestParams: this.redactImageFields(finalParams) as any,
         status,
         responseBody: responseBody as any,
         httpStatus,
@@ -158,20 +271,18 @@ export class ToolExecutorService {
   }
 
   private fail(
-    request: ToolCallRequest,
-    idempotencyKey: string,
+    idempotencyKey: string | null,
     status: ToolInvocationStatus,
     responseBody: unknown,
     httpStatus: number | null,
     errorDetail: string,
-  ): Promise<ToolCallOutcome> {
-    return this.persist(
-      request,
-      idempotencyKey,
+  ): ToolCallOutcome {
+    return {
       status,
       responseBody,
       httpStatus,
       errorDetail,
-    );
+      invocationId: null,
+    };
   }
 }
