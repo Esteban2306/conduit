@@ -4,7 +4,12 @@ import {
   OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
-import { BaileysRateLimiter, WarmupLevel } from './BaileysRateLimiter';
+import { ConfigService } from '@nestjs/config';
+import {
+  BaileysRateLimiter,
+  DEFAULT_ACTIVE_HOURS_TIMEZONE,
+  WarmupLevel,
+} from './BaileysRateLimiter';
 
 @Injectable()
 export class BaileysRateLimiterRegistry
@@ -15,6 +20,12 @@ export class BaileysRateLimiterRegistry
   private sweepInterval: NodeJS.Timeout | null = null;
 
   private readonly SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+  private readonly timeZone: string;
+
+  constructor(config: ConfigService) {
+    this.timeZone =
+      config.get<string>('whatsapp.timeZone') ?? DEFAULT_ACTIVE_HOURS_TIMEZONE;
+  }
 
   onModuleInit(): void {
     this.sweepInterval = setInterval(
@@ -39,10 +50,14 @@ export class BaileysRateLimiterRegistry
   ): BaileysRateLimiter {
     let limiter = this.limiters.get(connectionId);
     if (!limiter) {
-      limiter = new BaileysRateLimiter(connectionId, warmupLevel);
+      limiter = new BaileysRateLimiter(
+        connectionId,
+        warmupLevel,
+        this.timeZone,
+      );
       this.limiters.set(connectionId, limiter);
       this.logger.log(
-        `Rate limiter creado para conexión ${connectionId} (nivel: ${warmupLevel})`,
+        `Rate limiter creado para conexión ${connectionId} (nivel: ${warmupLevel}, zona: ${this.timeZone})`,
       );
     }
     return limiter;
@@ -78,6 +93,7 @@ export class BaileysRateLimiterRegistry
       warmupLevel: limiter.getWarmupLevel(),
       riskLevel: limiter.getRiskLevel(),
       queueSize: limiter.getQueueSize(),
+      lanes: limiter.getLaneSizes(),
     };
   }
 }

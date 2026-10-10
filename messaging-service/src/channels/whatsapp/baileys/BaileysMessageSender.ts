@@ -24,7 +24,7 @@ export class BaileysMessageSender {
     event: DomainEvent<
       EventPayloadMap[typeof EVENT_TYPES.CHANNEL_SEND_REQUESTED]
     >,
-  ): Promise<void> {
+  ): Promise<{ success: boolean; error?: string }> {
     const {
       phoneNumber,
       content,
@@ -32,6 +32,7 @@ export class BaileysMessageSender {
       connectionId,
       tokensUsed,
       imageVerified,
+      sentBy,
     } = event.payload;
 
     try {
@@ -44,7 +45,14 @@ export class BaileysMessageSender {
       });
 
       if (result.success) {
-        if (conversationId) {
+        if (conversationId && sentBy === 'human') {
+          // Queda como mensaje humano: activa la pausa por takeover del bot.
+          await this.conversationService.saveHumanOutbound(
+            conversationId,
+            content,
+            connectionId ?? undefined,
+          );
+        } else if (conversationId) {
           await this.conversationService.saveOutbound(conversationId, content, {
             tokensUsed,
             imageVerified,
@@ -60,6 +68,7 @@ export class BaileysMessageSender {
           phoneNumber,
           providerMessageId: result.providerMessageId,
         });
+        return { success: true };
       } else {
         this.logger.error(`Fallo enviando a ${phoneNumber}: ${result.error}`);
         this.eventBus.publish(EVENT_TYPES.CHANNEL_SEND_FAILED, {
@@ -67,6 +76,7 @@ export class BaileysMessageSender {
           error: result.error ?? 'Error desconocido',
           retryable: result.retryable ?? false,
         });
+        return { success: false, error: result.error };
       }
     } catch (error) {
       this.logger.error(`Error en BaileysMessageSender: ${error.message}`);
@@ -75,6 +85,10 @@ export class BaileysMessageSender {
         error: error instanceof Error ? error.message : 'Error desconocido',
         retryable: false,
       });
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Error desconocido',
+      };
     }
   }
 }

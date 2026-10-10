@@ -1,4 +1,5 @@
 import * as Joi from 'joi';
+import { ZonedClock } from '../channels/whatsapp/utils/zoned-clock';
 
 export const configValidationSchema = Joi.object({
   NODE_ENV: Joi.string()
@@ -9,6 +10,11 @@ export const configValidationSchema = Joi.object({
   FRONTEND_URL: Joi.string().uri().default('http://localhost:3000'),
 
   JWT_SECRET: Joi.string().min(32).required(),
+
+  // Registro de tenants: cerrado por defecto. Para crear el primero, usar
+  // REGISTRATION_TOKEN en el header x-registration-token.
+  ALLOW_PUBLIC_REGISTRATION: Joi.boolean().default(false),
+  REGISTRATION_TOKEN: Joi.string().min(24).optional(),
 
   DATABASE_URL: Joi.string().required(),
 
@@ -35,10 +41,18 @@ export const configValidationSchema = Joi.object({
     .valid('FRESH', 'NORMAL', 'TRUSTED')
     .default('NORMAL'),
   WA_SESSION_PATH: Joi.string().default('./baileys_session'),
+  WA_TIMEZONE: Joi.string()
+    .default('America/Bogota')
+    .custom((value: string, helpers) =>
+      ZonedClock.isValidTimeZone(value) ? value : helpers.error('any.invalid'),
+    )
+    .messages({ 'any.invalid': 'WA_TIMEZONE debe ser una zona IANA válida' }),
   GREEN_API_INSTANCE_ID: Joi.string().optional(),
   GREEN_API_TOKEN: Joi.string().optional(),
 
   INTEGRATION_ENCRYPTION_KEY: Joi.string().hex().length(64).required(),
+  // Firma los jobs de la cola; sin él la firma no protegía nada.
+  WEBHOOK_SIGNING_SECRET: Joi.string().min(16).required(),
 
   QUEUE_MAX_ATTEMPTS: Joi.number().default(5),
   QUEUE_BACKOFF_DELAY: Joi.number().default(120000),
@@ -55,6 +69,10 @@ export interface AppConfig {
   };
   jwt: {
     secret: string;
+  };
+  auth: {
+    allowPublicRegistration: boolean;
+    registrationToken?: string;
   };
   database: {
     url: string;
@@ -85,9 +103,11 @@ export interface AppConfig {
     greenApiInstanceId: string;
     greenApiToken: string;
     sessionPath: string;
+    timeZone: string;
   };
   webhook: {
     encryptionKey: string;
+    signingSecret: string;
   };
   queue: {
     maxAttempts: number;
@@ -107,6 +127,10 @@ export const configFactory = (): AppConfig => ({
   },
   jwt: {
     secret: process.env.JWT_SECRET ?? '',
+  },
+  auth: {
+    allowPublicRegistration: process.env.ALLOW_PUBLIC_REGISTRATION === 'true',
+    registrationToken: process.env.REGISTRATION_TOKEN || undefined,
   },
   database: {
     url: process.env.DATABASE_URL ?? '',
@@ -140,9 +164,11 @@ export const configFactory = (): AppConfig => ({
     warmupLevel: process.env.WA_WARMUP_LEVEL ?? 'NORMAL',
     greenApiToken: process.env.GREEN_API_TOKEN ?? '',
     sessionPath: process.env.WA_SESSION_PATH ?? './baileys_session',
+    timeZone: process.env.WA_TIMEZONE ?? 'America/Bogota',
   },
   webhook: {
     encryptionKey: process.env.INTEGRATION_ENCRYPTION_KEY ?? '',
+    signingSecret: process.env.WEBHOOK_SIGNING_SECRET ?? '',
   },
   queue: {
     maxAttempts: parseInt(process.env.QUEUE_MAX_ATTEMPTS ?? '5', 10),

@@ -1,10 +1,14 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnApplicationShutdown } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import makeWASocket, {
   WASocket,
+  WAMessage,
   DisconnectReason,
   fetchLatestBaileysVersion,
+  makeCacheableSignalKeyStore,
 } from '@whiskeysockets/baileys';
+import { hostname } from 'os';
+import { randomUUID } from 'crypto';
 import { Boom } from '@hapi/boom';
 import { PrismaService } from 'src/shared/prisma.service';
 import { BotRouter } from 'src/bot/router/BotRouter';
@@ -14,6 +18,16 @@ import { usePrismaAuthState } from './BaileysAuthState';
 import { messageReceiptTracker } from './MessageReceiptTracker';
 import { BaileysRateLimiterRegistry } from './BaileysRateLimiterRegistry';
 import { BotSentMessageRegistry } from 'src/channels/whatsapp/baileys/BotSentMessageRegistry';
+import { WhatsAppContactService } from '../contacts/WhatsAppContactService';
+import { SentMessageStore } from './SentMessageStore';
+import { TtlCacheStore } from './TtlCacheStore';
+import {
+  isIgnorableJid,
+  isLidJid,
+  isPhoneJid,
+  jidUser,
+  phoneToJid,
+} from '../utils/jid.util';
 
 interface SocketState {
   botConfigId: string | null;
@@ -26,7 +40,7 @@ interface SocketState {
 }
 
 @Injectable()
-export class BaileysSessionManager {
+export class BaileysSessionManager implements OnApplicationShutdown {
   private readonly logger = new Logger(BaileysSessionManager.name);
   private readonly sockets = new Map<string, WASocket>();
   private readonly states = new Map<string, SocketState>();
@@ -34,8 +48,27 @@ export class BaileysSessionManager {
   private botRouter: BotRouter | null = null;
 
   private readonly RECEIPT_MAX_AGE_MS = 5 * 60 * 1000;
-  private readonly BAN_WARNING_CODES = [403, 405, 408, 440, 500, 515];
+  /**
+   * Cierres que sugieren problemas con la cuenta o la red y suben el
+   * riesgo del rate limiter. 440 (sesión reemplazada) y 403 (prohibido) se
+   * tratan aparte deteniendo la conexión; 515 (reinicio requerido) es
+   * normal tras emparejar y no es señal de riesgo.
+   */
+  private readonly BAN_WARNING_CODES = [405, 408, 500];
   private readonly INVALID_SESSION_CODES = [DisconnectReason.loggedOut, 401];
+
+  /** Identidad de esta instancia para el lease de sesión. */
+  private readonly instanceId = `${hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
+  private readonly LEASE_TTL_MS = 90_000;
+  private readonly LEASE_RENEW_MS = 30_000;
+  private readonly leaseTimer: NodeJS.Timeout;
+  private readonly leaseRetryTimers = new Map<string, NodeJS.Timeout>();
+  private readonly leaseWarned = new Set<string>();
+
+  /** Cachés que deben sobrevivir a las reconexiones del socket. */
+  private readonly msgRetryCaches = new Map<string, TtlCacheStore>();
+  /** Conexiones que ya abrieron al menos una vez en este proceso. */
+  private readonly openedOnce = new Set<string>();
 
   private readonly reconnectAttempts = new Map<string, number>();
   private readonly streakStartedAt = new Map<string, number>();
@@ -56,7 +89,32 @@ export class BaileysSessionManager {
     private readonly limiter: BaileysRateLimiterRegistry,
     private readonly receiptTracker: messageReceiptTracker,
     private readonly botSentRegistry: BotSentMessageRegistry,
-  ) {}
+    private readonly contacts: WhatsAppContactService,
+    private readonly sentMessages: SentMessageStore,
+  ) {
+    this.leaseTimer = setInterval(() => {
+      void this.renewLeases();
+    }, this.LEASE_RENEW_MS);
+    this.leaseTimer.unref();
+  }
+
+  /**
+   * Cierra los sockets sin hacer logout: la sesión queda guardada y el
+   * estado en DB sigue CONNECTED para restaurarse al arrancar.
+   */
+  async onApplicationShutdown(): Promise<void> {
+    clearInterval(this.leaseTimer);
+    for (const timer of this.leaseRetryTimers.values()) clearTimeout(timer);
+    this.leaseRetryTimers.clear();
+
+    const ids = [...this.sockets.keys()];
+    await Promise.all(ids.map((id) => this.stop(id)));
+    if (ids.length > 0) {
+      this.logger.log(
+        `Sesiones de WhatsApp cerradas ordenadamente: ${ids.length}`,
+      );
+    }
+  }
 
   setBotRouter(router: BotRouter): void {
     this.botRouter = router;
@@ -95,6 +153,17 @@ export class BaileysSessionManager {
     }
 
     this.clearRetryState(connectionId);
+    const retry = this.leaseRetryTimers.get(connectionId);
+    if (retry) clearTimeout(retry);
+    this.leaseRetryTimers.delete(connectionId);
+
+    await this.connections
+      .releaseSessionLease(connectionId, this.instanceId)
+      .catch((error: unknown) => {
+        this.logger.warn(
+          `No fue posible liberar el lease de ${connectionId}: ${this.errorMessage(error)}`,
+        );
+      });
   }
 
   async remove(connectionId: string): Promise<void> {
@@ -132,6 +201,17 @@ export class BaileysSessionManager {
       throw new Error(`La conexión ${connectionId} no existe.`);
     }
 
+    const heldUntil = await this.connections.acquireSessionLease(
+      connectionId,
+      this.instanceId,
+      this.LEASE_TTL_MS,
+    );
+    if (heldUntil) {
+      this.scheduleLeaseRetry(connectionId, heldUntil);
+      return;
+    }
+    this.leaseWarned.delete(connectionId);
+
     this.limiter.getOrCreate(
       connectionId,
       connection.warmupLevel as unknown as WarmupLevel,
@@ -156,15 +236,25 @@ export class BaileysSessionManager {
       );
     }
 
+    const logger = this.buildSilentLogger();
     const socket = makeWASocket({
-      auth: authState,
+      auth: {
+        creds: authState.creds,
+        // Caché en memoria sobre las claves Signal de Postgres: menos
+        // consultas por mensaje y lecturas consistentes bajo concurrencia.
+        keys: makeCacheableSignalKeyStore(authState.keys as any, logger),
+      },
       version,
       printQRInTerminal: false,
-      logger: this.buildSilentLogger(),
+      logger,
       markOnlineOnConnect: false,
       syncFullHistory: false,
       generateHighQualityLinkPreview: false,
       retryRequestDelayMs: 2000,
+      // Permite reenviar un mensaje cuando el teléfono del destinatario no
+      // pudo descifrarlo; sin esto el cliente ve "Esperando este mensaje".
+      getMessage: (key) => this.sentMessages.find(key.id),
+      msgRetryCounterCache: this.retryCacheFor(connectionId),
     });
 
     const state: SocketState = {
@@ -215,6 +305,12 @@ export class BaileysSessionManager {
       if (type !== 'notify') return;
 
       for (const message of messages) {
+        if (isIgnorableJid(message.key.remoteJid)) continue;
+
+        if (!message.key.fromMe) {
+          await this.resolveAndRecordSender(connectionId, socket, message);
+        }
+
         if (message.key.fromMe) {
           const messageId = message.key.id;
           const isSelfOriginated = messageId
@@ -300,9 +396,12 @@ export class BaileysSessionManager {
           state.connectedAt = Date.now();
           state.lastReconnectAt = Date.now();
           state.connected = true;
-          if (state.reconnectCount > 1) {
+          // El estado se recrea con cada socket: lo que dice si es una
+          // reconexión es haber abierto antes en este proceso.
+          if (this.openedOnce.has(connectionId)) {
             this.limiter.enterReconnectThrottle(connectionId);
           }
+          this.openedOnce.add(connectionId);
 
           const phoneNumber =
             socket.user?.id?.split('@')[0].split(':')[0] ?? null;
@@ -356,7 +455,48 @@ export class BaileysSessionManager {
             });
           }
 
-          if (code === DisconnectReason.loggedOut || state.stopped) return;
+          if (state.stopped) return;
+
+          if (code === DisconnectReason.loggedOut) {
+            this.logger.error(
+              `Conexión ${connectionId}: sesión cerrada desde el teléfono (401). Se requiere escanear un QR nuevo.`,
+            );
+            await this.haltConnection(connectionId, state, 'ERROR');
+            return;
+          }
+
+          if (code === DisconnectReason.connectionReplaced) {
+            this.logger.error(
+              `Conexión ${connectionId}: otra instancia o dispositivo abrió esta misma sesión (440). ` +
+                `Se detiene la reconexión automática para no entrar en un bucle de expulsiones, ` +
+                `que WhatsApp asocia a automatización. Revisa que no haya otro Conduit usando la misma ` +
+                `base de datos y reconecta manualmente.`,
+            );
+            await this.haltConnection(connectionId, state, 'ERROR');
+            return;
+          }
+
+          if (code === DisconnectReason.forbidden) {
+            this.logger.error(
+              `Conexión ${connectionId}: WhatsApp rechazó la cuenta (403). Posible bloqueo del número. ` +
+                `Se detiene toda actividad de esta conexión.`,
+            );
+            await this.haltConnection(connectionId, state, 'BANNED');
+            return;
+          }
+
+          if (code === DisconnectReason.restartRequired) {
+            // Normal tras emparejar el QR: reconectar ya, sin backoff ni riesgo.
+            this.logger.log(
+              `Conexión ${connectionId}: WhatsApp pidió reiniciar el socket (515). Reconectando.`,
+            );
+            await this.start(connectionId).catch((error: unknown) => {
+              this.logger.error(
+                `Error reconectando ${connectionId}: ${this.errorMessage(error)}`,
+              );
+            });
+            return;
+          }
 
           const existingTimer = this.stabilityTimers.get(connectionId);
           if (existingTimer) {
@@ -439,6 +579,128 @@ export class BaileysSessionManager {
     );
 
     socket.ev.on('creds.update', saveCreds);
+  }
+
+  /**
+   * Resuelve el teléfono real del remitente. Con LID, WhatsApp oculta el
+   * número: se intenta el mapeo LID→teléfono de Baileys y luego el último
+   * conocido en los contactos. Si se resuelve, se deja en `remoteJidAlt`
+   * para que el bot identifique al cliente por su teléfono.
+   */
+  private async resolveAndRecordSender(
+    connectionId: string,
+    socket: WASocket,
+    message: WAMessage,
+  ): Promise<void> {
+    try {
+      const { remoteJid, remoteJidAlt } = message.key;
+      const lidJid = [remoteJid, remoteJidAlt].find(isLidJid);
+      let phoneJid = [remoteJid, remoteJidAlt].find(isPhoneJid);
+      const lid = lidJid ? jidUser(lidJid) : null;
+
+      if (!phoneJid && lidJid) {
+        const mapped = await socket.signalRepository.lidMapping
+          .getPNForLID(lidJid)
+          .catch(() => null);
+        if (mapped) {
+          phoneJid = phoneToJid(jidUser(mapped));
+        } else if (lid) {
+          const known = await this.contacts.findAddressByLid(connectionId, lid);
+          if (known) phoneJid = phoneToJid(known);
+        }
+      }
+
+      if (!phoneJid) {
+        this.logger.debug(
+          `Remitente ${remoteJid} sin teléfono resoluble (LID); se atiende por LID.`,
+        );
+        return;
+      }
+
+      if (!isPhoneJid(message.key.remoteJidAlt)) {
+        message.key.remoteJidAlt = phoneJid;
+      }
+      await this.contacts.recordInbound(connectionId, jidUser(phoneJid), lid);
+    } catch (error) {
+      this.logger.warn(
+        `No fue posible registrar el remitente en ${connectionId}: ${this.errorMessage(error)}`,
+      );
+    }
+  }
+
+  /** Detiene la conexión sin reintentar y deja el estado para intervención humana. */
+  private async haltConnection(
+    connectionId: string,
+    state: SocketState,
+    status: 'ERROR' | 'BANNED',
+  ): Promise<void> {
+    state.stopped = true;
+    this.states.delete(connectionId);
+    this.clearRetryState(connectionId);
+    await this.connections.updateStatus(connectionId, status).catch(() => {});
+    await this.connections
+      .releaseSessionLease(connectionId, this.instanceId)
+      .catch(() => {});
+    this.reportRiskOncePerCooldown(connectionId, undefined);
+  }
+
+  private retryCacheFor(connectionId: string): TtlCacheStore {
+    let cache = this.msgRetryCaches.get(connectionId);
+    if (!cache) {
+      cache = new TtlCacheStore(60 * 60 * 1000);
+      this.msgRetryCaches.set(connectionId, cache);
+    }
+    return cache;
+  }
+
+  /** Reintenta abrir la sesión cuando venza el lease de la otra instancia. */
+  private scheduleLeaseRetry(connectionId: string, heldUntil: Date): void {
+    const message =
+      `Conexión ${connectionId}: la sesión la tiene otra instancia de Conduit ` +
+      `hasta ${heldUntil.toISOString()}. No se abre un segundo socket (provocaría ` +
+      `expulsiones 440); se reintenta al vencer el lease.`;
+    if (this.leaseWarned.has(connectionId)) this.logger.debug(message);
+    else this.logger.warn(message);
+    this.leaseWarned.add(connectionId);
+
+    const previous = this.leaseRetryTimers.get(connectionId);
+    if (previous) clearTimeout(previous);
+
+    const delay = Math.max(heldUntil.getTime() - Date.now(), 0) + 2_000;
+    const timer = setTimeout(() => {
+      this.leaseRetryTimers.delete(connectionId);
+      void this.start(connectionId).catch((error: unknown) => {
+        this.logger.error(
+          `Error reintentando abrir ${connectionId}: ${this.errorMessage(error)}`,
+        );
+      });
+    }, delay);
+    timer.unref();
+    this.leaseRetryTimers.set(connectionId, timer);
+  }
+
+  /** Renueva el lease de las sesiones abiertas; si se perdió, cierra el socket. */
+  private async renewLeases(): Promise<void> {
+    for (const connectionId of [...this.sockets.keys()]) {
+      try {
+        const heldUntil = await this.connections.acquireSessionLease(
+          connectionId,
+          this.instanceId,
+          this.LEASE_TTL_MS,
+        );
+        if (heldUntil) {
+          this.logger.error(
+            `Conexión ${connectionId}: otra instancia tomó la sesión. Se cierra el socket local.`,
+          );
+          await this.stop(connectionId);
+          this.scheduleLeaseRetry(connectionId, heldUntil);
+        }
+      } catch (error) {
+        this.logger.warn(
+          `No fue posible renovar el lease de ${connectionId}: ${this.errorMessage(error)}`,
+        );
+      }
+    }
   }
 
   private isCurrentSocket(connectionId: string, socket: WASocket): boolean {

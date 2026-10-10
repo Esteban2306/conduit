@@ -16,9 +16,16 @@ import { WhatsAppConnectionService } from './whatsapp/WhatsAppConnection.service
 import { WhatsAppConnectionOrchestrator } from './whatsapp/WhatsAppConnectionOrchestrator';
 import { BotSentMessageRegistry } from 'src/channels/whatsapp/baileys/BotSentMessageRegistry';
 import { AuthModule } from 'src/auth/auth.module';
+import { WhatsAppContactModule } from './whatsapp/contacts/whatsapp-contact.module';
+import { SentMessageStore } from './whatsapp/baileys/SentMessageStore';
 
 @Module({
-  imports: [forwardRef(() => BotModule), EventModule, AuthModule],
+  imports: [
+    forwardRef(() => BotModule),
+    EventModule,
+    AuthModule,
+    WhatsAppContactModule,
+  ],
   controllers: [ConnectionController],
   providers: [
     GmailResendPlugin,
@@ -33,6 +40,7 @@ import { AuthModule } from 'src/auth/auth.module';
     WhatsAppConnectionService,
     messageReceiptTracker,
     BotSentMessageRegistry,
+    SentMessageStore,
   ],
   exports: [
     ChannelPluginFactory,

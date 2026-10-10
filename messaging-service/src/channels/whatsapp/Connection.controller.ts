@@ -4,7 +4,9 @@ import {
   Delete,
   Get,
   Param,
+  Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
@@ -16,6 +18,8 @@ import { WhatsAppConnectionService } from './WhatsAppConnection.service';
 import { WhatsAppConnectionOrchestrator } from './WhatsAppConnectionOrchestrator';
 import { UpdateWarmupLevelDto } from './dto/update-warmup-level.dto';
 import { ApiAuthGuard } from 'src/auth/guards/api-auth.guard';
+import { UpdateCampaignPolicyDto } from './dto/update-campaign-policy.dto';
+import { WhatsAppContactService } from './contacts/WhatsAppContactService';
 
 @UseGuards(ApiAuthGuard)
 @ApiTags('WhatsApp Connections')
@@ -24,7 +28,43 @@ export class ConnectionController {
   constructor(
     private readonly connections: WhatsAppConnectionService,
     private readonly orchestrator: WhatsAppConnectionOrchestrator,
+    private readonly contacts: WhatsAppContactService,
   ) {}
+
+  @Patch(':id/campaign-policy')
+  @ApiOperation({
+    summary:
+      'A quién puede iniciar mensajes el negocio (INBOUND_ONLY: solo a quien escribió en la ventana)',
+  })
+  updateCampaignPolicy(
+    @Param('id') id: string,
+    @Body() dto: UpdateCampaignPolicyDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.connections.updateCampaignPolicy(
+      id,
+      user.tenantId,
+      dto.campaignPolicy,
+      dto.inboundLookbackDays,
+    );
+  }
+
+  @Get(':id/contacts')
+  @ApiOperation({ summary: 'Contactos que han escrito a esta conexión' })
+  async listContacts(
+    @Param('id') id: string,
+    @CurrentUser() user: JwtPayload,
+    @Query('search') search?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    await this.connections.findOne(id, user.tenantId);
+    return this.contacts.list(id, {
+      search: search?.replace(/\D/g, ''),
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined,
+    });
+  }
 
   @Post()
   @ApiOperation({

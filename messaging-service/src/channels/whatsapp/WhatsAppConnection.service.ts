@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import {
   Prisma,
+  WhatsAppCampaignPolicy,
   WhatsAppConnectionStatus,
   WhatsAppWarmupLevel,
 } from '@prisma/client';
@@ -91,6 +92,68 @@ export class WhatsAppConnectionService {
 
   findForSessionManager(id: string) {
     return this.prisma.whatsAppConnection.findUnique({ where: { id } });
+  }
+
+  /**
+   * Toma (o renueva) el lease de la sesión para `owner`. Solo una instancia
+   * de Conduit puede tener abierto el socket de una conexión: dos sockets
+   * con las mismas credenciales se expulsan mutuamente (código 440) en
+   * bucle, un patrón que WhatsApp asocia a cuentas automatizadas.
+   *
+   * @returns null si se obtuvo; si no, hasta cuándo lo tiene otro dueño.
+   */
+  async acquireSessionLease(
+    id: string,
+    owner: string,
+    ttlMs: number,
+  ): Promise<Date | null> {
+    const now = new Date();
+    const { count } = await this.prisma.whatsAppConnection.updateMany({
+      where: {
+        id,
+        OR: [
+          { sessionOwner: null },
+          { sessionOwner: owner },
+          { sessionLeaseUntil: null },
+          { sessionLeaseUntil: { lt: now } },
+        ],
+      },
+      data: {
+        sessionOwner: owner,
+        sessionLeaseUntil: new Date(now.getTime() + ttlMs),
+      },
+    });
+    if (count > 0) return null;
+
+    const current = await this.prisma.whatsAppConnection.findUnique({
+      where: { id },
+      select: { sessionLeaseUntil: true },
+    });
+    return current?.sessionLeaseUntil ?? new Date(now.getTime() + ttlMs);
+  }
+
+  async updateCampaignPolicy(
+    id: string,
+    tenantId: string,
+    policy: WhatsAppCampaignPolicy,
+    inboundLookbackDays?: number,
+  ) {
+    await this.findOne(id, tenantId);
+    return this.prisma.whatsAppConnection.update({
+      where: { id },
+      data: {
+        campaignPolicy: policy,
+        ...(inboundLookbackDays !== undefined && { inboundLookbackDays }),
+      },
+      select: { id: true, campaignPolicy: true, inboundLookbackDays: true },
+    });
+  }
+
+  async releaseSessionLease(id: string, owner: string): Promise<void> {
+    await this.prisma.whatsAppConnection.updateMany({
+      where: { id, sessionOwner: owner },
+      data: { sessionOwner: null, sessionLeaseUntil: null },
+    });
   }
 
   findConnectionsToRestore() {

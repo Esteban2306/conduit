@@ -13,6 +13,11 @@ enum UserRole {
   MEMBER
 }
 
+enum WhatsAppCampaignPolicy {
+  INBOUND_ONLY
+  ANY
+}
+
 enum WhatsAppConnectionStatus {
   DISCONNECTED
   CONNECTING
@@ -589,16 +594,42 @@ model WhatsAppConnection {
   lastQr          String?
   connectedAt     DateTime?
   disconnectedAt  DateTime?
+  // Mensajes que inicia el negocio (no respuestas del bot): a quién se permiten.
+  campaignPolicy       WhatsAppCampaignPolicy @default(INBOUND_ONLY)
+  inboundLookbackDays  Int      @default(180)
+  // Lease de la sesión: una sola instancia de Conduit puede tener el socket.
+  sessionOwner      String?
+  sessionLeaseUntil DateTime?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
   tenant          Tenant   @relation(fields: [tenantId], references: [id])
   botConfig       BotConfig?  @relation(fields: [botConfigId], references: [id])
   sessions        WhatsAppSession[] 
+  contacts        WhatsAppContact[]
 
   @@index([tenantId])
   @@index([tenantId, status])
   @@index([botConfigId])
+}
+
+/// Contactos vistos por una conexión de WhatsApp: quién escribió y si el
+/// número tiene WhatsApp (caché para no consultar a WhatsApp en cada envío).
+model WhatsAppContact {
+  id            String    @id @default(uuid())
+  connectionId  String
+  address       String
+  lid           String?
+  lastInboundAt DateTime?
+  onWhatsApp    Boolean?
+  checkedAt     DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  connection WhatsAppConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@unique([connectionId, address])
+  @@index([connectionId, lid])
 }
 
 model ExternalIntegration {

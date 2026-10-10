@@ -32,6 +32,9 @@ export const EVENT_TYPES = {
 
   CHANNEL_SEND_FAILED: 'channel.send.failed',
 
+  // Mensaje de plantilla/campaña entregado a WhatsApp (no es respuesta del bot).
+  PROACTIVE_MESSAGE_SENT: 'proactive.message.sent',
+
   // orchestration
 
   MESSAGE_DISPATCH_REQUESTED: 'message.dispatch.requested',
@@ -88,6 +91,15 @@ export interface EventPayloadMap {
     connectionId: string | null;
     tokensUsed?: number;
     imageVerified?: boolean;
+    /** Quién responde: el bot (default) o una persona desde el panel. */
+    sentBy?: 'bot' | 'human';
+  };
+
+  [EVENT_TYPES.PROACTIVE_MESSAGE_SENT]: {
+    tenantId: string;
+    connectionId: string;
+    recipient: string;
+    content: string;
   };
 
   [EVENT_TYPES.CHANNEL_SEND_COMPLETED]: {
