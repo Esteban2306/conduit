@@ -254,6 +254,7 @@ model Message {
   resolvedAt DateTime?
   sentAt      DateTime?
   meta        Json?
+  idempotencyKey String?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
@@ -264,9 +265,11 @@ model Message {
 
   deadLetter        DeadLetterMessage?
 
+  @@unique([tenantId, idempotencyKey])
   @@index([tenantId])
   @@index([tenantId, status])
   @@index([status, scheduledAt])
+  @@index([status, updatedAt])
 }
 model AiModelConfig {
   id          String @id @default(uuid())
@@ -486,10 +489,12 @@ model WebhookDelivery {
   webhookId    String
   messageId    String
   eventType    String
+  payload      Json?
   httpStatus   Int?
   responseBody String?
   attempts     Int       @default(0)
   deliveredAt  DateTime?
+  failedAt     DateTime?
   createdAt    DateTime  @default(now())
 
   webhook WebhookEndpoint @relation(fields: [webhookId], references: [id])

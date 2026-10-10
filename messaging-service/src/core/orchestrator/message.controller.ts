@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Headers,
   Param,
   Post,
   Delete,
@@ -15,7 +16,13 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { ApiTags, ApiOperation, ApiConsumes, ApiBody } from '@nestjs/swagger';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiConsumes,
+  ApiBody,
+  ApiHeader,
+} from '@nestjs/swagger';
 import { MessageOrchestrator } from './MessageOrchestrator';
 import { ListMessageDto } from './dto/list-messages.dto';
 import { BulkDispatchDto } from './dto/bulk-dispatch.dto';
@@ -32,9 +39,22 @@ export class MessageController {
   constructor(private readonly orchestrator: MessageOrchestrator) {}
 
   @Post()
-  @ApiOperation({ summary: 'Encola un mensaje para envío' })
-  dispatch(@Body() body: CreateMessageDto, @CurrentUser() user: JwtPayload) {
-    return this.orchestrator.dispatch(user.tenantId, body);
+  @ApiOperation({
+    summary: 'Encola un mensaje para envío',
+    description:
+      'Con Idempotency-Key, los reintentos con la misma clave devuelven el mensaje ' +
+      'original (duplicate: true) en vez de crear y enviar otro.',
+  })
+  @ApiHeader({ name: 'Idempotency-Key', required: false })
+  dispatch(
+    @Body() body: CreateMessageDto,
+    @CurrentUser() user: JwtPayload,
+    @Headers('idempotency-key') idempotencyKey?: string,
+    @Headers('x-conduit-idempotency-key') conduitIdempotencyKey?: string,
+  ) {
+    return this.orchestrator.dispatch(user.tenantId, body, {
+      idempotencyKey: idempotencyKey ?? conduitIdempotencyKey,
+    });
   }
 
   @Post('batch')

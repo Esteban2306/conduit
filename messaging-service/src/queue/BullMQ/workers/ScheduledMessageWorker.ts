@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { QUEUE_NAMES, MessageJobPayload } from 'src/queue/queues';
 import { MessageProcessor } from 'src/queue/processors/MessageProcessor';
 import { SignedJobPayload } from 'src/queue/security/JobSigner';
+import { closeWorkerGracefully } from '../close-worker';
 
 @Injectable()
 export class ScheduledMessageWorker implements OnModuleInit, OnModuleDestroy {
@@ -29,6 +30,6 @@ export class ScheduledMessageWorker implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleDestroy() {
-    await this.worker?.close();
+    await closeWorkerGracefully(this.worker);
   }
 }

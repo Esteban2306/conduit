@@ -49,6 +49,11 @@ async function bootstrap() {
 
   app.setGlobalPrefix('api/v1');
 
+  // Sin esto, SIGTERM (deploy, docker stop) mata el proceso sin ejecutar
+  // onModuleDestroy: los workers no sueltan sus jobs y Baileys no cierra
+  // el socket, lo que WhatsApp ve como una desconexión abrupta.
+  app.enableShutdownHooks();
+
   if (nodeEnv === 'development') {
     const swaggerConfig = new DocumentBuilder()
       .setTitle('Conduit Messaging Service')

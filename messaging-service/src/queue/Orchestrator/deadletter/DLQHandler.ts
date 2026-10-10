@@ -1,10 +1,15 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
-import { MessageJobPayload, QUEUE_NAMES } from 'src/queue/queues';
+import {
+  jobPayloadFromMessage,
+  messageJobId,
+  QUEUE_NAMES,
+} from 'src/queue/queues';
 import { Queue } from 'bullmq';
 import { PrismaService } from 'src/shared/prisma.service';
 import { MessageStatus } from '@prisma/client';
-import { JobSigner } from 'src/queue/security/JobSigner';
+import { JobSigner, SignedJobPayload } from 'src/queue/security/JobSigner';
+import { WebhookDispatcher } from 'src/webhooks/WebhookDispatcher';
 
 @Injectable()
 export class DLQHandler {
@@ -14,11 +19,19 @@ export class DLQHandler {
     @InjectQueue(QUEUE_NAMES.DEAD_LETTER)
     private readonly dlQueue: Queue,
     @InjectQueue(QUEUE_NAMES.MESSAGES)
-    private readonly messageQueue: Queue<MessageJobPayload>,
+    private readonly messageQueue: Queue<SignedJobPayload>,
+    @InjectQueue(QUEUE_NAMES.MESSAGES_SCHEDULED)
+    private readonly scheduledQueue: Queue<SignedJobPayload>,
     private readonly prisma: PrismaService,
     private readonly jobSigner: JobSigner,
+    private readonly webhookDispatcher: WebhookDispatcher,
   ) {}
 
+  /**
+   * Punto único por el que un mensaje pasa a DEAD. Es idempotente: si el
+   * mensaje ya está en la DLQ (y no fue re-encolado) no se duplica el
+   * registro ni el webhook.
+   */
   async handle(
     messageId: string,
     reason?: string,
@@ -26,7 +39,10 @@ export class DLQHandler {
   ): Promise<void> {
     const existing = await this.prisma.message.findUnique({
       where: { id: messageId },
-      select: { attempts: true },
+      select: {
+        attempts: true,
+        deadLetter: { select: { requeued: true } },
+      },
     });
 
     if (!existing) {
@@ -34,6 +50,7 @@ export class DLQHandler {
         `No se puede mover a DLQ: Message ${messageId} no existe en DB`,
       );
     }
+    if (existing.deadLetter && !existing.deadLetter.requeued) return;
 
     await this.prisma.$transaction([
       this.prisma.message.update({
@@ -45,13 +62,21 @@ export class DLQHandler {
           lastError: reason,
         },
       }),
-      this.prisma.deadLetterMessage.create({
-        data: {
+      this.prisma.deadLetterMessage.upsert({
+        where: { messageId },
+        create: {
           messageId,
           reason: reason ?? 'Unknown',
           lastErrorCode: errorCode,
           lastErrorDetail: reason,
           totalAttempts: existing.attempts,
+        },
+        update: {
+          reason: reason ?? 'Unknown',
+          lastErrorCode: errorCode,
+          lastErrorDetail: reason,
+          totalAttempts: existing.attempts,
+          requeued: false,
         },
       }),
     ]);
@@ -59,10 +84,11 @@ export class DLQHandler {
     await this.dlQueue.add(
       'dead-message',
       { messageId, errorCode },
-      { jobId: `dlq-${messageId}` },
+      { jobId: `dlq-${messageId}-${Date.now()}` },
     );
 
     this.logger.warn(`Mensaje ${messageId} movido a DLQ. Razón: ${reason}`);
+    await this.webhookDispatcher.dispatch('message.dead', messageId);
   }
 
   async requeue(messageId: string, reviewedBy?: string): Promise<void> {
@@ -75,48 +101,35 @@ export class DLQHandler {
       throw new Error(`No existe mensaje muerto con id: ${messageId}`);
     }
 
-    const message = deadLetter.message;
+    // El job fallido conserva el jobId determinista; mientras exista,
+    // BullMQ ignoraría el nuevo `add`.
+    for (const queue of [this.messageQueue, this.scheduledQueue]) {
+      const job = await queue.getJob(messageJobId(messageId));
+      if (job) await job.remove();
+    }
 
-    await this.prisma.deadLetterMessage.update({
-      where: { messageId },
-      data: {
-        requeued: true,
-        reviewedBy,
-        reviewedAt: new Date(),
-      },
-    });
+    await this.prisma.$transaction([
+      this.prisma.deadLetterMessage.update({
+        where: { messageId },
+        data: { requeued: true, reviewedBy, reviewedAt: new Date() },
+      }),
+      this.prisma.message.update({
+        where: { id: messageId },
+        data: {
+          status: MessageStatus.QUEUED,
+          retryable: true,
+          attempts: 0,
+          lastError: null,
+          resolvedAt: null,
+        },
+      }),
+    ]);
 
-    await this.prisma.message.update({
-      where: { id: messageId },
-      data: {
-        status: MessageStatus.PENDING,
-        retryable: true,
-        attempts: 0,
-        lastError: null,
-        resolvedAt: null,
-      },
-    });
-
-    const jobPayload: MessageJobPayload = {
-      messageId: message.id,
-      tenantId: message.tenantId,
-      channel: message.channel,
-      recipient: message.recipient,
-      connectionId: message.connectionId ?? undefined,
-      templateId: message.templateId ?? '',
-      inlineBody: message.renderedBody ?? '',
-      inlineSubject: message.renderedSubject ?? '',
-      variables: (message.variables as Record<string, unknown>) ?? {},
-      meta: (message.meta as Record<string, unknown>) ?? undefined,
-      sheduledAt: undefined,
-    };
-
-    const signedPayload = this.jobSigner.sign(jobPayload);
-
+    const jobPayload = jobPayloadFromMessage(deadLetter.message);
     await this.messageQueue.add(
-      `message:${message.channel}:requeue`,
-      signedPayload,
-      { jobId: `requeue-${messageId}-${Date.now()}` },
+      `message:${deadLetter.message.channel}:requeue`,
+      this.jobSigner.sign({ ...jobPayload, sheduledAt: undefined }),
+      { jobId: messageJobId(messageId) },
     );
 
     this.logger.log(

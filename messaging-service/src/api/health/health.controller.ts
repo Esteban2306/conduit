@@ -25,7 +25,12 @@ export class HealthController {
       this.checkDatabase(),
       this.redis.ping(),
     ]);
-    const allHealthy = dbStatus.status === 'ok' && redisStatus.status === 'ok';
+    const whatsapp =
+      dbStatus.status === 'ok' ? await this.checkWhatsApp() : null;
+    const allHealthy =
+      dbStatus.status === 'ok' &&
+      redisStatus.status === 'ok' &&
+      whatsapp?.status === 'ok';
 
     return {
       status: allHealthy ? 'ok' : 'degraded',
@@ -35,7 +40,28 @@ export class HealthController {
       service: {
         database: dbStatus,
         redis: redisStatus,
+        whatsapp,
       },
+    };
+  }
+
+  /**
+   * Resumen agregado (sin ids ni números: el endpoint es público). Se
+   * degrada si alguna conexión cayó en ERROR/BANNED, que es cuando se
+   * requiere intervención humana (QR nuevo o número bloqueado).
+   */
+  private async checkWhatsApp() {
+    const groups = await this.prisma.whatsAppConnection.groupBy({
+      by: ['status'],
+      _count: { _all: true },
+    });
+    const counts: Record<string, number> = {};
+    for (const group of groups) counts[group.status] = group._count._all;
+
+    const needsAttention = (counts.ERROR ?? 0) + (counts.BANNED ?? 0);
+    return {
+      status: needsAttention > 0 ? 'attention_required' : 'ok',
+      connections: counts,
     };
   }
 

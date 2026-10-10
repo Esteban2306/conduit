@@ -20,7 +20,7 @@ export class JobSigner {
   sign(payload: MessageJobPayload): SignedJobPayload {
     const signedAt = Date.now();
     const expiresAt = this.computeExpiresAt(payload, signedAt);
-    const secret = this.config.get<string>('webhook.signingSecret') ?? '';
+    const secret = this.secret();
 
     const content = this.buildSignableContent(payload, signedAt, expiresAt);
 
@@ -54,7 +54,7 @@ export class JobSigner {
       };
     }
 
-    const secret = this.config.get<string>('webhook.signingSecret') ?? '';
+    const secret = this.secret();
     const content = this.buildSignableContent(
       payload,
       payload._signedAt,
@@ -81,6 +81,16 @@ export class JobSigner {
           valid: false,
           reason: 'Firma inválida — job posiblemente manipulado',
         };
+  }
+
+  private secret(): string {
+    const secret = this.config.get<string>('webhook.signingSecret');
+    if (!secret) {
+      throw new Error(
+        'WEBHOOK_SIGNING_SECRET no está configurado: no se pueden firmar ni verificar jobs.',
+      );
+    }
+    return secret;
   }
 
   private computeExpiresAt(

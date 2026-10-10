@@ -7,9 +7,14 @@ import {
   Param,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { MessageChannel, MessageStatus, Prisma } from '@prisma/client';
+import { Message, MessageChannel, MessageStatus, Prisma } from '@prisma/client';
 import { Queue } from 'bullmq';
-import { MessageJobPayload, QUEUE_NAMES } from 'src/queue/queues';
+import {
+  jobPayloadFromMessage,
+  messageJobId,
+  MessageJobPayload,
+  QUEUE_NAMES,
+} from 'src/queue/queues';
 import { PrismaService } from 'src/shared/prisma.service';
 import { TemplateService } from '../templates/TemplateService';
 import {
@@ -23,6 +28,23 @@ import { BulkDispatchDto } from './dto/bulk-dispatch.dto';
 import { FileDispatchDto } from './dto/file-dispatch.dto';
 import { FileParserService } from '../adapters/FileParserService';
 import { BatchResult } from './type/batch-result.type';
+import { normalizeWhatsAppAddress } from 'src/channels/whatsapp/utils/whatsapp-address.util';
+import { WebhookDispatcher } from 'src/webhooks/WebhookDispatcher';
+import { WhatsAppContactService } from 'src/channels/whatsapp/contacts/WhatsAppContactService';
+
+export const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._:-]{8,128}$/;
+
+export interface DispatchResult {
+  messageId: string;
+  status: string;
+  /** true cuando la clave de idempotencia ya existía: no se creó un mensaje nuevo. */
+  duplicate: boolean;
+}
+
+export interface DispatchOptions {
+  /** Clave del integrador; reintentos con la misma clave devuelven el mismo mensaje. */
+  idempotencyKey?: string;
+}
 
 export interface DuplicateInfo {
   index: number;
@@ -43,15 +65,35 @@ export class MessageOrchestrator {
     private readonly templateService: TemplateService,
     private readonly jobSigner: JobSigner,
     private readonly fileParser: FileParserService,
+    private readonly webhookDispatcher: WebhookDispatcher,
+    private readonly contacts: WhatsAppContactService,
   ) {}
 
   async dispatch(
     tenantId: string,
     raw: unknown,
-  ): Promise<{ messageId: string; status: string }> {
+    options: DispatchOptions = {},
+  ): Promise<DispatchResult> {
+    if (
+      options.idempotencyKey !== undefined &&
+      !IDEMPOTENCY_KEY_PATTERN.test(options.idempotencyKey)
+    ) {
+      throw new BadRequestException(
+        'Idempotency-Key inválida: usa 8-128 caracteres [A-Za-z0-9._:-].',
+      );
+    }
+
+    if (options.idempotencyKey) {
+      const existing = await this.findByIdempotencyKey(
+        tenantId,
+        options.idempotencyKey,
+      );
+      if (existing) return this.resumeExisting(existing);
+    }
+
     const payload = await this.validatePayload(tenantId, raw);
 
-    return this.commitDispatch(tenantId, payload);
+    return this.commitDispatch(tenantId, payload, options.idempotencyKey);
   }
 
   async dispatchBatch(
@@ -198,19 +240,27 @@ export class MessageOrchestrator {
       );
     }
 
-    const jobs = await this.messageQueue.getJobs(['waiting', 'delayed']);
-    const job = jobs.find((j) => j.data.messageId === messageId);
-    if (job) await job.remove();
+    for (const queue of [this.messageQueue, this.scheduledQueue]) {
+      const job = await queue.getJob(messageJobId(messageId));
+      if (job && !(await job.isActive())) await job.remove();
+    }
 
-    await this.prisma.message.update({
-      where: { id: messageId },
+    const { count } = await this.prisma.message.updateMany({
+      where: { id: messageId, status: { in: cancellable } },
       data: {
         status: MessageStatus.CANCELLED,
         resolvedAt: new Date(),
       },
     });
 
+    if (count === 0) {
+      throw new BadRequestException(
+        `El mensaje ${messageId} cambió de estado mientras se cancelaba y no puede cancelarse`,
+      );
+    }
+
     this.logger.log(`Mensaje cancelado: ${messageId}`);
+    await this.webhookDispatcher.dispatch('message.cancelled', messageId);
 
     return { messageId, status: MessageStatus.CANCELLED };
   }
@@ -333,6 +383,15 @@ export class MessageOrchestrator {
     this.validateChannel(payload.recipient.channel);
 
     if (payload.recipient.channel === 'WHATSAPP') {
+      const address = normalizeWhatsAppAddress(payload.recipient.address);
+      if (!address) {
+        throw new BadRequestException(
+          `recipient.address "${payload.recipient.address}" no es un número de WhatsApp válido. ` +
+            'Usa formato internacional con código de país (ej. +573001234567 o 573001234567).',
+        );
+      }
+      payload.recipient.address = address;
+
       if (!payload.connectionId) {
         throw new BadRequestException(
           'connectionId es obligatorio para mensajes del canal WHATSAPP. ' +
@@ -340,6 +399,21 @@ export class MessageOrchestrator {
         );
       }
       await this.validateConnection(payload.connectionId, tenantId);
+
+      // Se valida al encolar para que el integrador reciba el motivo de
+      // inmediato; el plugin lo vuelve a verificar al enviar.
+      const gate = await this.contacts.campaignGate(
+        payload.connectionId,
+        address,
+      );
+      if (!gate.allowed) {
+        throw new BadRequestException({
+          code: 'RECIPIENT_NOT_OPTED_IN',
+          message:
+            `${gate.reason}. Por política anti-bloqueo, este WhatsApp solo inicia ` +
+            'mensajes con números que le escribieron antes (configurable por conexión).',
+        });
+      }
     }
 
     return payload;
@@ -348,69 +422,124 @@ export class MessageOrchestrator {
   private async commitDispatch(
     tenantId: string,
     payload: MessagePayload,
-  ): Promise<{ messageId: string; status: string }> {
+    idempotencyKey?: string,
+  ): Promise<DispatchResult> {
     const scheduledAt = payload.options?.scheduledAt
       ? new Date(payload.options.scheduledAt)
       : new Date();
 
-    const message = await this.prisma.message.create({
-      data: {
+    let message: Message;
+    try {
+      message = await this.prisma.message.create({
+        data: {
+          tenantId,
+          channel: payload.recipient.channel,
+          recipient: payload.recipient.address,
+          connectionId: payload.connectionId ?? null,
+          templateId: payload.template.id ?? null,
+          variables: (payload.variables ?? {}) as Prisma.InputJsonValue,
+          meta: payload.meta
+            ? (payload.meta as Prisma.InputJsonValue)
+            : Prisma.JsonNull,
+          idempotencyKey: idempotencyKey ?? null,
+          status: MessageStatus.PENDING,
+          scheduledAt,
+          maxAttempts: this.config.get<number>('queue.maxAttempts') ?? 5,
+          renderedSubject: payload.template.inline?.subject ?? '',
+          renderedBody: payload.template.inline?.body ?? '',
+        },
+      });
+    } catch (error) {
+      if (
+        idempotencyKey &&
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        const existing = await this.findByIdempotencyKey(
+          tenantId,
+          idempotencyKey,
+        );
+        if (existing) return this.resumeExisting(existing);
+      }
+      throw error;
+    }
+
+    await this.enqueue(
+      {
+        messageId: message.id,
         tenantId,
         channel: payload.recipient.channel,
         recipient: payload.recipient.address,
-        connectionId: payload.connectionId ?? null,
-        templateId: payload.template.id ?? null,
-        variables: (payload.variables ?? {}) as Prisma.InputJsonValue,
-        meta: payload.meta
-          ? (payload.meta as Prisma.InputJsonValue)
-          : Prisma.JsonNull,
-        status: MessageStatus.PENDING,
-        scheduledAt,
-        maxAttempts: this.config.get<number>('queue.maxAttempts') ?? 5,
-        renderedSubject: payload.template.inline?.subject ?? '',
-        renderedBody: payload.template.inline?.body ?? '',
+        connectionId: payload.connectionId,
+        templateId: payload.template.id ?? '',
+        inlineBody: payload.template.inline?.body ?? '',
+        inlineSubject: payload.template.inline?.subject ?? '',
+        variables: payload.variables ?? {},
+        meta: payload.meta,
+        sheduledAt: payload.options?.scheduledAt,
       },
-    });
-
-    const jobPayload: MessageJobPayload = {
-      messageId: message.id,
-      tenantId,
-      channel: payload.recipient.channel,
-      recipient: payload.recipient.address,
-      connectionId: payload.connectionId,
-      templateId: payload.template.id ?? '',
-      inlineBody: payload.template.inline?.body ?? '',
-      inlineSubject: payload.template.inline?.subject ?? '',
-      variables: payload.variables ?? {},
-      meta: payload.meta,
-      sheduledAt: payload.options?.scheduledAt,
-    };
-
-    const jobOptions = this.buildJobOptions(payload, scheduledAt);
-    const isScheduled = scheduledAt.getTime() - Date.now() > 1000;
-
-    const targetQueue = isScheduled ? this.scheduledQueue : this.messageQueue;
-    const signedPayload = this.jobSigner.sign({ ...jobPayload, isScheduled });
-
-    const job = await targetQueue.add(
-      `message:${payload.recipient.channel}`,
-      signedPayload,
-      jobOptions,
-    );
-
-    await this.prisma.message.update({
-      where: { id: message.id },
-      data: { status: MessageStatus.QUEUED },
-    });
-
-    this.logger.log(
-      `Mensaje encolado: ${message.id} | Canal: ${payload.recipient.channel} | Job: ${job.id}`,
+      scheduledAt,
+      payload.options?.priority,
     );
 
     return {
       messageId: message.id,
       status: MessageStatus.QUEUED,
+      duplicate: false,
     };
+  }
+
+  /**
+   * Encola el job del mensaje. Es seguro llamarlo varias veces para el mismo
+   * mensaje: el jobId es determinista y BullMQ descarta el duplicado.
+   */
+  async enqueue(
+    jobPayload: MessageJobPayload,
+    scheduledAt: Date,
+    priority: 'low' | 'normal' | 'high' = 'normal',
+  ): Promise<void> {
+    const delayMs = scheduledAt.getTime() - Date.now();
+    const isScheduled = delayMs > 1000;
+
+    const targetQueue = isScheduled ? this.scheduledQueue : this.messageQueue;
+    const signedPayload = this.jobSigner.sign({ ...jobPayload, isScheduled });
+
+    const job = await targetQueue.add(
+      `message:${jobPayload.channel}`,
+      signedPayload,
+      this.buildJobOptions(jobPayload.messageId, priority, delayMs),
+    );
+
+    // Solo PENDING → QUEUED: un worker rápido pudo haberlo procesado ya y no
+    // se debe pisar su estado (p. ej. devolver un SENT a QUEUED).
+    await this.prisma.message.updateMany({
+      where: { id: jobPayload.messageId, status: MessageStatus.PENDING },
+      data: { status: MessageStatus.QUEUED },
+    });
+
+    this.logger.log(
+      `Mensaje encolado: ${jobPayload.messageId} | Canal: ${jobPayload.channel} | Job: ${job.id}`,
+    );
+  }
+
+  private findByIdempotencyKey(tenantId: string, idempotencyKey: string) {
+    return this.prisma.message.findUnique({
+      where: { tenantId_idempotencyKey: { tenantId, idempotencyKey } },
+    });
+  }
+
+  private async resumeExisting(existing: Message): Promise<DispatchResult> {
+    if (existing.status === MessageStatus.PENDING) {
+      // El intento anterior creó el registro pero no alcanzó a encolarlo.
+      await this.enqueue(jobPayloadFromMessage(existing), existing.scheduledAt);
+      return {
+        messageId: existing.id,
+        status: MessageStatus.QUEUED,
+        duplicate: true,
+      };
+    }
+
+    return { messageId: existing.id, status: existing.status, duplicate: true };
   }
 
   private async dispatchBatchStrict(
@@ -616,9 +745,11 @@ export class MessageOrchestrator {
     }
   }
 
-  private buildJobOptions(payload: MessagePayload, scheduledAt: Date) {
-    const now = new Date();
-    const delayMs = scheduledAt.getTime() - now.getTime();
+  private buildJobOptions(
+    messageId: string,
+    priority: 'low' | 'normal' | 'high',
+    delayMs: number,
+  ) {
     const isScheduled = delayMs > 1000;
 
     const priorityMap: Record<string, number> = {
@@ -627,15 +758,12 @@ export class MessageOrchestrator {
       low: 10,
     };
 
-    const basePriority = priorityMap[payload.options?.priority ?? 'normal'];
-
-    const priority = isScheduled ? basePriority + 10 : basePriority;
+    const basePriority = priorityMap[priority] ?? priorityMap.normal;
 
     return {
-      priority,
+      priority: isScheduled ? basePriority + 10 : basePriority,
       delay: delayMs > 0 ? delayMs : 0,
-      jobId: `msg-${isScheduled ? 'i' : 's'}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-      isScheduled,
+      jobId: messageJobId(messageId),
     };
   }
 }

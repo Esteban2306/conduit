@@ -1,30 +1,24 @@
 import { Module } from '@nestjs/common';
-import { BullModule } from '@nestjs/bullmq';
 import { MessageOrchestrator } from './MessageOrchestrator';
 import { MessageController } from './message.controller';
-import { QUEUE_NAMES } from 'src/queue/queues';
+import { registerMessageQueues } from 'src/queue/message-queues.registration';
 import { TemplateModule } from 'src/core/templates/template.module';
 import { FileParserService } from '../adapters/FileParserService';
 import { JobSigner } from 'src/queue/security/JobSigner';
-import { WebhookActionDispatcher } from './WebhookActionDispatcher';
 import { AuthModule } from 'src/auth/auth.module';
+import { WebhookModule } from 'src/webhooks/webhook.module';
+import { WhatsAppContactModule } from 'src/channels/whatsapp/contacts/whatsapp-contact.module';
 
 @Module({
   imports: [
-    BullModule.registerQueue(
-      { name: QUEUE_NAMES.MESSAGES },
-      { name: QUEUE_NAMES.MESSAGES_SCHEDULED },
-    ),
+    registerMessageQueues(),
     TemplateModule,
     AuthModule,
+    WebhookModule,
+    WhatsAppContactModule,
   ],
   controllers: [MessageController],
-  providers: [
-    MessageOrchestrator,
-    FileParserService,
-    JobSigner,
-    WebhookActionDispatcher,
-  ],
+  providers: [MessageOrchestrator, FileParserService, JobSigner],
   exports: [MessageOrchestrator],
 })
 export class OrchestratorModule {}

@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  HttpException,
   Injectable,
   Logger,
   NotFoundException,
@@ -17,7 +18,7 @@ import { WhatsAppConnectionService } from 'src/channels/whatsapp/WhatsAppConnect
 import { TemplateService } from 'src/core/templates/TemplateService';
 import { WebhookAction } from './hooks/webhook-action.types';
 import { getNestedValue } from 'src/shared/utils/nested-value.util';
-import { EVENT_TYPES } from 'src/infra/events/constants/event.types';
+import { MessageOrchestrator } from 'src/core/orchestrator/MessageOrchestrator';
 
 export interface ReceiveWebhookResult {
   received: boolean;
@@ -40,6 +41,7 @@ export class ExternalDataService {
     private readonly botConfigService: BotConfigService,
     private readonly connections: WhatsAppConnectionService,
     private readonly templateService: TemplateService,
+    private readonly orchestrator: MessageOrchestrator,
   ) {}
 
   async receiveWebhook(
@@ -97,9 +99,26 @@ export class ExternalDataService {
         );
       }
 
+      let actionTriggered = false;
+      if (full?.action?.enabled) {
+        actionTriggered = await this.tryTriggerAction(
+          eventId,
+          full.action,
+          payload,
+          botConfig.tenantId,
+        );
+      }
+
+      // Se marca procesado solo cuando todo terminó: si algo falla antes, el
+      // reintento del integrador vuelve a procesar el evento.
       await this.prisma.externalDataEvent.update({
         where: { id: eventId },
-        data: { processedAt: new Date() },
+        data: {
+          processedAt: new Date(),
+          mappedCount: mapped,
+          failedAt: null,
+          error: null,
+        },
       });
 
       this.eventBus.publish('external_data.processed', {
@@ -108,15 +127,6 @@ export class ExternalDataService {
         eventType,
         mapped,
       });
-
-      let actionTriggered = false;
-      if (full?.action?.enabled) {
-        actionTriggered = await this.tryTriggerAction(
-          full.action,
-          payload,
-          botConfig.tenantId,
-        );
-      }
 
       return {
         received: true,
@@ -246,51 +256,72 @@ export class ExternalDataService {
     });
   }
 
+  /**
+   * Encola el mensaje de la acción. Los problemas de datos (campo ausente,
+   * fecha inválida, número o plantilla rechazados) se omiten con un log:
+   * reintentar no los arregla. Los fallos de infraestructura sí se propagan
+   * para que el evento quede fallido y el reintento del integrador lo
+   * reprocese; la clave de idempotencia evita el doble envío.
+   */
   private async tryTriggerAction(
+    eventId: string,
     action: WebhookAction,
     payload: Record<string, any>,
     tenantId: string,
   ): Promise<boolean> {
-    try {
-      const recipient = getNestedValue(payload, action.recipientField);
-      if (!recipient || typeof recipient !== 'string') {
+    const recipient = getNestedValue(payload, action.recipientField);
+    if (!recipient || typeof recipient !== 'string') {
+      this.logger.warn(
+        `Acción de webhook: recipientField "${action.recipientField}" no resolvió a un valor válido. Acción omitida.`,
+      );
+      return false;
+    }
+
+    let scheduledAt: string | undefined;
+    if (action.scheduleField) {
+      const rawDate = getNestedValue(payload, action.scheduleField);
+      const baseDate = rawDate ? new Date(String(rawDate)) : null;
+
+      if (!baseDate || Number.isNaN(baseDate.getTime())) {
         this.logger.warn(
-          `Acción de webhook: recipientField "${action.recipientField}" no resolvió a un valor válido. Acción omitida.`,
+          `Acción de webhook: scheduleField "${action.scheduleField}" no es una fecha válida ("${rawDate}"). Acción omitida — no se envía a ciegas sin fecha correcta.`,
         );
         return false;
       }
 
-      let scheduledAt: string | undefined;
-      if (action.scheduleField) {
-        const rawDate = getNestedValue(payload, action.scheduleField);
-        const baseDate = rawDate ? new Date(String(rawDate)) : null;
+      const offsetMs = (action.scheduleOffsetMinutes ?? 0) * 60_000;
+      scheduledAt = new Date(baseDate.getTime() + offsetMs).toISOString();
+    }
 
-        if (!baseDate || Number.isNaN(baseDate.getTime())) {
-          this.logger.warn(
-            `Acción de webhook: scheduleField "${action.scheduleField}" no es una fecha válida ("${rawDate}"). Acción omitida — no se envía a ciegas sin fecha correcta.`,
-          );
-          return false;
-        }
-
-        const offsetMs = (action.scheduleOffsetMinutes ?? 0) * 60_000;
-        scheduledAt = new Date(baseDate.getTime() + offsetMs).toISOString();
-      }
-
-      this.eventBus.publish(EVENT_TYPES.WEBHOOK_ACTION_TRIGGERED, {
+    try {
+      const result = await this.orchestrator.dispatch(
         tenantId,
-        connectionId: action.connectionId,
-        recipient,
-        templateId: action.templateId,
-        inlineBody: action.inlineBody,
-        variables: payload,
-        scheduledAt,
-        priority: action.priority,
-      });
+        {
+          recipient: { channel: 'WHATSAPP', address: recipient },
+          template: action.templateId
+            ? { id: action.templateId }
+            : { inline: { body: action.inlineBody } },
+          connectionId: action.connectionId,
+          variables: payload,
+          options: { scheduledAt, priority: action.priority },
+        },
+        { idempotencyKey: `webhook-action:${eventId}` },
+      );
 
+      this.logger.log(
+        `Acción de webhook encolada: mensaje ${result.messageId}` +
+          (result.duplicate ? ' (ya existía)' : '') +
+          (scheduledAt ? ` | programado para ${scheduledAt}` : ' | inmediato'),
+      );
       return true;
-    } catch (err) {
-      this.logger.error(`Error preparando acción de webhook: ${err.message}`);
-      return false;
+    } catch (error) {
+      if (error instanceof HttpException && error.getStatus() < 500) {
+        this.logger.warn(
+          `Acción de webhook rechazada para ${recipient}: ${error.message}. Acción omitida.`,
+        );
+        return false;
+      }
+      throw error;
     }
   }
 
@@ -346,9 +377,22 @@ export class ExternalDataService {
       ) {
         const existing = await this.prisma.externalDataEvent.findFirst({
           where: { botConfigId, idempotencyKey },
-          select: { id: true, mappedCount: true },
+          select: {
+            id: true,
+            mappedCount: true,
+            processedAt: true,
+            failedAt: true,
+          },
         });
-        if (existing) return { isDuplicate: true, record: existing };
+        if (existing) {
+          const record = { id: existing.id, mappedCount: existing.mappedCount };
+          // Un intento anterior falló: el reintento debe reprocesarlo, no
+          // descartarlo como duplicado.
+          const retryable = !existing.processedAt && existing.failedAt;
+          return retryable
+            ? { isDuplicate: false, record }
+            : { isDuplicate: true, record };
+        }
       }
       throw err;
     }

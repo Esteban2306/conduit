@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { HttpException, Injectable, Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import { ConfigService } from '@nestjs/config';
 import { MessageChannel, MessageStatus } from '@prisma/client';
@@ -11,6 +11,8 @@ import { ErrorClassifier } from 'src/core/errors/ErrorClassifier';
 import { MessageJobPayload } from 'src/queue/queues';
 import { WebhookDispatcher } from 'src/webhooks/WebhookDispatcher';
 import { JobSigner, SignedJobPayload } from '../security/JobSigner';
+import { EventBusService } from 'src/infra/events/event.service';
+import { EVENT_TYPES } from 'src/infra/events/constants/event.types';
 
 const TERMINAL_STATUSES: MessageStatus[] = [
   MessageStatus.SENT,
@@ -31,6 +33,7 @@ export class MessageProcessor {
     private readonly dlqHandler: DLQHandler,
     private readonly webhookDispatcher: WebhookDispatcher,
     private readonly jobSigner: JobSigner,
+    private readonly eventBus: EventBusService,
   ) {}
 
   async process(job: Job<SignedJobPayload>): Promise<void> {
@@ -147,6 +150,16 @@ export class MessageProcessor {
           },
         });
         await this.webhookDispatcher.dispatch('message.sent', messageId);
+        if (channel === MessageChannel.WHATSAPP && connectionId) {
+          // El bot debe saber qué se le envió al cliente (p. ej. un
+          // recordatorio) para entender su respuesta.
+          this.eventBus.publish(EVENT_TYPES.PROACTIVE_MESSAGE_SENT, {
+            tenantId,
+            connectionId,
+            recipient,
+            content: body,
+          });
+        }
         await this.logAttempt(
           messageId,
           job.attemptsMade + 1,
@@ -186,7 +199,6 @@ export class MessageProcessor {
             result.error,
             result.errorCode,
           );
-          await this.webhookDispatcher.dispatch('message.sent', messageId);
           return;
         }
 
@@ -194,8 +206,12 @@ export class MessageProcessor {
       }
     } catch (error) {
       const durationMs = Date.now() - start;
-      const maxAttempts = this.config.get<number>('queue.maxAttempts') ?? 3;
-      const isLastAttempt = job.attemptsMade + 1 >= maxAttempts;
+      // Errores de validación previos al envío (plantilla inexistente o que
+      // no renderiza): reintentar no los arregla.
+      const isPermanent =
+        error instanceof HttpException && error.getStatus() < 500;
+      const isLastAttempt =
+        isPermanent || job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
 
       if (isLastAttempt) {
         await this.updateMessageStatus(
@@ -206,7 +222,7 @@ export class MessageProcessor {
         await this.dlqHandler.handle(
           messageId,
           error.message,
-          'MAX_ATTEMPTS_EXCEEDED',
+          isPermanent ? 'PERMANENT_PROCESSING_ERROR' : 'MAX_ATTEMPTS_EXCEEDED',
         );
       } else {
         await this.updateMessageStatus(
@@ -225,6 +241,7 @@ export class MessageProcessor {
         error.message,
       );
 
+      if (isPermanent) return;
       throw error;
     }
   }
