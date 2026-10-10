@@ -10,6 +10,8 @@ import { GroqProvider } from './ai/providers/GroqProvider';
 import { MistralProvider } from './ai/providers/MistralProvider';
 import { CustomProvider } from './ai/providers/CustomProvider';
 import { ConversationService } from './conversation/ConversationService';
+import { ConversationSummarizer } from './conversation/ConversationSummarizer';
+import { ProactiveMessageRecorder } from './conversation/ProactiveMessageRecorder';
 import { BotRouter } from './router/BotRouter';
 import { ChannelsModule } from 'src/channels/channels.module';
 import { forwardRef } from '@nestjs/common';
@@ -24,6 +26,7 @@ import { SecurityModule } from 'src/shared/security/security.module';
 import { OrchestratorModule } from 'src/core/orchestrator/orchestrator.module';
 import { AiErrorClassifier } from './ai/AiErrorClassifier';
 import { ToolDefinitionController } from './tools/ToolDefinition.controller';
+import { ConversationAdminController } from './admin/ConversationAdmin.controller';
 
 @Module({
   imports: [
@@ -33,9 +36,11 @@ import { ToolDefinitionController } from './tools/ToolDefinition.controller';
     SecurityModule,
     OrchestratorModule,
   ],
-  controllers: [ToolDefinitionController],
+  controllers: [ToolDefinitionController, ConversationAdminController],
   providers: [
     ConversationService,
+    ConversationSummarizer,
+    ProactiveMessageRecorder,
     BotRouter,
     AiModelSelectorService,
     AiProviderFactory,

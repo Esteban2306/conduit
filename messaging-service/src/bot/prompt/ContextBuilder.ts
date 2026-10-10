@@ -1,6 +1,5 @@
 import { Injectable } from '@nestjs/common';
 import { ConversationContext } from '../conversation/interfaces/ConversationContext';
-import { HistoryMessage } from '../conversation/interfaces/ConversationHistory';
 
 export interface BuiltContext {
   block: string | null;
@@ -14,6 +13,12 @@ const EXCLUDED = new Set([
   'processingAt',
   'lockedBy',
   'lastImageDetails',
+  'memoriaAcciones',
+  'resumenHasta',
+  'botPausedUntil',
+  'botPauseReason',
+  'aiFallbackAt',
+  'abuseNoticeAt',
 ]);
 
 const PRIORITY_KEYS = [
@@ -33,8 +38,13 @@ export class ContextBuilder {
     const parts: string[] = [];
 
     if (summary?.trim()) {
-      parts.push(`Resumen: ${summary.trim()}`);
+      parts.push(
+        `Resumen de la conversación anterior (objetivo y acuerdos):\n${summary.trim()}`,
+      );
     }
+
+    const actions = this.buildActionMemory(context);
+    if (actions) parts.push(actions);
 
     const contextLine = this.buildContextLine(context);
     if (contextLine) {
@@ -48,19 +58,22 @@ export class ContextBuilder {
     return { block, tokenEstimate };
   }
 
-  buildHistoryNarrative(history: HistoryMessage[]): string | null {
-    if (history.length === 0) return null;
+  /**
+   * Resultados reales de las herramientas ya usadas en esta conversación
+   * (horarios consultados, reserva creada con su id, etc.). Evita que el
+   * modelo vuelva a preguntar o invente datos que ya obtuvo.
+   */
+  private buildActionMemory(context: ConversationContext): string | null {
+    const entries = Array.isArray(context.memoriaAcciones)
+      ? (context.memoriaAcciones as Array<Record<string, string>>)
+      : [];
+    if (entries.length === 0) return null;
 
-    const recent = history.slice(-3);
-    const lines: string[] = [];
-
-    for (const msg of recent) {
-      const role = msg.role === 'user' ? 'Cliente' : 'Bot';
-      const content = msg.content.slice(0, 100).replace(/\n/g, ' ');
-      lines.push(`${role}: ${content}`);
-    }
-
-    return `Conversación reciente:\n${lines.join('\n')}`;
+    const lines = entries.map(
+      (e) =>
+        `- [${e.en}] ${e.herramienta}(${e.parametros}) → ${e.estado}: ${e.resultado}`,
+    );
+    return `Acciones ya realizadas en esta conversación (resultados reales, del más antiguo al más reciente):\n${lines.join('\n')}`;
   }
 
   private buildContextLine(context: ConversationContext): string | null {

@@ -3,6 +3,16 @@ import { ToolInvocationStatus } from '@prisma/client';
 import { createHash } from 'crypto';
 import { PrismaService } from 'src/shared/prisma.service';
 import { SecretEncryptionService } from 'src/shared/security/secret-encryption.service';
+import { canonicalJson, setByPath } from './json-path.util';
+
+/**
+ * Headers con la identidad verificada del chat. Los pone Conduit (no el
+ * modelo), así el backend puede imponerla y nadie puede, escribiéndole al
+ * bot, operar sobre las reservas de otro número.
+ */
+export const CONTACT_PHONE_HEADER = 'X-Conduit-Contact-Phone';
+export const CONTACT_LID_HEADER = 'X-Conduit-Contact-Lid';
+export const CONVERSATION_HEADER = 'X-Conduit-Conversation-Id';
 
 export interface AttachedImage {
   dataUri: string;
@@ -19,6 +29,14 @@ export interface ToolCallRequest {
   maxImageSizeBytes?: number;
   injectedPhone?: string;
   phoneParamName?: string;
+  /** Dirección verificada del chat: dígitos del teléfono o "<lid>@lid". */
+  contactAddress?: string;
+  /**
+   * Identifica el turno (lo que el cliente escribió y se está respondiendo).
+   * Reintentos dentro del mismo turno comparten clave de idempotencia; un
+   * turno nuevo (p. ej. volver a reservar tras cancelar) genera otra.
+   */
+  turnId?: string;
 }
 
 export interface ToolCallOutcome {
@@ -79,7 +97,7 @@ export class ToolExecutorService {
       finalParams[request.imageParamName] = request.attachedImage.dataUri;
     }
     if (request.injectedPhone && request.phoneParamName) {
-      finalParams[request.phoneParamName] = request.injectedPhone;
+      setByPath(finalParams, request.phoneParamName, request.injectedPhone);
     }
 
     const method = (tool.httpMethod ?? 'POST').toUpperCase();
@@ -87,6 +105,13 @@ export class ToolExecutorService {
 
     const headers: Record<string, string> = {};
     if (!isReadOnly) headers['Content-Type'] = 'application/json';
+
+    headers[CONVERSATION_HEADER] = request.conversationId;
+    if (request.contactAddress?.endsWith('@lid')) {
+      headers[CONTACT_LID_HEADER] = request.contactAddress.replace('@lid', '');
+    } else if (request.contactAddress) {
+      headers[CONTACT_PHONE_HEADER] = `+${request.contactAddress}`;
+    }
 
     if (tool.authHeaderName && tool.authSecretEncrypted) {
       headers[tool.authHeaderName] = this.encryption.decrypt(
@@ -105,27 +130,19 @@ export class ToolExecutorService {
       : this.DEFAULT_TIMEOUT_MS;
 
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), timeoutMs);
-
       const requestUrl = isReadOnly
         ? this.buildUrlWithQuery(tool.endpointUrl, finalParams)
         : tool.endpointUrl;
 
-      const fetchOptions: RequestInit = {
-        method,
-        headers,
-        signal: controller.signal,
-      };
-      if (!isReadOnly) {
-        fetchOptions.body = JSON.stringify(finalParams);
-      }
-
-      const response = await fetch(requestUrl, fetchOptions).finally(() =>
-        clearTimeout(timeout),
+      const { response, body } = await this.callWithRetry(
+        requestUrl,
+        {
+          method,
+          headers,
+          ...(isReadOnly ? {} : { body: JSON.stringify(finalParams) }),
+        },
+        timeoutMs,
       );
-
-      const body = await response.json().catch(() => null);
 
       const status = response.ok
         ? ToolInvocationStatus.SUCCESS
@@ -179,18 +196,64 @@ export class ToolExecutorService {
     }
   }
 
+  /**
+   * Hasta 3 intentos con la MISMA clave de idempotencia (seguro: el backend
+   * deduplica). Se reintenta ante un timeout/red caída o si el backend
+   * avisa que la misma operación sigue en curso. Así un bache momentáneo
+   * no se convierte en "tuvimos un inconveniente" para el cliente.
+   */
+  private async callWithRetry(
+    url: string,
+    init: RequestInit,
+    timeoutMs: number,
+  ): Promise<{ response: Response; body: any }> {
+    const MAX_ATTEMPTS = 3;
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const response = await fetch(url, {
+          ...init,
+          signal: controller.signal,
+        });
+        const body = await response.json().catch(() => null);
+
+        const inProgress =
+          response.status === 409 && body?.code === 'IDEMPOTENCY_IN_PROGRESS';
+        if (inProgress && attempt < MAX_ATTEMPTS) {
+          await this.sleep(1500 * attempt);
+          continue;
+        }
+        return { response, body };
+      } catch (error) {
+        lastError = error;
+        if (attempt < MAX_ATTEMPTS) {
+          await this.sleep(1000 * attempt);
+          continue;
+        }
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    throw lastError;
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   private computeIdempotencyKey(
     request: ToolCallRequest,
     finalParams: Record<string, unknown>,
   ): string {
-    const paramsForHash = this.redactImageFields(finalParams);
-    const normalized = JSON.stringify(
-      paramsForHash,
-      Object.keys(paramsForHash).sort(),
-    );
+    // canonicalJson ordena también los campos anidados: antes solo se
+    // consideraban las claves de primer nivel y "client.*" no influía.
+    const normalized = canonicalJson(this.redactImageFields(finalParams));
     return createHash('sha256')
       .update(
-        `${request.toolDefinitionId}:${request.conversationId}:${normalized}`,
+        `${request.toolDefinitionId}:${request.conversationId}:${request.turnId ?? ''}:${normalized}`,
       )
       .digest('hex');
   }
@@ -231,34 +294,26 @@ export class ToolExecutorService {
     httpStatus: number | null,
     errorDetail: string | null,
   ): Promise<ToolCallOutcome> {
-    const existing = await this.prisma.toolInvocation.findUnique({
+    // La llamada HTTP ya ocurrió (el backend deduplica con la misma clave):
+    // se registra el resultado más reciente. Devolver el registro viejo
+    // reportaba al modelo un timeout anterior aunque el reintento hubiera
+    // funcionado.
+    const data = {
+      status,
+      responseBody: responseBody as any,
+      httpStatus,
+      errorDetail,
+    };
+    const record = await this.prisma.toolInvocation.upsert({
       where: { idempotencyKey },
-    });
-
-    if (existing) {
-      this.logger.debug(
-        `Reintento detectado para idempotencyKey ${idempotencyKey} — reutilizando invocación ${existing.id}.`,
-      );
-      return {
-        status: existing.status,
-        responseBody: existing.responseBody,
-        httpStatus: existing.httpStatus,
-        errorDetail: existing.errorDetail,
-        invocationId: existing.id,
-      };
-    }
-
-    const record = await this.prisma.toolInvocation.create({
-      data: {
+      create: {
         toolDefinitionId: request.toolDefinitionId,
         conversationId: request.conversationId,
         idempotencyKey,
         requestParams: this.redactImageFields(finalParams) as any,
-        status,
-        responseBody: responseBody as any,
-        httpStatus,
-        errorDetail,
+        ...data,
       },
+      update: data,
     });
 
     return {

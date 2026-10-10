@@ -10,6 +10,7 @@ import { SecretEncryptionService } from 'src/shared/security/secret-encryption.s
 import { CreateToolDefinitionDto } from './dto/create-tool-definition.dto';
 import { UpdateToolDefinitionDto } from './dto/update-tool-definition.dto';
 import { Prisma } from '@prisma/client';
+import { stripSchemaPath } from './json-path.util';
 
 export interface ResolvedTool {
   spec: ToolSpec;
@@ -18,6 +19,7 @@ export interface ResolvedTool {
   imageParamName: string | null;
   maxImageSizeBytes: number | null;
   injectPhoneParamName: string | null;
+  pausesBotMinutes: number | null;
 }
 
 @Injectable()
@@ -62,6 +64,7 @@ export class ToolDefinitionService {
         imageParamName: dto.imageParamName,
         maxImageSizeBytes: dto.maxImageSizeBytes,
         injectPhoneParamName: dto.injectPhoneParamName,
+        pausesBotMinutes: dto.pausesBotMinutes,
       },
       select: this.safeSelect(),
     });
@@ -132,10 +135,10 @@ export class ToolDefinitionService {
       if (d.injectPhoneParamName) {
         fieldsToStrip.push(d.injectPhoneParamName);
       }
-      const exposedSchema = d.requiresImageAttachment
-        ? this.stripImageField(fullSchema, d.imageParamName ?? 'imageBase64')
-        : fullSchema;
-
+      const exposedSchema =
+        fieldsToStrip.length > 0
+          ? this.stripFields(fullSchema, fieldsToStrip)
+          : fullSchema;
       return {
         definitionId: d.id,
         spec: {
@@ -147,22 +150,19 @@ export class ToolDefinitionService {
         imageParamName: d.imageParamName,
         maxImageSizeBytes: d.maxImageSizeBytes,
         injectPhoneParamName: d.injectPhoneParamName,
+        pausesBotMinutes: d.pausesBotMinutes,
       };
     });
   }
 
-  private stripImageField(
+  private stripFields(
     schema: Record<string, any>,
-    fieldName: string,
+    fieldNames: string[],
   ): Record<string, any> {
-    if (!schema.properties) return schema;
-
-    const { [fieldName]: _omitted, ...restProperties } = schema.properties;
-    const required = Array.isArray(schema.required)
-      ? schema.required.filter((r: string) => r !== fieldName)
-      : schema.required;
-
-    return { ...schema, properties: restProperties, required };
+    return fieldNames.reduce(
+      (current, field) => stripSchemaPath(current, field),
+      schema,
+    );
   }
 
   private validate(
@@ -199,6 +199,7 @@ export class ToolDefinitionService {
       imageParamName: true,
       maxImageSizeBytes: true,
       injectPhoneParamName: true,
+      pausesBotMinutes: true,
       createdAt: true,
       updatedAt: true,
     };

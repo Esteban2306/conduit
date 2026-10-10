@@ -59,8 +59,20 @@ export class CreateToolDefinitionDto {
   @Max(25 * 1024 * 1024)
   maxImageSizeBytes?: number;
 
-  /** Field that Conduit fills with the WhatsApp sender number. */
+  /**
+   * Campo que Conduit llena con el teléfono verificado del chat. Admite
+   * rutas con punto para campos anidados (p. ej. "client.phone"). El
+   * modelo no ve ese campo, así que no puede suplantar a otro cliente.
+   */
   @IsOptional()
   @IsString()
+  @Matches(/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/)
   injectPhoneParamName?: string;
+
+  /** Si la llamada sale bien, pausa el bot en la conversación estos minutos. */
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(7 * 24 * 60)
+  pausesBotMinutes?: number;
 }

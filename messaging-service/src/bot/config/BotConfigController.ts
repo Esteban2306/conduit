@@ -1,3 +1,4 @@
+import { UpdateBotConfigDto } from '../dto/update-bot-config.dto';
 import {
   Body,
   Controller,
@@ -83,7 +84,7 @@ export class BotConfigController {
   @ApiOperation({ summary: 'Actualizar configuración del bot' })
   update(
     @Param('id') id: string,
-    @Body() dto: Partial<CreateBotConfigDto>,
+    @Body() dto: UpdateBotConfigDto,
     @CurrentUser() user: JwtPayload,
   ) {
     return this.botConfigService.update(id, dto, user.tenantId);

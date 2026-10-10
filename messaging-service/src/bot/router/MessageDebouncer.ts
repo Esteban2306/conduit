@@ -94,7 +94,7 @@ export class MessageDebouncer {
   }
 
   hasPending(jid: string): boolean {
-    return this.pending.has(jid);
+    return this.pending.has(this.normalizeJid(jid));
   }
 
   cancel(jid: string): void {

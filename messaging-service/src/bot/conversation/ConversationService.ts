@@ -17,6 +17,34 @@ import { UpdateContextDto } from './dto/UpdateContext.dto';
 import { EventBusService } from 'src/infra/events/event.service';
 import { EVENT_TYPES } from 'src/infra/events/constants/event.types';
 
+/** Mínimo de mensajes recientes que el modelo ve completos. */
+export const MIN_HISTORY_WINDOW = 12;
+/** Recorte por mensaje: suficiente para listas de horarios o precios. */
+const MAX_MESSAGE_CHARS = 1500;
+/** Acciones (llamadas a herramientas) que se recuerdan por conversación. */
+const MAX_ACTION_MEMORY = 8;
+
+export interface ActionMemoryEntry {
+  herramienta: string;
+  parametros: string;
+  estado: string;
+  resultado: string;
+  en: string;
+}
+
+export interface ConversationForAI {
+  context: ConversationContext;
+  currentStep: string | null;
+  lastIntent: string | null;
+  /** Mensajes ya respondidos, en orden, empezando por un turno del cliente. */
+  history: HistoryMessage[];
+  /** Mensajes del negocio previos al primer turno del cliente en la ventana. */
+  leadingBotMessages: string[];
+  /** Lo que el cliente escribió desde la última respuesta: lo que hay que responder. */
+  pending: { id: string; content: string; hasImage: boolean }[];
+  summary: string | null;
+}
+
 @Injectable()
 export class ConversationService {
   private readonly logger = new Logger(ConversationService.name);
@@ -29,16 +57,25 @@ export class ConversationService {
   ) {}
 
   async getOrCreate(dto: CreateConversationDto) {
+    // (botConfigId, phoneNumber) es único: una conversación cerrada se
+    // reabre en vez de intentar crear otra (que fallaría por la restricción).
     const existing = await this.prisma.conversation.findFirst({
       where: {
         botConfigId: dto.botConfigId,
         phoneNumber: dto.phoneNumber,
-        status: ConversationStatus.ACTIVE,
       },
     });
 
     if (existing) {
-      return existing;
+      if (existing.status === ConversationStatus.ACTIVE) return existing;
+      return this.prisma.conversation.update({
+        where: { id: existing.id },
+        data: {
+          status: ConversationStatus.ACTIVE,
+          lastMessageAt: new Date(),
+          ...(dto.connectionId && { lastConnectionId: dto.connectionId }),
+        },
+      });
     }
 
     this.logger.log(
@@ -235,66 +272,345 @@ export class ConversationService {
     return message;
   }
 
-  async getConversationForAI(conversationId: string, maxMessages: number) {
+  /**
+   * Arma la memoria que ve el modelo:
+   * - `pending`: todo lo que el cliente escribió desde la última respuesta
+   *   (lo que hay que contestar ahora; nunca se pierde aunque llegue en
+   *   varios lotes o mientras el bot estaba ocupado).
+   * - `history`: los últimos mensajes ya respondidos, completos.
+   * - `summary` y `context.memoriaAcciones`: lo anterior a la ventana y los
+   *   resultados reales de las herramientas, para no perder el objetivo.
+   */
+  async getConversationForAI(
+    conversationId: string,
+    maxMessages: number,
+  ): Promise<ConversationForAI> {
     const conversation = await this.findById(conversationId);
+    const window = Math.max(maxMessages ?? 0, MIN_HISTORY_WINDOW);
 
-    const limit = Math.max(maxMessages ?? 5, 5);
+    const recent = (
+      await this.prisma.botMessage.findMany({
+        where: { conversationId },
+        orderBy: { createdAt: 'desc' },
+        take: window + 30,
+        select: { id: true, direction: true, content: true, hasImage: true },
+      })
+    ).reverse();
 
-    const messages = await this.prisma.botMessage.findMany({
-      where: { conversationId },
-      orderBy: { createdAt: 'desc' },
-      take: maxMessages,
-      select: {
-        direction: true,
-        content: true,
-      },
-    });
-
-    const reversed = messages.reverse();
-
-    const isLongConversation = reversed.length >= 4 || !!conversation.summary;
-
-    let history: HistoryMessage[];
-
-    if (isLongConversation && conversation.summary) {
-      const lastTwo = reversed.slice(-2);
-      history = lastTwo.map((msg) => ({
-        role:
-          msg.direction === MessageDirection.INBOUND
-            ? MessageRole.USER
-            : MessageRole.ASSISTANT,
-
-        content: this.truncateMessage(msg.content, 120),
-      }));
-    } else {
-      history = reversed.map((msg) => ({
-        role:
-          msg.direction === MessageDirection.INBOUND
-            ? MessageRole.USER
-            : MessageRole.ASSISTANT,
-
-        content: this.truncateMessage(msg.content, 120),
-      }));
+    let lastOutbound = -1;
+    for (let i = recent.length - 1; i >= 0; i--) {
+      if (recent[i].direction === MessageDirection.OUTBOUND) {
+        lastOutbound = i;
+        break;
+      }
     }
 
-    const deduped = history.filter((msg, i) => {
-      if (i === 0) return true;
-      const prev = history[i - 1];
-      return !(
-        msg.role === MessageRole.ASSISTANT &&
-        prev.role === MessageRole.ASSISTANT &&
-        this.normalizeContent(msg.content) ===
-          this.normalizeContent(prev.content)
-      );
-    });
+    const pending = recent
+      .slice(lastOutbound + 1)
+      .filter((m) => m.direction === MessageDirection.INBOUND)
+      .map((m) => ({ id: m.id, content: m.content, hasImage: m.hasImage }));
+
+    const answered = recent.slice(0, lastOutbound + 1).slice(-window);
+    const merged = this.mergeConsecutive(
+      answered.map((msg) => ({
+        role:
+          msg.direction === MessageDirection.INBOUND
+            ? MessageRole.USER
+            : MessageRole.ASSISTANT,
+        content: this.truncateChars(msg.content, MAX_MESSAGE_CHARS),
+      })),
+    );
+
+    // Algunos proveedores exigen que el historial empiece por el cliente
+    // (Gemini descarta lo anterior, Anthropic lo rechaza): los mensajes del
+    // negocio que quedan al inicio (p. ej. un recordatorio) se pasan aparte
+    // para que el bot sepa qué está contestando el cliente.
+    const leadingBotMessages: string[] = [];
+    while (merged.length > 0 && merged[0].role === MessageRole.ASSISTANT) {
+      leadingBotMessages.push(merged.shift()!.content);
+    }
 
     return {
-      context: conversation.context as ConversationContext,
+      context: (conversation.context ?? {}) as ConversationContext,
       currentStep: conversation.currentStep,
       lastIntent: conversation.lastIntent,
-      history: deduped,
-      summary: isLongConversation ? conversation.summary : null,
+      history: merged,
+      leadingBotMessages,
+      pending,
+      summary: conversation.summary,
     };
+  }
+
+  /**
+   * Pausa el bot en una conversación (traspaso a una persona, abuso, IA
+   * caída). Los mensajes del cliente se siguen guardando; al reanudar, el
+   * bot responde lo pendiente.
+   */
+  async pauseBot(
+    conversationId: string,
+    minutes: number,
+    reason: string,
+  ): Promise<Date> {
+    const until = new Date(Date.now() + minutes * 60_000);
+    await this.updateContext(conversationId, {
+      contextPatch: {
+        botPausedUntil: until.toISOString(),
+        botPauseReason: reason,
+      },
+    });
+    return until;
+  }
+
+  async resumeBot(conversationId: string): Promise<void> {
+    await this.updateContext(conversationId, {
+      contextPatch: { botPausedUntil: null, botPauseReason: null },
+    });
+  }
+
+  isBotPaused(context: ConversationContext): boolean {
+    const until = context.botPausedUntil;
+    return typeof until === 'string' && new Date(until).getTime() > Date.now();
+  }
+
+  async countBotRepliesSince(
+    conversationId: string,
+    since: Date,
+  ): Promise<number> {
+    return this.prisma.botMessage.count({
+      where: {
+        conversationId,
+        direction: MessageDirection.OUTBOUND,
+        processedBy: 'bot',
+        createdAt: { gte: since },
+      },
+    });
+  }
+
+  /** Listado paginado para el panel. */
+  async listForAdmin(
+    botConfigId: string,
+    options: {
+      status?: ConversationStatus;
+      search?: string;
+      page?: number;
+      limit?: number;
+    },
+  ) {
+    const page = Math.max(options.page ?? 1, 1);
+    const limit = Math.min(Math.max(options.limit ?? 20, 1), 100);
+    const where: Prisma.ConversationWhereInput = {
+      botConfigId,
+      ...(options.status && { status: options.status }),
+      ...(options.search && { phoneNumber: { contains: options.search } }),
+    };
+
+    const [rows, total] = await Promise.all([
+      this.prisma.conversation.findMany({
+        where,
+        orderBy: { lastMessageAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+        select: {
+          id: true,
+          phoneNumber: true,
+          status: true,
+          context: true,
+          summary: true,
+          lastConnectionId: true,
+          lastMessageAt: true,
+          createdAt: true,
+          messages: {
+            orderBy: { createdAt: 'desc' },
+            take: 1,
+            select: { direction: true, content: true, processedBy: true },
+          },
+        },
+      }),
+      this.prisma.conversation.count({ where }),
+    ]);
+
+    const data = rows.map(({ context, messages, ...row }) => {
+      const ctx = (context ?? {}) as ConversationContext;
+      return {
+        ...row,
+        botPaused: this.isBotPaused(ctx),
+        botPausedUntil: this.isBotPaused(ctx) ? ctx.botPausedUntil : null,
+        botPauseReason: this.isBotPaused(ctx) ? ctx.botPauseReason : null,
+        lastMessage: messages[0] ?? null,
+        // Esperando respuesta: el último mensaje es del cliente.
+        awaitingReply: messages[0]?.direction === MessageDirection.INBOUND,
+      };
+    });
+
+    return { data, meta: { total, page, limit } };
+  }
+
+  async getMessagesPage(
+    conversationId: string,
+    options: { before?: Date; limit?: number },
+  ) {
+    const limit = Math.min(Math.max(options.limit ?? 50, 1), 200);
+    const rows = await this.prisma.botMessage.findMany({
+      where: {
+        conversationId,
+        ...(options.before && { createdAt: { lt: options.before } }),
+      },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      select: {
+        id: true,
+        direction: true,
+        content: true,
+        hasImage: true,
+        processedBy: true,
+        createdAt: true,
+      },
+    });
+    return rows.reverse();
+  }
+
+  /** Último mensaje enviado al cliente (bot, humano o proactivo). */
+  async lastOutboundContent(
+    botConfigId: string,
+    phoneNumber: string,
+  ): Promise<string | null> {
+    const message = await this.prisma.botMessage.findFirst({
+      where: {
+        direction: MessageDirection.OUTBOUND,
+        conversation: { botConfigId, phoneNumber },
+      },
+      orderBy: { createdAt: 'desc' },
+      select: { content: true },
+    });
+    return message?.content ?? null;
+  }
+
+  /**
+   * Guarda en la memoria de la conversación el resultado real de una
+   * herramienta. Debe llamarse con el lock de la conversación tomado.
+   */
+  async appendActionMemory(
+    conversationId: string,
+    entry: ActionMemoryEntry,
+  ): Promise<void> {
+    const context = await this.getContext(conversationId);
+    const previous = Array.isArray(context.memoriaAcciones)
+      ? (context.memoriaAcciones as ActionMemoryEntry[])
+      : [];
+
+    await this.updateContext(conversationId, {
+      contextPatch: {
+        memoriaAcciones: [...previous, entry].slice(-MAX_ACTION_MEMORY),
+      },
+    });
+  }
+
+  /**
+   * Mensajes que salieron de la ventana del historial y aún no están en el
+   * resumen. Devuelve vacío mientras no haya suficientes para resumir.
+   */
+  async getMessagesToSummarize(
+    conversationId: string,
+    maxMessages: number,
+    minBatch = 6,
+  ): Promise<{ lines: string[]; upTo: Date } | null> {
+    const conversation = await this.findById(conversationId);
+    const window = Math.max(maxMessages ?? 0, MIN_HISTORY_WINDOW);
+    const context = (conversation.context ?? {}) as ConversationContext;
+    const coveredUntil =
+      typeof context.resumenHasta === 'string'
+        ? new Date(context.resumenHasta)
+        : new Date(0);
+
+    const candidates = await this.prisma.botMessage.findMany({
+      where: { conversationId, createdAt: { gt: coveredUntil } },
+      orderBy: { createdAt: 'asc' },
+      select: { direction: true, content: true, createdAt: true },
+    });
+
+    const outsideWindow = candidates.slice(
+      0,
+      Math.max(0, candidates.length - window),
+    );
+    if (outsideWindow.length < minBatch) return null;
+
+    return {
+      lines: outsideWindow.map(
+        (m) =>
+          `${m.direction === MessageDirection.INBOUND ? 'Cliente' : 'Negocio'}: ${this.truncateChars(m.content, 500)}`,
+      ),
+      upTo: outsideWindow[outsideWindow.length - 1].createdAt,
+    };
+  }
+
+  async saveSummary(
+    conversationId: string,
+    summary: string,
+    upTo: Date,
+  ): Promise<void> {
+    await this.prisma.conversation.update({
+      where: { id: conversationId },
+      data: { summary },
+    });
+    await this.updateContext(conversationId, {
+      contextPatch: { resumenHasta: upTo.toISOString() },
+    });
+  }
+
+  /**
+   * Registra en la conversación un mensaje que el negocio envió por fuera
+   * del bot (recordatorio, aviso). Así, cuando el cliente responda "sí" o
+   * "quiero reagendar", el bot sabe a qué está respondiendo.
+   */
+  async recordProactiveOutbound(params: {
+    tenantId: string;
+    botConfigId: string;
+    phoneNumber: string;
+    connectionId: string;
+    content: string;
+  }): Promise<void> {
+    const conversation = await this.getOrCreate({
+      tenantId: params.tenantId,
+      botConfigId: params.botConfigId,
+      phoneNumber: params.phoneNumber,
+      connectionId: params.connectionId,
+    });
+
+    await this.prisma.$transaction([
+      this.touchActivity(conversation.id, params.connectionId),
+      this.prisma.botMessage.create({
+        data: {
+          conversationId: conversation.id,
+          connectionId: params.connectionId,
+          direction: MessageDirection.OUTBOUND,
+          content: params.content,
+          processedBy: 'system',
+        },
+      }),
+    ]);
+  }
+
+  private mergeConsecutive(messages: HistoryMessage[]): HistoryMessage[] {
+    const merged: HistoryMessage[] = [];
+    for (const msg of messages) {
+      const last = merged[merged.length - 1];
+      if (last && last.role === msg.role) {
+        if (
+          this.normalizeContent(last.content) !==
+          this.normalizeContent(msg.content)
+        ) {
+          last.content = `${last.content}\n${msg.content}`;
+        }
+      } else {
+        merged.push({ ...msg });
+      }
+    }
+    return merged;
+  }
+
+  private truncateChars(content: string, maxChars: number): string {
+    if (content.length <= maxChars) return content;
+    return content.slice(0, maxChars) + '…';
   }
 
   async getHistory(
@@ -507,7 +823,7 @@ export class ConversationService {
       UPDATE "Conversation"
       SET 
         processing = true,
-        "lockedUntil" = NOW() + INTERVAL '30 seconds',
+        "lockedUntil" = NOW() + INTERVAL '120 seconds',
         "updatedAt" = NOW()
       WHERE 
         id = ${conversationId}
@@ -541,12 +857,6 @@ export class ConversationService {
       return false;
     }
     return true;
-  }
-
-  private truncateMessage(content: string, maxTokens: number): string {
-    const maxChars = maxTokens * 4;
-    if (content.length <= maxChars) return content;
-    return content.slice(0, maxChars) + '…';
   }
 
   // ejecutar cada minuto con cron por si la conversacion muere

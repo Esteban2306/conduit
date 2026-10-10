@@ -688,6 +688,9 @@ model ToolDefinition {
   maxImageSizeBytes       Int?    @default(8388608)
 
   injectPhoneParamName    String?
+  /// Si la llamada sale bien, el bot se pausa en esa conversación durante
+  /// estos minutos (p. ej. herramienta de "pasar a una persona").
+  pausesBotMinutes        Int?
 
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt

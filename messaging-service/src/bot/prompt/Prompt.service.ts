@@ -1,3 +1,4 @@
+import { UpdateAiSettingsDto } from './dto/update-ai-settings.dto';
 import { Injectable } from '@nestjs/common';
 import { PromptTemplateType } from '@prisma/client';
 import { TemplateRepository } from './repositories/TemplateRepository';
@@ -79,7 +80,11 @@ export class PromptService {
     };
   }
 
-  async updateSettings(botConfigId: string, data: any, tenantId: string) {
+  async updateSettings(
+    botConfigId: string,
+    data: UpdateAiSettingsDto,
+    tenantId: string,
+  ) {
     await this.botConfig.findOne(botConfigId, tenantId);
     return this.settings.upsert(botConfigId, data);
   }

@@ -1,3 +1,4 @@
+import { UpdateAiSettingsDto } from './dto/update-ai-settings.dto';
 import {
   Body,
   Controller,
@@ -26,7 +27,7 @@ export class PromptController {
   @Put('settings')
   updateSettings(
     @Param('botId') botId: string,
-    @Body() body: any,
+    @Body() body: UpdateAiSettingsDto,
     @CurrentUser() user: JwtPayload,
   ) {
     return this.service.updateSettings(botId, body, user.tenantId);
