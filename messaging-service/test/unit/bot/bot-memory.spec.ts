@@ -56,17 +56,21 @@ describe('isIgnorableAcknowledgement', () => {
 });
 
 describe('ConversationService.getConversationForAI', () => {
-  function serviceWith(messages: Array<[string, string, boolean?]>) {
-    const rows = messages.map(([direction, content, hasImage]) => ({
+  function serviceWith(
+    messages: Array<[string, string, boolean?, string?]>,
+    context: Record<string, unknown> = {},
+  ) {
+    const rows = messages.map(([direction, content, hasImage, at], index) => ({
       direction,
       content,
       hasImage: hasImage ?? false,
+      createdAt: new Date(at ?? Date.UTC(2026, 9, 10, 12, index)),
     }));
     const prisma = {
       conversation: {
         findUnique: jest.fn().mockResolvedValue({
           id: 'c1',
-          context: { memoriaAcciones: [] },
+          context: { memoriaAcciones: [], ...context },
           summary: 'Quiere reservar spa capilar.',
           currentStep: null,
           lastIntent: null,
@@ -119,6 +123,37 @@ describe('ConversationService.getConversationForAI', () => {
     ]);
     expect(data.history[0].role).toBe('user');
     expect(data.pending.map((p) => p.content)).toEqual(['a qué hora era?']);
+  });
+
+  it('no responde lo que el cliente escribió antes de cerrar la conversación', async () => {
+    const service = serviceWith(
+      [
+        ['INBOUND', 'hola'],
+        ['OUTBOUND', '¡Hola! ¿En qué te ayudo?'],
+        ['INBOUND', 'gracias', false, '2026-10-10T12:02:00Z'],
+        ['INBOUND', 'quiero otra cita', false, '2026-10-10T13:00:00Z'],
+      ],
+      { closedAt: '2026-10-10T12:30:00Z' },
+    );
+
+    const data = await service.getConversationForAI('c1', 6);
+
+    expect(data.pending.map((p) => p.content)).toEqual(['quiero otra cita']);
+  });
+
+  it('no deja nada pendiente si el cliente no ha escrito tras el cierre', async () => {
+    const service = serviceWith(
+      [
+        ['INBOUND', 'hola'],
+        ['OUTBOUND', '¡Hola!'],
+        ['INBOUND', 'ok gracias', false, '2026-10-10T12:02:00Z'],
+      ],
+      { closedAt: '2026-10-10T12:30:00Z' },
+    );
+
+    const data = await service.getConversationForAI('c1', 6);
+
+    expect(data.pending).toEqual([]);
   });
 
   it('no recorta mensajes normales (antes: 120 caracteres)', async () => {

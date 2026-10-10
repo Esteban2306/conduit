@@ -17,6 +17,18 @@ import { UpdateContextDto } from './dto/UpdateContext.dto';
 import { EventBusService } from 'src/infra/events/event.service';
 import { EVENT_TYPES } from 'src/infra/events/constants/event.types';
 
+const CLOSED_STATUSES: ConversationStatus[] = [
+  ConversationStatus.COMPLETED,
+  ConversationStatus.ABANDONED,
+];
+
+function closedAtOf(context: ConversationContext | null): Date | null {
+  const value = context?.closedAt;
+  if (typeof value !== 'string') return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
 /** Mínimo de mensajes recientes que el modelo ve completos. */
 export const MIN_HISTORY_WINDOW = 12;
 /** Recorte por mensaje: suficiente para listas de horarios o precios. */
@@ -118,17 +130,19 @@ export class ConversationService {
     const conversation = await this.prisma.conversation.findFirst({
       where: { botConfigId, phoneNumber },
       orderBy: { createdAt: 'desc' },
-      select: { id: true },
+      select: { id: true, context: true },
     });
 
     if (!conversation) return null;
+
+    const closedAt = closedAtOf(conversation.context as ConversationContext);
 
     return this.prisma.botMessage.findFirst({
       where: {
         conversationId: conversation.id,
         direction: 'OUTBOUND',
         processedBy: 'human',
-        createdAt: { gte: since },
+        createdAt: { gte: closedAt && closedAt > since ? closedAt : since },
       },
       select: { id: true },
     });
@@ -293,9 +307,16 @@ export class ConversationService {
         where: { conversationId },
         orderBy: { createdAt: 'desc' },
         take: window + 30,
-        select: { id: true, direction: true, content: true, hasImage: true },
+        select: {
+          id: true,
+          direction: true,
+          content: true,
+          hasImage: true,
+          createdAt: true,
+        },
       })
     ).reverse();
+    const closedAt = closedAtOf(conversation.context as ConversationContext);
 
     let lastOutbound = -1;
     for (let i = recent.length - 1; i >= 0; i--) {
@@ -307,7 +328,11 @@ export class ConversationService {
 
     const pending = recent
       .slice(lastOutbound + 1)
-      .filter((m) => m.direction === MessageDirection.INBOUND)
+      .filter(
+        (m) =>
+          m.direction === MessageDirection.INBOUND &&
+          (!closedAt || m.createdAt > closedAt),
+      )
       .map((m) => ({ id: m.id, content: m.content, hasImage: m.hasImage }));
 
     const answered = recent.slice(0, lastOutbound + 1).slice(-window);
@@ -438,7 +463,9 @@ export class ConversationService {
         botPauseReason: this.isBotPaused(ctx) ? ctx.botPauseReason : null,
         lastMessage: messages[0] ?? null,
         // Esperando respuesta: el último mensaje es del cliente.
-        awaitingReply: messages[0]?.direction === MessageDirection.INBOUND,
+        awaitingReply:
+          !CLOSED_STATUSES.includes(row.status) &&
+          messages[0]?.direction === MessageDirection.INBOUND,
       };
     });
 
@@ -714,12 +741,20 @@ export class ConversationService {
 
     this.logger.log(`Cerrando conversación ${conversationId} → ${status}`);
 
-    const conversation = this.prisma.conversation.update({
+    const conversation = await this.prisma.conversation.update({
       where: { id: conversationId },
       data: {
         status,
         updatedAt: new Date(),
         lockedUntil: null,
+      },
+    });
+
+    await this.updateContext(conversationId, {
+      contextPatch: {
+        closedAt: new Date().toISOString(),
+        botPausedUntil: null,
+        botPauseReason: null,
       },
     });
 
