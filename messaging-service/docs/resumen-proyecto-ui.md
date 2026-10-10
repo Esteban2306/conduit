@@ -91,7 +91,7 @@ El bot puede configurarse por tenant y tiene estado `ACTIVE`, `INACTIVE` o `PAUS
 - Ignorar mensajes triviales como "ok", "gracias", "listo", etc.
 - Acumular mensajes durante un retraso configurable antes de responder.
 - Cancelar la respuesta si detecta actividad humana reciente.
-- Registrar takeover humano cuando el duenio responde manualmente.
+- Registrar takeover humano cuando el dueño responde manualmente.
 - Crear o reutilizar conversaciones activas por telefono.
 - Guardar mensajes entrantes y salientes.
 - Mantener contexto JSON, resumen, ultimo intent y paso actual.
