@@ -15,6 +15,7 @@ import { closeWorkerGracefully } from 'src/queue/BullMQ/close-worker';
 
 /** 4xx que sí vale la pena reintentar: el receptor pide esperar. */
 const RETRYABLE_CLIENT_STATUSES = new Set([408, 425, 429]);
+const TUNNEL_ERROR_HEADER = 'ngrok-error-code';
 
 @Injectable()
 export class WebhookDeliveryWorker implements OnModuleInit, OnModuleDestroy {
@@ -89,6 +90,7 @@ export class WebhookDeliveryWorker implements OnModuleInit, OnModuleDestroy {
 
     let httpStatus: number | null = null;
     let responseBody: string | null = null;
+    let tunnelOffline = false;
 
     try {
       const response = await axios.post(delivery.webhook.url, body, {
@@ -107,6 +109,7 @@ export class WebhookDeliveryWorker implements OnModuleInit, OnModuleDestroy {
       });
       httpStatus = response.status;
       responseBody = this.truncate(response.data);
+      tunnelOffline = Boolean(response.headers?.[TUNNEL_ERROR_HEADER]);
     } catch (error) {
       responseBody = error instanceof Error ? error.message : String(error);
     }
@@ -135,7 +138,8 @@ export class WebhookDeliveryWorker implements OnModuleInit, OnModuleDestroy {
       httpStatus !== null &&
       httpStatus >= 400 &&
       httpStatus < 500 &&
-      !RETRYABLE_CLIENT_STATUSES.has(httpStatus)
+      !RETRYABLE_CLIENT_STATUSES.has(httpStatus) &&
+      !tunnelOffline
     ) {
       throw new UnrecoverableError(
         `Rechazo permanente del receptor. ${reason}`,
