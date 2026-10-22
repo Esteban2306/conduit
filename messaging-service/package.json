@@ -20,7 +20,8 @@
     "test:coverage": "jest --coverage",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
-    "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand"
+    "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
+    "bench:baseline": "TS_NODE_PROJECT=test/bench/tsconfig.json TS_NODE_TRANSPILE_ONLY=true ts-node -r tsconfig-paths/register test/bench/run-bench.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.104.1",
