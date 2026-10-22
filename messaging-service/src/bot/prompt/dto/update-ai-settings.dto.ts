@@ -1,4 +1,4 @@
-import { EmojiLevel, ResponseLength } from '@prisma/client';
+import { EmojiLevel, ReasoningMode, ResponseLength } from '@prisma/client';
 import {
   IsBoolean,
   IsEnum,
@@ -41,4 +41,5 @@ export class UpdateAiSettingsDto {
   @IsOptional() @IsInt() @Min(50) @Max(1500) maxTokensConversation?: number;
   @IsOptional() @IsInt() @Min(50) @Max(1000) maxTokensImage?: number;
   @IsOptional() @IsInt() @Min(50) @Max(1000) maxTokensSummary?: number;
+  @IsOptional() @IsEnum(ReasoningMode) reasoningMode?: ReasoningMode;
 }

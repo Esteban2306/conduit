@@ -1,10 +1,18 @@
 import { ConversationContext } from 'src/bot/conversation/interfaces/ConversationContext';
 import { HistoryMessage } from 'src/bot/conversation/interfaces/ConversationHistory';
-import { ToolExecutor, ToolSpec } from './AiProvider';
+import {
+  ReasoningLevel,
+  SystemBlocks,
+  TokenUsage,
+  ToolExecutor,
+  ToolSpec,
+} from './AiProvider';
 
 export interface GenerateResponseInput {
   botConfigId: string;
   systemPrompt: string;
+  systemBlocks?: SystemBlocks;
+  reasoningMode?: ReasoningLevel;
   userMessage: string;
   history: HistoryMessage[];
   context: ConversationContext;
@@ -26,6 +34,8 @@ export interface AnalyzeImageInput {
 export interface OrchestratorResult {
   content: string;
   tokensUsed: number;
+  usage?: TokenUsage;
+  stopReason?: string | null;
   modelUsed: string;
   providerUsed: string;
   latencyMs: number;

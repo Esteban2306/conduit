@@ -200,10 +200,15 @@ class Store {
   }
 }
 
-function world(store = new Store()) {
+function world(
+  store = new Store(),
+  ai: (userMessage: string, call: number) => string = (m) =>
+    `respuesta a: ${m}`,
+) {
   const sends: Array<{ to: string; content: string; conversationId: string }> =
     [];
   const aiCalls: string[] = [];
+  const aiInputs: Array<{ userMessage: string; reasoningMode?: string }> = [];
   const conversations = store.service();
   const debouncer = new MessageDebouncer();
   const tracker = new messageReceiptTracker();
@@ -257,14 +262,17 @@ function world(store = new Store()) {
     conversations as never,
     eventBus as never,
     {
-      generateResponse: later((input: { userMessage: string }) => {
-        aiCalls.push(input.userMessage);
-        return {
-          content: `respuesta a: ${input.userMessage}`,
-          tokensUsed: 10,
-          toolCallsExecuted: [],
-        };
-      }),
+      generateResponse: later(
+        (input: { userMessage: string; reasoningMode?: string }) => {
+          aiCalls.push(input.userMessage);
+          aiInputs.push(input);
+          return {
+            content: ai(input.userMessage, aiCalls.length),
+            tokensUsed: 10,
+            toolCallsExecuted: [],
+          };
+        },
+      ),
     } as never,
     {} as never,
     tracker,
@@ -383,6 +391,7 @@ function world(store = new Store()) {
     router,
     sends,
     aiCalls,
+    aiInputs,
     inbound,
     ownerReads,
     ownerWrites,
@@ -518,5 +527,51 @@ describe('Aislamiento de chats (etapa 1)', () => {
     expect(
       [...first.sends, ...second.sends].filter((s) => s.to === A),
     ).toHaveLength(1);
+  });
+});
+
+describe('Respuestas vacías de la IA (etapa de tokens)', () => {
+  beforeEach(() => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('si la IA devuelve vacío reintenta una vez sin razonamiento y envía esa respuesta', async () => {
+    const w = world(new Store(), (m, call) =>
+      call === 1 ? '' : `respuesta a: ${m}`,
+    );
+    w.inbound(A, 'hola');
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.aiInputs.map((i) => i.reasoningMode)).toEqual([undefined, 'OFF']);
+    expect(w.sends.map((s) => s.content)).toEqual(['respuesta a: hola']);
+  });
+
+  it('nunca envía un mensaje vacío: si se repite el vacío avisa que la IA no está disponible', async () => {
+    const w = world(new Store(), () => '');
+    w.inbound(A, 'hola');
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.sends).toHaveLength(1);
+    expect(w.sends[0].content).toMatch(/asistente no está disponible/);
+  });
+
+  it('una respuesta vacía no dispara la regeneración por "duplicado" sin historial', async () => {
+    const store = new Store();
+    const w = world(store, (m, call) =>
+      call === 2 ? '' : `respuesta a: ${m}`,
+    );
+    w.inbound(A, 'primera');
+    await settle(DELAY_MS + 2_000);
+    w.inbound(A, 'segunda');
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.aiInputs).toHaveLength(3);
+    expect(w.sends.map((s) => s.content)).toEqual([
+      'respuesta a: primera',
+      'respuesta a: segunda',
+    ]);
   });
 });

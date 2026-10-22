@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { BotAiSettings } from '@prisma/client';
+import { promptToday } from './prompt-clock';
 
 export interface ResolvedVariables {
   agentName: string;
@@ -33,7 +34,10 @@ const DEFAULTS = {
 
 @Injectable()
 export class VariableResolver {
-  resolve(settings: BotAiSettings | null): ResolvedVariables {
+  resolve(
+    settings: BotAiSettings | null,
+    timeZone = 'America/Bogota',
+  ): ResolvedVariables {
     const s = settings;
 
     return {
@@ -61,12 +65,7 @@ export class VariableResolver {
       creativityNote: this.mapCreativity(s?.creativity ?? 0.7),
       confidenceNote: this.mapConfidence(s?.confidence ?? 'ASSERTIVE'),
       persuasionNote: this.mapPersuasion(s?.persuasion ?? 'LOW'),
-      today: new Date().toLocaleDateString('es-CO', {
-        weekday: 'long',
-        year: 'numeric',
-        month: 'long',
-        day: 'numeric',
-      }),
+      today: promptToday(timeZone),
     };
   }
 

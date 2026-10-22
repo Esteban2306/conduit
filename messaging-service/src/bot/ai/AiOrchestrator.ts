@@ -63,6 +63,8 @@ export class AiOrchestrator {
         const result = await provider.generateText({
           prompt: input.userMessage,
           systemPrompt: input.systemPrompt,
+          systemBlocks: input.systemBlocks,
+          reasoningMode: input.reasoningMode,
           history: input.history,
           model,
           apiKey,
@@ -143,7 +145,11 @@ export class AiOrchestrator {
 
         this.logger.log(
           `IA: ${config.provider}/${config.model} | ` +
-            `tokens: ${result.tokensUsed} | ` +
+            `tokens: ${result.tokensUsed}` +
+            (result.usage
+              ? ` (in ${result.usage.input}, caché ${result.usage.cacheRead}/${result.usage.cacheWrite}, out ${result.usage.output}, razonamiento ${result.usage.thinking})`
+              : '') +
+            ` | ` +
             `${result.latencyMs}ms` +
             (result.toolCallsExecuted?.length
               ? ` | tools: ${result.toolCallsExecuted
@@ -155,6 +161,8 @@ export class AiOrchestrator {
         return {
           content: result.content,
           tokensUsed: result.tokensUsed,
+          usage: result.usage,
+          stopReason: result.stopReason,
           modelUsed: result.model,
           providerUsed: result.provider,
           latencyMs: result.latencyMs,

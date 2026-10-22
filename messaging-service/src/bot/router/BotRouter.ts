@@ -10,7 +10,8 @@ import { ImageAnalysisService } from '../ai/ImageAnalysisService';
 import { BaileysSessionManager } from 'src/channels/whatsapp/baileys/BaileysSessionManager';
 import { messageReceiptTracker } from 'src/channels/whatsapp/baileys/MessageReceiptTracker';
 import { MessageDebouncer } from './MessageDebouncer';
-import { PromptEngine } from '../prompt/PromptEngine';
+import { BuiltPrompt, PromptEngine } from '../prompt/PromptEngine';
+import type { SystemBlocks } from '../ai/interface/AiProvider';
 import { ToolDefinitionService } from '../tools/ToolDefinitionService';
 import {
   ToolExecutorService,
@@ -637,6 +638,8 @@ export class BotRouter {
       aiResult = await this.aiOrchestrator.generateResponse({
         botConfigId: botConfig.id,
         systemPrompt: builtPrompt.systemPrompt,
+        systemBlocks: this.systemBlocksOf(builtPrompt),
+        reasoningMode: builtPrompt.reasoningMode,
         userMessage: userMessageForAI,
         history: aiData.history,
         context: aiData.context,
@@ -651,6 +654,40 @@ export class BotRouter {
       this.logger.error(`IA no disponible para ${phoneNumber}: ${detail}`);
       await this.handleAiUnavailable(turn, aiData.context, detail);
       return;
+    }
+
+    if (!aiResult.content.trim()) {
+      this.logger.warn(
+        `Respuesta vacía de la IA para ${phoneNumber} (stop=${aiResult.stopReason ?? 'n/d'}); se reintenta sin razonamiento.`,
+      );
+      try {
+        aiResult = await this.aiOrchestrator.generateResponse({
+          botConfigId: botConfig.id,
+          systemPrompt: builtPrompt.systemPrompt,
+          systemBlocks: this.systemBlocksOf(builtPrompt),
+          reasoningMode: 'OFF',
+          userMessage: userMessageForAI,
+          history: aiData.history,
+          context: aiData.context,
+          summary: aiData.summary,
+          maxTokens: builtPrompt.maxTokens,
+          temperature: builtPrompt.temperature,
+          tools: tools.length ? tools.map((t) => t.spec) : undefined,
+          toolExecutor: toolExecutorFn,
+        });
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        await this.handleAiUnavailable(turn, aiData.context, detail);
+        return;
+      }
+      if (!aiResult.content.trim()) {
+        await this.handleAiUnavailable(
+          turn,
+          aiData.context,
+          'La IA devolvió una respuesta vacía dos veces',
+        );
+        return;
+      }
     }
 
     const finalContent = this.applyToolFailureDiscipline(aiResult, phoneNumber);
@@ -678,6 +715,8 @@ export class BotRouter {
         const retryResult = await this.aiOrchestrator.generateResponse({
           botConfigId: botConfig.id,
           systemPrompt: builtPrompt.systemPrompt,
+          systemBlocks: this.systemBlocksOf(builtPrompt),
+          reasoningMode: builtPrompt.reasoningMode,
           userMessage: combinedText || userMessageForAI,
           history: [],
           context: aiData.context,
@@ -858,6 +897,15 @@ export class BotRouter {
     return text.length > maxChars ? `${text.slice(0, maxChars)}…` : text;
   }
 
+  private systemBlocksOf(prompt: BuiltPrompt): SystemBlocks | undefined {
+    return prompt.cacheablePrompt
+      ? {
+          cacheable: prompt.cacheablePrompt,
+          dynamic: prompt.dynamicPrompt ?? '',
+        }
+      : undefined;
+  }
+
   private applyToolFailureDiscipline(
     result: { content: string; toolCallsExecuted?: Array<{ ok: boolean }> },
     phoneNumber: string,
@@ -981,6 +1029,7 @@ export class BotRouter {
       s.toLowerCase().replace(/\s+/g, ' ').trim();
     const na = normalize(a);
     const nb = normalize(b);
+    if (!na || !nb) return false;
 
     if (na === nb) return true;
 

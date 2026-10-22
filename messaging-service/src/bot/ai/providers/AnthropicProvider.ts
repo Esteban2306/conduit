@@ -5,7 +5,31 @@ import {
   GenerateTextInput,
   GenerateTextResult,
   AnalyzeImageInput,
+  ReasoningLevel,
+  TokenUsage,
 } from '../interface/AiProvider';
+
+const CACHE: Anthropic.CacheControlEphemeral = { type: 'ephemeral' };
+
+export function billableTokens(usage: TokenUsage): number {
+  return (
+    usage.input +
+    usage.cacheWrite +
+    Math.ceil(usage.cacheRead / 10) +
+    usage.output
+  );
+}
+
+export function reasoningParams(
+  mode: ReasoningLevel | undefined,
+): Pick<
+  Anthropic.MessageCreateParamsNonStreaming,
+  'thinking' | 'output_config'
+> {
+  if (mode === 'OFF') return { thinking: { type: 'disabled' } };
+  if (mode === 'LOW') return { output_config: { effort: 'low' } };
+  return {};
+}
 
 @Injectable()
 export class AnthropicProvider implements AiProvider {
@@ -13,10 +37,15 @@ export class AnthropicProvider implements AiProvider {
   readonly supportsTools = true;
   private readonly logger = new Logger(AnthropicProvider.name);
   private readonly DEFAULT_MAX_TOOL_ITERATIONS = 3;
+  private readonly REQUEST_TIMEOUT_MS = 30_000;
 
   async generateText(input: GenerateTextInput): Promise<GenerateTextResult> {
     const start = Date.now();
-    const client = new Anthropic({ apiKey: input.apiKey });
+    const client = new Anthropic({
+      apiKey: input.apiKey,
+      timeout: this.REQUEST_TIMEOUT_MS,
+      maxRetries: 1,
+    });
 
     const messages: Anthropic.MessageParam[] = (input.history ?? []).map(
       (h) => ({
@@ -26,14 +55,38 @@ export class AnthropicProvider implements AiProvider {
     );
     messages.push({ role: 'user', content: input.prompt });
 
-    const tools: Anthropic.Tool[] | undefined = input.tools?.map((t) => ({
-      name: t.name,
-      description: t.description,
-      input_schema: t.parametersSchema as Anthropic.Tool.InputSchema,
-    }));
+    const system: string | Anthropic.TextBlockParam[] = input.systemBlocks
+      ? [
+          {
+            type: 'text',
+            text: input.systemBlocks.cacheable,
+            cache_control: CACHE,
+          },
+          ...(input.systemBlocks.dynamic
+            ? [{ type: 'text' as const, text: input.systemBlocks.dynamic }]
+            : []),
+        ]
+      : input.systemPrompt;
+
+    const tools: Anthropic.Tool[] | undefined = input.tools?.map(
+      (t, index, all) => ({
+        name: t.name,
+        description: t.description,
+        input_schema: t.parametersSchema as Anthropic.Tool.InputSchema,
+        ...(input.systemBlocks && index === all.length - 1
+          ? { cache_control: CACHE }
+          : {}),
+      }),
+    );
 
     const toolCallsExecuted: GenerateTextResult['toolCallsExecuted'] = [];
-    let totalTokens = 0;
+    const usage: TokenUsage = {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      thinking: 0,
+    };
     const maxIterations =
       input.maxToolIterations ?? this.DEFAULT_MAX_TOOL_ITERATIONS;
 
@@ -41,12 +94,18 @@ export class AnthropicProvider implements AiProvider {
       const response = await client.messages.create({
         model: input.model,
         max_tokens: input.maxTokens ?? 1024,
-        system: input.systemPrompt,
+        system,
         messages,
         ...(tools && tools.length > 0 ? { tools } : {}),
+        ...reasoningParams(input.reasoningMode),
       });
 
-      totalTokens += response.usage.input_tokens + response.usage.output_tokens;
+      usage.input += response.usage.input_tokens;
+      usage.output += response.usage.output_tokens;
+      usage.cacheRead += response.usage.cache_read_input_tokens ?? 0;
+      usage.cacheWrite += response.usage.cache_creation_input_tokens ?? 0;
+      usage.thinking +=
+        response.usage.output_tokens_details?.thinking_tokens ?? 0;
 
       const toolUseBlocks = response.content.filter(
         (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use',
@@ -60,7 +119,9 @@ export class AnthropicProvider implements AiProvider {
 
         return {
           content,
-          tokensUsed: totalTokens,
+          tokensUsed: billableTokens(usage),
+          usage,
+          stopReason: response.stop_reason,
           model: response.model,
           provider: this.providerName,
           latencyMs: Date.now() - start,
@@ -75,7 +136,9 @@ export class AnthropicProvider implements AiProvider {
         return {
           content:
             'No pude completar la solicitud en este momento. Un miembro del equipo te contactará pronto.',
-          tokensUsed: totalTokens,
+          tokensUsed: billableTokens(usage),
+          usage,
+          stopReason: response.stop_reason,
           model: response.model,
           provider: this.providerName,
           latencyMs: Date.now() - start,
@@ -111,10 +174,13 @@ export class AnthropicProvider implements AiProvider {
 
     throw new Error('Bucle de tool calling terminó sin resultado.');
   }
-
   async analyzeImage(input: AnalyzeImageInput): Promise<GenerateTextResult> {
     const start = Date.now();
-    const client = new Anthropic({ apiKey: input.apiKey });
+    const client = new Anthropic({
+      apiKey: input.apiKey,
+      timeout: this.REQUEST_TIMEOUT_MS,
+      maxRetries: 1,
+    });
 
     const response = await client.messages.create({
       model: input.model,

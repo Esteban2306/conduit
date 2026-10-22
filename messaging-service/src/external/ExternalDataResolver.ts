@@ -10,7 +10,8 @@ export interface ResolvedExternalData {
 @Injectable()
 export class ExternalDataResolver {
   private readonly logger = new Logger(ExternalDataResolver.name);
-  private readonly MAX_VARS_IN_PROMPT = 10;
+  private readonly MAX_VARS_IN_PROMPT = 20;
+  private readonly MAX_VALUE_CHARS = 500;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -25,10 +26,10 @@ export class ExternalDataResolver {
     const variables = Object.fromEntries(rows.map((r) => [r.fullKey, r.value]));
 
     const byNamespace: Record<string, string[]> = {};
-    for (const row of rows.slice(0, 15)) {
+    for (const row of rows.slice(0, this.MAX_VARS_IN_PROMPT)) {
       if (!byNamespace[row.namespace]) byNamespace[row.namespace] = [];
       byNamespace[row.namespace].push(
-        `  ${row.key}: ${row.value.slice(0, 80)}`,
+        `  ${row.key}: ${row.value.slice(0, this.MAX_VALUE_CHARS)}`,
       );
     }
 

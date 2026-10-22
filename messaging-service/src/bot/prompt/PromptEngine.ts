@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { ConversationContext } from '../conversation/interfaces/ConversationContext';
-import { PromptTemplateType } from '@prisma/client';
+import { PromptTemplateType, ReasoningMode } from '@prisma/client';
 import { TemplateRepository } from './repositories/TemplateRepository';
 import { SettingsRepository } from './repositories/SettingsRepository';
 import { VariableResolver } from './VariableResolver';
@@ -9,11 +10,15 @@ import { PromptRenderer } from './PromptRenderer';
 import { HistoryMessage } from '../conversation/interfaces/ConversationHistory';
 import { KnowledgeAssembler } from '../knowledge/KnowledgeAssembler';
 import { ExternalDataResolver } from 'src/external/ExternalDataResolver';
+import { promptNow } from './prompt-clock';
 
 export interface BuiltPrompt {
   systemPrompt: string;
+  cacheablePrompt?: string;
+  dynamicPrompt?: string;
   maxTokens: number;
   temperature: number;
+  reasoningMode?: ReasoningMode;
 }
 
 export interface PromptBuildInput {
@@ -61,7 +66,12 @@ export class PromptEngine {
     private readonly renderer: PromptRenderer,
     private readonly knowledge: KnowledgeAssembler,
     private readonly externalData: ExternalDataResolver,
+    private readonly config: ConfigService,
   ) {}
+
+  private timeZone(): string {
+    return this.config.get<string>('whatsapp.timeZone') ?? 'America/Bogota';
+  }
   async buildConversationPrompt(
     botConfigId: string,
     input: PromptBuildInput,
@@ -73,42 +83,41 @@ export class PromptEngine {
       this.externalData.resolve(botConfigId),
     ]);
 
-    const vars = this.variables.resolve(settings);
-    let systemPrompt = this.renderer.render(template, vars);
+    const timeZone = this.timeZone();
+    const vars = this.variables.resolve(settings, timeZone);
 
-    if (assembled.compiled) {
-      systemPrompt = `${systemPrompt}\n\nConocimiento:\n${assembled.compiled}`;
-    }
+    const cacheable: string[] = [this.renderer.render(template, vars)];
+    if (assembled.compiled)
+      cacheable.push(`Conocimiento:\n${assembled.compiled}`);
+    if (external.compiledBlock) cacheable.push(external.compiledBlock);
+    cacheable.push(MEMORY_DISCIPLINE, SECURITY_DISCIPLINE);
+    if (input.hasTools) cacheable.push(TOOL_RESULT_DISCIPLINE);
 
+    const dynamic: string[] = [`Fecha y hora actual: ${promptNow(timeZone)}.`];
     const { block } = this.contextBuilder.build(input.context, input.summary);
-    if (block) systemPrompt = `${systemPrompt}\n\n${block}`;
-
-    if (external.compiledBlock) {
-      systemPrompt = `${systemPrompt}\n\n${external.compiledBlock}`;
-    }
-
-    // El historial va completo como turnos nativos del proveedor; aquí solo
-    // se agregan los mensajes del negocio que lo preceden (p. ej. un
-    // recordatorio al que el cliente está respondiendo).
+    if (block) dynamic.push(block);
     if (input.leadingBotMessages?.length) {
       const previous = input.leadingBotMessages.map((m) => `- ${m}`).join('\n');
-      systemPrompt = `${systemPrompt}\n\nÚltimos mensajes que el negocio le envió al cliente antes de su respuesta:\n${previous}`;
+      dynamic.push(
+        `Últimos mensajes que el negocio le envió al cliente antes de su respuesta:\n${previous}`,
+      );
     }
 
-    systemPrompt = `${systemPrompt}\n\n${MEMORY_DISCIPLINE}\n\n${SECURITY_DISCIPLINE}`;
-
-    if (input.hasTools) {
-      systemPrompt = `${systemPrompt}\n\n${TOOL_RESULT_DISCIPLINE}`;
-    }
+    const cacheablePrompt = cacheable.join('\n\n');
+    const dynamicPrompt = dynamic.join('\n\n');
+    const systemPrompt = `${cacheablePrompt}\n\n${dynamicPrompt}`;
 
     this.logger.debug(
-      `Prompt built | ~${Math.ceil(systemPrompt.length / 4)} tokens` +
+      `Prompt built | ~${Math.ceil(cacheablePrompt.length / 4)} tokens fijos + ~${Math.ceil(dynamicPrompt.length / 4)} dinámicos` +
         (input.hasTools ? ' | tool discipline: on' : ''),
     );
     return {
       systemPrompt,
+      cacheablePrompt,
+      dynamicPrompt,
       maxTokens: settings?.maxTokensConversation ?? 400,
       temperature: settings?.temperature ?? 0.7,
+      reasoningMode: settings?.reasoningMode ?? ReasoningMode.AUTO,
     };
   }
 
@@ -118,7 +127,7 @@ export class PromptEngine {
       this.templates.findActive(botConfigId, PromptTemplateType.IMAGE_ANALYSIS),
     ]);
 
-    const vars = this.variables.resolve(settings);
+    const vars = this.variables.resolve(settings, this.timeZone());
 
     return {
       systemPrompt: this.renderer.render(template, vars),
@@ -133,7 +142,7 @@ export class PromptEngine {
       this.templates.findActive(botConfigId, PromptTemplateType.SUMMARY),
     ]);
 
-    const vars = this.variables.resolve(settings);
+    const vars = this.variables.resolve(settings, this.timeZone());
 
     return {
       systemPrompt: this.renderer.render(template, vars),
@@ -151,7 +160,7 @@ export class PromptEngine {
       this.templates.findActive(botConfigId, type),
     ]);
 
-    const vars = this.variables.resolve(settings);
+    const vars = this.variables.resolve(settings, this.timeZone());
     return this.renderer.render(template, vars);
   }
 }

@@ -28,9 +28,26 @@ export type ToolExecutor = (
   req: ToolExecutionRequest,
 ) => Promise<ToolExecutionResult>;
 
+export type ReasoningLevel = 'AUTO' | 'LOW' | 'OFF';
+
+export interface SystemBlocks {
+  cacheable: string;
+  dynamic: string;
+}
+
+export interface TokenUsage {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  thinking: number;
+}
+
 export interface GenerateTextInput {
   prompt: string;
   systemPrompt: string;
+  systemBlocks?: SystemBlocks;
+  reasoningMode?: ReasoningLevel;
   history?: HistoryEntry[];
   model: string;
   apiKey: string;
@@ -57,6 +74,8 @@ export interface AnalyzeImageInput {
 export interface GenerateTextResult {
   content: string;
   tokensUsed: number;
+  usage?: TokenUsage;
+  stopReason?: string | null;
   model: string;
   provider: string;
   latencyMs: number;
