@@ -68,6 +68,7 @@ async function readSource(): Promise<{
   rows: Record<string, Row[]>;
   tenant: Row;
   bot: Row;
+  masterKey: string;
 }> {
   const sourceEnv = parseDotenv(
     fs.readFileSync(path.join(CONDUIT_ROOT, '.env')),
@@ -101,7 +102,12 @@ async function readSource(): Promise<{
         )
       ).rows.map((r) => r.r);
     }
-    return { rows, tenant, bot };
+    return {
+      rows,
+      tenant,
+      bot,
+      masterKey: sourceEnv.INTEGRATION_ENCRYPTION_KEY,
+    };
   } finally {
     await source.end();
   }
@@ -142,6 +148,10 @@ export async function startConduit(
   const { SecretEncryptionService } =
     await import('src/shared/security/secret-encryption.service');
   const { ApiKeyService } = await import('src/auth/api/ApiKeyService');
+  const sourceEncryption = new SecretEncryptionService({
+    get: () => source.masterKey,
+  } as never);
+  sourceEncryption.onModuleInit();
 
   const log = fs.createWriteStream(logFile, { flags: 'a' });
   const write =
@@ -218,6 +228,9 @@ export async function startConduit(
         toolNames.set(String(row.id), String(row.name));
       }
       if (table === 'AiModelConfig') {
+        const plainKey = sourceEncryption.open(String(row.apiKey));
+        row.apiKey = encryption.seal(plainKey);
+        row.apiKeyLast4 = encryption.last4(plainKey);
         Object.assign(row, {
           tokensUsedToday: 0,
           requestsThisMinute: 0,

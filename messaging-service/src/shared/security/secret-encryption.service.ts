@@ -5,6 +5,7 @@ import { createCipheriv, createDecipheriv, randomBytes } from 'crypto';
 const ALGORITHM = 'aes-256-gcm';
 const IV_LENGTH = 12;
 const KEY_LENGTH = 32;
+export const SEALED_PREFIX = 'enc:v1:';
 
 @Injectable()
 export class SecretEncryptionService implements OnModuleInit {
@@ -67,6 +68,25 @@ export class SecretEncryptionService implements OnModuleInit {
     ]);
 
     return decrypted.toString('utf8');
+  }
+
+  isSealed(stored: string | null | undefined): boolean {
+    return !!stored && stored.startsWith(SEALED_PREFIX);
+  }
+
+  seal(plainText: string): string {
+    return `${SEALED_PREFIX}${this.encrypt(plainText)}`;
+  }
+
+  open(stored: string): string {
+    return this.isSealed(stored)
+      ? this.decrypt(stored.slice(SEALED_PREFIX.length))
+      : stored;
+  }
+
+  last4(plainText: string): string | null {
+    const trimmed = plainText.trim();
+    return trimmed.length >= 8 ? trimmed.slice(-4) : null;
   }
 
   generateSecret(): string {

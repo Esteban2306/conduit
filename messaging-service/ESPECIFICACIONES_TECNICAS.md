@@ -1966,3 +1966,34 @@ npx @nestjs/cli swagger:generate
 Última actualización: 3 de julio de 2026
 Autor: Esteban Castañeda
 Estado: Actualizado
+
+---
+
+## Seguridad: API keys de modelos de IA
+
+**Regla:** la `apiKey` de un `AiModelConfig` nunca sale de la base en claro. Ni las respuestas de la API, ni los logs, ni los mensajes de error, ni el panel la contienen.
+
+- **En reposo:** se guarda sellada con `SecretEncryptionService` (AES-256-GCM, clave maestra `INTEGRATION_ENCRYPTION_KEY`) con el prefijo `enc:v1:`. Solo `AiModelSelectorService.resolveApiKey` la descifra, en memoria, justo antes de llamar al proveedor. Un valor heredado en texto plano se sigue aceptando hasta que se cifre.
+- **Migración de claves existentes:** `AiKeyEncryptionMigration` corre al arrancar y sella toda fila sin prefijo. Es idempotente (no toca lo ya sellado) y segura entre instancias (`updateMany` condicionado al valor leído). Registra solo cuántas filas cifró, nunca valores. Además hay una migración SQL que agrega `AiModelConfig.apiKeyLast4`.
+- **Qué se ve:** `AiModelPublic` (`src/bot/dto/ai-model-public.ts`) con `apiKeyLast4` (últimos 4 caracteres) para que la persona reconozca cuál es. Todas las consultas del módulo usan `AI_MODEL_PUBLIC_SELECT`; está prohibido devolver filas Prisma crudas.
+- **Candados automáticos** (`test/unit/bot/ai-key-protection.spec.ts`):
+  - cada método de `BotConfigService` se prueba con un doble de Prisma que respeta `select` (si falta el `select`, devuelve la fila completa y la prueba falla) y se recorre la respuesta buscando campos de secreto o valores con forma de clave (`sk-ant-`, `sk-`, `AIza`, `gsk_`, `Bearer`, `enc:v1:`);
+  - un guardia estático falla si alguna consulta a `aiModelConfig` o una relación `aiModels` no declara `select` (única excepción: el selector interno de modelos);
+  - un modelo de otro bot ya no se puede reiniciar ni borrar por id (antes: IDOR).
+- **Logs y errores:** `maskSecrets`/`maskError` (`src/shared/security/mask-secrets.ts`) se aplican a los errores del proveedor antes de registrarlos y antes de enviarlos en el aviso de escalamiento por WhatsApp. El error de "clave inválida" ya no incluye el valor de la clave.
+- **Si cambia `INTEGRATION_ENCRYPTION_KEY`**, las claves selladas dejan de poder descifrarse (el error lo dice explícitamente). Para cambiar la clave maestra: volver a guardar cada modelo, o descifrar con la clave vieja y volver a sellar antes de retirarla.
+- **Panel de Leonice:** el BFF filtra por lista blanca y además recorre toda respuesta de `/admin/conduit/*` buscando secretos (ver `docs/CONDUIT_WHATSAPP_RUNBOOK.md` en el repo de Leonice).
+
+### Rotar la API key de Anthropic sin caída
+
+Hoy el mínimo de `priority` es 1 y no existe edición de modelos, así que se rota agregando un segundo candidato y retirando el viejo:
+
+1. **Crear** la clave nueva en la consola del proveedor. No borrar la vieja todavía.
+2. **Verificarla fuera de Conduit** (no gasta tokens), por ejemplo con `POST https://api.anthropic.com/v1/messages/count_tokens` y la clave nueva en `x-api-key`. Debe responder 200.
+3. **Agregarla** (panel: Asistente → Modelos → Agregar, o `POST /bot/config/:botId/models`) con el mismo proveedor y modelo, `role=CONVERSATION` y `priority` = la del modelo actual + 1. Queda como segundo candidato: si el primero falla, el bot ya cae en el nuevo.
+4. **Comprobar** que figura en la lista con sus últimos 4 caracteres.
+5. **Borrar el modelo viejo** (`DELETE …/models/:modelId`). El nuevo pasa a ser el primero.
+6. **Enviar un mensaje de prueba** al WhatsApp del spa y confirmar la respuesta.
+7. **Revocar la clave vieja** en la consola del proveedor.
+
+Rotar de inmediato la clave actual si alguna vez salió de la base: antes de este cambio las respuestas de reiniciar y borrar un modelo la devolvían en claro y el panel de Leonice las reenviaba al navegador. Al arrancar con la migración, Conduit lo recuerda con un aviso en el log si cifró alguna clave.

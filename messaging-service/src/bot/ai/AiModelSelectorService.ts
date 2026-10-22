@@ -3,6 +3,7 @@ import { AiProviderType } from './interface/AiProviderType';
 import { PrismaService } from 'src/shared/prisma.service';
 import { AiModelConfig, AiModelRole, AiModelTier } from '@prisma/client';
 import { ConfigService } from '@nestjs/config';
+import { SecretEncryptionService } from 'src/shared/security/secret-encryption.service';
 
 @Injectable()
 export class AiModelSelectorService {
@@ -11,6 +12,7 @@ export class AiModelSelectorService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly encryption: SecretEncryptionService,
   ) {}
 
   async selectModel(
@@ -42,15 +44,16 @@ export class AiModelSelectorService {
   }
 
   async resolveApiKey(model: AiModelConfig): Promise<string> {
+    const stored = this.openStoredKey(model);
     const isPlaceholder =
-      !model.apiKey ||
-      model.apiKey.length < 20 ||
-      model.apiKey.toUpperCase().includes('_KEY') ||
-      model.apiKey.toUpperCase().includes('YOUR_') ||
-      model.apiKey === 'placeholder';
+      !stored ||
+      stored.length < 20 ||
+      stored.toUpperCase().includes('_KEY') ||
+      stored.toUpperCase().includes('YOUR_') ||
+      stored === 'placeholder';
 
     if (!isPlaceholder) {
-      return model.apiKey;
+      return stored;
     }
 
     const envKeyMap: Record<string, string> = {
@@ -68,12 +71,23 @@ export class AiModelSelectorService {
     if (!systemKey) {
       throw new Error(
         `Sin API key válida para ${model.provider}. ` +
-          `La key en DB parece un placeholder ("${model.apiKey}"). ` +
+          `La key guardada para este modelo parece un placeholder. ` +
           `Configura una key real o añade ${envKey} al .env`,
       );
     }
 
     return systemKey;
+  }
+
+  private openStoredKey(model: AiModelConfig): string {
+    try {
+      return this.encryption.open(model.apiKey ?? '');
+    } catch {
+      throw new Error(
+        `No fue posible descifrar la API key del modelo ${model.id}: ` +
+          `la clave maestra INTEGRATION_ENCRYPTION_KEY no corresponde a la usada al guardarla.`,
+      );
+    }
   }
 
   private async isAvailable(model: AiModelConfig): Promise<boolean> {

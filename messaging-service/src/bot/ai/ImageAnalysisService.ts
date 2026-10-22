@@ -1,3 +1,4 @@
+import { maskSecrets } from 'src/shared/security/mask-secrets';
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { AiModelRole } from '@prisma/client';
 import { AiOrchestrator } from './AiOrchestrator';
@@ -54,7 +55,9 @@ export class ImageAnalysisService {
         {},
       )) as Buffer;
     } catch (err) {
-      this.logger.error(`Error descargando imagen: ${err.message}`);
+      this.logger.error(
+        `Error descargando imagen: ${maskSecrets(String(err.message))}`,
+      );
       return {
         status: 'ANALYSIS_ERROR',
         valid: false,
@@ -90,8 +93,6 @@ export class ImageAnalysisService {
           prompt: promptText,
           imageBuffer,
           mimeType,
-          model: imageModel.model,
-          apiKey: imageModel.apiKey,
         });
         result = aiResult.content;
       } else {
@@ -115,7 +116,7 @@ export class ImageAnalysisService {
 
       if (isProviderUnavailable) {
         this.logger.warn(
-          `Proveedor de imagen no disponible temporalmente: ${err.message}`,
+          `Proveedor de imagen no disponible temporalmente: ${maskSecrets(String(err.message))}`,
         );
         return {
           status: 'PROVIDER_UNAVAILABLE',
@@ -125,7 +126,9 @@ export class ImageAnalysisService {
         };
       }
 
-      this.logger.error(`Error analizando imagen: ${err.message}`);
+      this.logger.error(
+        `Error analizando imagen: ${maskSecrets(String(err.message))}`,
+      );
       return {
         status: 'ANALYSIS_ERROR',
         valid: false,

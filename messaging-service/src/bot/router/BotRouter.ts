@@ -27,6 +27,7 @@ import {
   phoneToJid,
 } from 'src/channels/whatsapp/utils/jid.util';
 import { chatKey } from 'src/channels/whatsapp/utils/chat-key';
+import { maskError, maskSecrets } from 'src/shared/security/mask-secrets';
 import { IGNORED_INBOUND } from '../conversation/ConversationService';
 
 interface TurnContext {
@@ -650,7 +651,7 @@ export class BotRouter {
         toolExecutor: toolExecutorFn,
       });
     } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
+      const detail = maskError(error);
       this.logger.error(`IA no disponible para ${phoneNumber}: ${detail}`);
       await this.handleAiUnavailable(turn, aiData.context, detail);
       return;
@@ -676,7 +677,7 @@ export class BotRouter {
           toolExecutor: toolExecutorFn,
         });
       } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
+        const detail = maskError(error);
         await this.handleAiUnavailable(turn, aiData.context, detail);
         return;
       }
@@ -787,7 +788,7 @@ export class BotRouter {
       'TECHNICAL_ERROR',
       'asistente de IA',
       turn.phoneNumber,
-      detail,
+      maskSecrets(detail),
     );
   }
 

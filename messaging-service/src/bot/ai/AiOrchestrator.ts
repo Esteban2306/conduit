@@ -8,8 +8,9 @@ import { AiModelConfig, AiModelRole } from '@prisma/client';
 import { AiModelSelectorService } from './AiModelSelectorService';
 import { AiProviderFactory } from './AiProviderFactory';
 import { ConversationContext } from '../conversation/interfaces/ConversationContext';
-import { AnalyzeImageInput, GenerateTextResult } from './interface/AiProvider';
+import { GenerateTextResult } from './interface/AiProvider';
 import {
+  AnalyzeImageInput,
   GenerateResponseInput,
   OrchestratorResult,
 } from './interface/AiOrchestator.types';
@@ -17,6 +18,7 @@ import { AiProviderType } from './interface/AiProviderType';
 import { resolveModel } from '../helper/model-resolver';
 import { AiErrorClassifier } from './AiErrorClassifier';
 import { AiErrorAction, ClassifiedAiError } from './interface/AiError';
+import { maskSecrets } from 'src/shared/security/mask-secrets';
 
 @Injectable()
 export class AiOrchestrator {
@@ -179,7 +181,7 @@ export class AiOrchestrator {
             `tipo=${classified.type} | ` +
             `acción=${classified.action} | ` +
             `status=${classified.statusCode ?? 'N/A'} | ` +
-            `${classified.message}`,
+            `${maskSecrets(classified.message)}`,
         );
 
         switch (classified.action) {
@@ -234,7 +236,7 @@ export class AiOrchestrator {
 
     throw new Error(
       `Todos los modelos disponibles fallaron. ` +
-        `Último error: ${lastError?.message ?? 'desconocido'}`,
+        `Último error: ${maskSecrets(lastError?.message ?? 'desconocido')}`,
     );
   }
 }

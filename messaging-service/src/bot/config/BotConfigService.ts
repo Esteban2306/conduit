@@ -9,6 +9,8 @@ import { PrismaService } from 'src/shared/prisma.service';
 import { CreateBotConfigDto } from '../dto/create-bot-config.dto';
 import { AiProvider, BotStatus, Prisma } from '@prisma/client';
 import { CreateAiModelDto } from '../dto/create-ai-model.dto';
+import { SecretEncryptionService } from 'src/shared/security/secret-encryption.service';
+import { AI_MODEL_PUBLIC_SELECT } from '../dto/ai-model-public';
 
 @Injectable()
 export class BotConfigService {
@@ -17,6 +19,7 @@ export class BotConfigService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly encryption: SecretEncryptionService,
   ) {}
 
   async create(tenantId: string, dto: CreateBotConfigDto) {
@@ -48,16 +51,7 @@ export class BotConfigService {
         ...this.safeSelect(),
         aiModels: {
           where: { isActive: true },
-          select: {
-            id: true,
-            provider: true,
-            model: true,
-            role: true,
-            tier: true,
-            priority: true,
-            tokensUsedToday: true,
-            dailyTokenLimit: true,
-          },
+          select: AI_MODEL_PUBLIC_SELECT,
           orderBy: [{ role: 'asc' }, { priority: 'asc' }],
         },
       },
@@ -72,18 +66,7 @@ export class BotConfigService {
         ...this.safeSelect(),
         aiModels: {
           where: { isActive: true },
-          select: {
-            id: true,
-            provider: true,
-            model: true,
-            role: true,
-            tier: true,
-            priority: true,
-            tokensUsedToday: true,
-            dailyTokenLimit: true,
-            minuteRequestLimit: true,
-            requestsThisMinute: true,
-          },
+          select: AI_MODEL_PUBLIC_SELECT,
           orderBy: [{ role: 'asc' }, { priority: 'asc' }],
         },
       },
@@ -104,6 +87,7 @@ export class BotConfigService {
       include: {
         aiModels: {
           where: { isActive: true },
+          select: AI_MODEL_PUBLIC_SELECT,
           orderBy: [{ role: 'asc' }, { priority: 'asc' }],
         },
       },
@@ -174,6 +158,7 @@ export class BotConfigService {
       include: {
         aiModels: {
           where: { isActive: true },
+          select: AI_MODEL_PUBLIC_SELECT,
           orderBy: [{ role: 'asc' }, { priority: 'asc' }],
         },
       },
@@ -186,6 +171,7 @@ export class BotConfigService {
       include: {
         aiModels: {
           where: { isActive: true },
+          select: AI_MODEL_PUBLIC_SELECT,
           orderBy: [{ role: 'asc' }, { priority: 'asc' }],
         },
       },
@@ -211,7 +197,8 @@ export class BotConfigService {
         botConfigId,
         provider: dto.provider,
         model: dto.model,
-        apiKey: dto.apiKey,
+        apiKey: this.encryption.seal(dto.apiKey.trim()),
+        apiKeyLast4: this.encryption.last4(dto.apiKey),
         baseUrl: dto.baseUrl,
         role: dto.role,
         tier: dto.tier,
@@ -219,19 +206,7 @@ export class BotConfigService {
         dailyTokenLimit: dto.dailyTokenLimit,
         minuteRequestLimit: dto.minuteRequestLimit,
       },
-      select: {
-        id: true,
-        provider: true,
-        model: true,
-        role: true,
-        tier: true,
-        priority: true,
-        dailyTokenLimit: true,
-        minuteRequestLimit: true,
-        tokensUsedToday: true,
-        isActive: true,
-        createdAt: true,
-      },
+      select: AI_MODEL_PUBLIC_SELECT,
     });
   }
 
@@ -241,20 +216,7 @@ export class BotConfigService {
     return this.prisma.aiModelConfig.findMany({
       where: { botConfigId },
       orderBy: [{ role: 'asc' }, { priority: 'asc' }],
-      select: {
-        id: true,
-        provider: true,
-        model: true,
-        role: true,
-        tier: true,
-        priority: true,
-        dailyTokenLimit: true,
-        minuteRequestLimit: true,
-        tokensUsedToday: true,
-        requestsThisMinute: true,
-        isActive: true,
-        createdAt: true,
-      },
+      select: AI_MODEL_PUBLIC_SELECT,
     });
   }
 
@@ -263,10 +225,14 @@ export class BotConfigService {
 
     const model = await this.prisma.aiModelConfig.findFirst({
       where: { id: modelId, botConfigId },
+      select: { id: true },
     });
     if (!model) throw new NotFoundException(`Modelo ${modelId} no encontrado`);
 
-    return this.prisma.aiModelConfig.delete({ where: { id: modelId } });
+    return this.prisma.aiModelConfig.delete({
+      where: { id: modelId },
+      select: AI_MODEL_PUBLIC_SELECT,
+    });
   }
 
   async resetModelCounters(
@@ -276,6 +242,12 @@ export class BotConfigService {
   ) {
     await this.findOne(botConfigId, tenantId);
 
+    const model = await this.prisma.aiModelConfig.findFirst({
+      where: { id: modelId, botConfigId },
+      select: { id: true },
+    });
+    if (!model) throw new NotFoundException(`Modelo ${modelId} no encontrado`);
+
     return this.prisma.aiModelConfig.update({
       where: { id: modelId },
       data: {
@@ -284,6 +256,7 @@ export class BotConfigService {
         lastResetAt: new Date(),
         lastMinuteResetAt: new Date(),
       },
+      select: AI_MODEL_PUBLIC_SELECT,
     });
   }
 
