@@ -23,7 +23,10 @@ import {
   conversationAddress,
   isIgnorableJid,
   isLidAddress,
+  phoneToJid,
 } from 'src/channels/whatsapp/utils/jid.util';
+import { chatKey } from 'src/channels/whatsapp/utils/chat-key';
+import { IGNORED_INBOUND } from '../conversation/ConversationService';
 
 interface TurnContext {
   tenantId: string;
@@ -53,6 +56,8 @@ export class BotRouter {
   private readonly TYPING_RETRY_MS = 6000;
   private readonly AI_FALLBACK_COOLDOWN_MS = 30 * 60 * 1000;
   private readonly MAX_REPLIES_PER_CONTACT_HOUR = 30;
+  private readonly RECOVERY_STAGGER_MS = 3000;
+  private readonly OWNER_DISCARD_RETRY_MS = 30_000;
 
   constructor(
     @Inject(forwardRef(() => BaileysSessionManager))
@@ -108,7 +113,7 @@ export class BotRouter {
 
     // Teléfono si se conoce; si WhatsApp solo dio un LID, "<lid>@lid".
     const phoneNumber = conversationAddress(jid);
-    const sessionKey = this.composeSessionKey(connectionId, jid);
+    const sessionKey = chatKey(connectionId, jid);
 
     const botConfig = await this.botConfigService.getConfigForRouting(
       botConfigId,
@@ -168,14 +173,6 @@ export class BotRouter {
       return;
     }
 
-    if (this.receiptTracker.isChatActive(sessionKey, 60000)) {
-      this.logger.debug(
-        `Chat ${sessionKey} activo recientemente (dueño presente). Bot no procesa.`,
-      );
-      this.debouncer.cancel(sessionKey);
-      return;
-    }
-
     const { text, hasImage } = this.extractContent(message);
 
     if (!text && !hasImage) {
@@ -183,65 +180,6 @@ export class BotRouter {
       return;
     }
 
-    if (text && !hasImage && text.length <= 40) {
-      const lastBotMessage = await this.conversationService.lastOutboundContent(
-        botConfig.id,
-        phoneNumber,
-      );
-      if (
-        isIgnorableAcknowledgement(
-          text,
-          lastBotMessage,
-          this.debouncer.hasPending(sessionKey),
-        )
-      ) {
-        this.logger.debug(
-          `Acuse de recibo de ${phoneNumber}: "${text}" (sin pregunta abierta). Marcando leído.`,
-        );
-        await this.markAsRead(message, connectionId);
-        return;
-      }
-    }
-
-    const delaySeconds = (botConfig.botResponseDelaySeconds ?? 15) * 1000;
-
-    this.debouncer.debounce(
-      sessionKey,
-      text,
-      hasImage,
-      delaySeconds,
-      async (texts, chatHasImage) => {
-        await this.processAccumulatedMessages(
-          tenantId,
-          sessionKey,
-          phoneNumber,
-          texts,
-          chatHasImage,
-          message,
-          botConfig,
-          connectionId,
-        );
-      },
-      messageId,
-    );
-  }
-
-  /**
-   * Cierre del debounce: guarda lo que escribió el cliente y responde.
-   * El mensaje se persiste antes de cualquier otra decisión (dueño activo,
-   * cliente escribiendo, conversación ocupada) para que nunca se pierda: si
-   * el bot no responde ahora, lo verá como pendiente en la siguiente pasada.
-   */
-  private async processAccumulatedMessages(
-    tenantId: string,
-    sessionKey: string,
-    phoneNumber: string,
-    texts: string[],
-    hasImage: boolean,
-    lastMessage: WAMessage,
-    botConfig: any,
-    connectionId: string,
-  ): Promise<void> {
     const conversation = await this.conversationService.getOrCreate({
       botConfigId: botConfig.id,
       phoneNumber,
@@ -249,25 +187,110 @@ export class BotRouter {
       connectionId,
     });
 
-    const combinedText = texts.join('\n');
-    if (combinedText || hasImage) {
-      await this.conversationService.saveInbound(
-        conversation.id,
-        combinedText || '[imagen]',
-        hasImage,
-        connectionId,
+    let ignorable = false;
+    if (text && !hasImage && text.length <= 40) {
+      const lastBotMessage = await this.conversationService.lastOutboundContent(
+        botConfig.id,
+        phoneNumber,
       );
-      if (hasImage) this.lastImageMessage.set(conversation.id, lastMessage);
+      ignorable = isIgnorableAcknowledgement(
+        text,
+        lastBotMessage,
+        this.debouncer.hasPending(sessionKey),
+      );
     }
 
-    await this.respond({
+    const saved = await this.conversationService.saveInbound(
+      conversation.id,
+      text ?? '[imagen]',
+      hasImage,
+      connectionId,
+      {
+        waMessageId: messageId,
+        processedBy: ignorable ? IGNORED_INBOUND : undefined,
+      },
+    );
+    if (!saved.created) {
+      this.logger.debug(
+        `Mensaje ${messageId} ya guardado; se ignora el duplicado.`,
+      );
+      return;
+    }
+
+    if (ignorable) {
+      this.logger.debug(
+        `Acuse de recibo de ${phoneNumber}: "${text}" (sin pregunta abierta). Marcando leído.`,
+      );
+      await this.markAsRead(message, connectionId);
+      return;
+    }
+
+    if (hasImage) this.lastImageMessage.set(conversation.id, message);
+
+    const turn: TurnContext = {
       tenantId,
       sessionKey,
       phoneNumber,
       botConfig,
       connectionId,
       conversationId: conversation.id,
+    };
+    this.debouncer.schedule(
+      sessionKey,
+      (botConfig.botResponseDelaySeconds ?? 15) * 1000,
+      () => this.respond(turn),
+    );
+  }
+
+  async recoverPending(
+    connectionId: string,
+    botConfigId: string,
+    tenantId: string,
+  ): Promise<number> {
+    const botConfig = await this.botConfigService.getConfigForRouting(
+      botConfigId,
+      tenantId,
+    );
+    if (!botConfig || botConfig.status !== BotStatus.ACTIVE) return 0;
+
+    const since = new Date(
+      Date.now() - (botConfig.maxMessageAgeMinutes ?? 1440) * 60_000,
+    );
+    const conversations =
+      await this.conversationService.findConversationsWithPending(
+        botConfig.id,
+        connectionId,
+        since,
+      );
+    const baseDelay = (botConfig.botResponseDelaySeconds ?? 15) * 1000;
+
+    conversations.forEach((conversation, index) => {
+      const jid = isLidAddress(conversation.phoneNumber)
+        ? conversation.phoneNumber
+        : phoneToJid(conversation.phoneNumber);
+      const sessionKey = chatKey(connectionId, jid);
+      if (this.debouncer.hasPending(sessionKey)) return;
+      this.debouncer.schedule(
+        sessionKey,
+        baseDelay + index * this.RECOVERY_STAGGER_MS,
+        () =>
+          this.respond({
+            tenantId,
+            sessionKey,
+            phoneNumber: conversation.phoneNumber,
+            botConfig,
+            connectionId,
+            conversationId: conversation.id,
+          }),
+      );
     });
+
+    if (conversations.length > 0) {
+      this.logger.log(
+        `Recuperación en ${connectionId}: ${conversations.length} conversación(es) con mensajes sin responder.`,
+      );
+    }
+    return conversations.length;
   }
 
   /**
@@ -295,7 +318,7 @@ export class BotRouter {
 
     void this.respond({
       tenantId,
-      sessionKey: this.composeSessionKey(conversation.lastConnectionId, jid),
+      sessionKey: chatKey(conversation.lastConnectionId, jid),
       phoneNumber: conversation.phoneNumber,
       botConfig,
       connectionId: conversation.lastConnectionId,
@@ -350,24 +373,21 @@ export class BotRouter {
    */
   private scheduleRetry(turn: TurnContext, delayMs: number): void {
     if (this.debouncer.hasPending(turn.sessionKey)) return;
-    this.debouncer.debounce(turn.sessionKey, null, false, delayMs, () =>
-      this.respond(turn),
-    );
+    this.debouncer.schedule(turn.sessionKey, delayMs, () => this.respond(turn));
   }
 
   private async answerPending(turn: TurnContext): Promise<void> {
     const { tenantId, sessionKey, phoneNumber, botConfig, connectionId } = turn;
     const conversationId = turn.conversationId;
 
-    if (
-      this.receiptTracker.isChatActive(
-        sessionKey,
-        (botConfig.botResponseDelaySeconds + 5) * 1000,
-      )
-    ) {
+    const ownerWindowMs =
+      ((botConfig.botResponseDelaySeconds ?? 15) + 5) * 1000;
+    const sinceOwner = this.receiptTracker.msSinceActive(sessionKey);
+    if (sinceOwner < ownerWindowMs) {
       this.logger.log(
-        `Dueño activo en ${sessionKey}. El bot no responde; los mensajes quedan guardados.`,
+        `Dueño activo en ${sessionKey}. Se responde lo pendiente cuando deje el chat.`,
       );
+      this.scheduleRetry(turn, ownerWindowMs - sinceOwner + 1000);
       return;
     }
 
@@ -637,8 +657,9 @@ export class BotRouter {
 
     if (this.receiptTracker.isChatActive(sessionKey, 30000)) {
       this.logger.log(
-        `Dueño activo mientras IA procesaba. Respuesta descartada.`,
+        `Dueño activo mientras la IA procesaba. Respuesta descartada; se reintenta después.`,
       );
+      this.scheduleRetry(turn, this.OWNER_DISCARD_RETRY_MS);
       return;
     }
 
@@ -866,7 +887,7 @@ export class BotRouter {
     const jid = message.key.remoteJidAlt ?? message.key.remoteJid;
     if (!jid || isIgnorableJid(jid)) return;
 
-    const sessionKey = this.composeSessionKey(connectionId, jid);
+    const sessionKey = chatKey(connectionId, jid);
     this.debouncer.cancel(sessionKey);
 
     this.logger.debug(`Debounce cancelado por mensaje humano en ${sessionKey}`);
@@ -984,10 +1005,6 @@ export class BotRouter {
 
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  private composeSessionKey(connectionId: string, jid: string): string {
-    return `${connectionId}:${jid}`;
   }
 
   private publishResponseRequest(

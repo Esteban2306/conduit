@@ -31,6 +31,7 @@ function closedAtOf(context: ConversationContext | null): Date | null {
 
 /** Mínimo de mensajes recientes que el modelo ve completos. */
 export const MIN_HISTORY_WINDOW = 12;
+export const IGNORED_INBOUND = 'ignored';
 /** Recorte por mensaje: suficiente para listas de horarios o precios. */
 const MAX_MESSAGE_CHARS = 1500;
 /** Acciones (llamadas a herramientas) que se recuerdan por conversación. */
@@ -224,21 +225,33 @@ export class ConversationService {
     content: string,
     hasImage = false,
     connectionId?: string,
-  ) {
-    const [, message] = await this.prisma.$transaction([
-      this.touchActivity(conversationId, connectionId),
-
-      this.prisma.botMessage.create({
-        data: {
-          conversationId,
-          connectionId: connectionId ?? null,
-          direction: MessageDirection.INBOUND,
-          content,
-          hasImage,
-          processedBy: 'user',
-        },
-      }),
-    ]);
+    options: { waMessageId?: string; processedBy?: string } = {},
+  ): Promise<{ created: boolean; message: { id: string } | null }> {
+    let message: { id: string };
+    try {
+      [, message] = await this.prisma.$transaction([
+        this.touchActivity(conversationId, connectionId),
+        this.prisma.botMessage.create({
+          data: {
+            conversationId,
+            connectionId: connectionId ?? null,
+            direction: MessageDirection.INBOUND,
+            content,
+            hasImage,
+            processedBy: options.processedBy ?? 'user',
+            waMessageId: options.waMessageId ?? null,
+          },
+        }),
+      ]);
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        return { created: false, message: null };
+      }
+      throw error;
+    }
 
     this.eventBus.publish(EVENT_TYPES.MESSAGE_RECEIVED, {
       conversationId,
@@ -247,7 +260,31 @@ export class ConversationService {
       hasImage,
     });
 
-    return message;
+    return { created: true, message };
+  }
+
+  async findConversationsWithPending(
+    botConfigId: string,
+    connectionId: string,
+    since: Date,
+  ): Promise<Array<{ id: string; phoneNumber: string }>> {
+    return this.prisma.$queryRaw<Array<{ id: string; phoneNumber: string }>>`
+      SELECT c.id, c."phoneNumber"
+      FROM "Conversation" c
+      JOIN LATERAL (
+        SELECT m.direction, m."createdAt"
+        FROM "BotMessage" m
+        WHERE m."conversationId" = c.id
+          AND NOT (m.direction = ${MessageDirection.INBOUND} AND m."processedBy" = ${IGNORED_INBOUND})
+        ORDER BY m."createdAt" DESC
+        LIMIT 1
+      ) last ON true
+      WHERE c."botConfigId" = ${botConfigId}
+        AND c."lastConnectionId" = ${connectionId}
+        AND last.direction = ${MessageDirection.INBOUND}
+        AND last."createdAt" > ${since}
+      ORDER BY last."createdAt" ASC
+    `;
   }
 
   async saveOutbound(
@@ -312,6 +349,7 @@ export class ConversationService {
           direction: true,
           content: true,
           hasImage: true,
+          processedBy: true,
           createdAt: true,
         },
       })
@@ -331,6 +369,7 @@ export class ConversationService {
       .filter(
         (m) =>
           m.direction === MessageDirection.INBOUND &&
+          m.processedBy !== IGNORED_INBOUND &&
           (!closedAt || m.createdAt > closedAt),
       )
       .map((m) => ({ id: m.id, content: m.content, hasImage: m.hasImage }));

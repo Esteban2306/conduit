@@ -28,6 +28,7 @@ import {
   jidUser,
   phoneToJid,
 } from '../utils/jid.util';
+import { chatKey } from '../utils/chat-key';
 
 interface SocketState {
   botConfigId: string | null;
@@ -69,6 +70,7 @@ export class BaileysSessionManager implements OnApplicationShutdown {
   private readonly msgRetryCaches = new Map<string, TtlCacheStore>();
   /** Conexiones que ya abrieron al menos una vez en este proceso. */
   private readonly openedOnce = new Set<string>();
+  private readonly chatAddresses = new Map<string, string>();
 
   private readonly reconnectAttempts = new Map<string, number>();
   private readonly streakStartedAt = new Map<string, number>();
@@ -283,7 +285,10 @@ export class BaileysSessionManager implements OnApplicationShutdown {
           const jid = update.key.remoteJidAlt ?? update.key.remoteJid;
           const justReconnected =
             state.lastReconnectAt && Date.now() - state.lastReconnectAt < 10000;
-          if (jid && !justReconnected) this.receiptTracker.markChatActive(jid);
+          if (jid && !justReconnected)
+            this.receiptTracker.markChatActive(
+              this.chatKeyFor(connectionId, jid),
+            );
         }
       }
     });
@@ -291,12 +296,12 @@ export class BaileysSessionManager implements OnApplicationShutdown {
     socket.ev.on('presence.update', ({ id, presences }) => {
       for (const presence of Object.values(presences)) {
         if (presence.lastKnownPresence === 'composing') {
-          this.receiptTracker.markTyping(id);
+          this.receiptTracker.markTyping(this.chatKeyFor(connectionId, id));
         } else if (
           presence.lastKnownPresence === 'paused' ||
           presence.lastKnownPresence === 'available'
         ) {
-          this.receiptTracker.clearTyping(id);
+          this.receiptTracker.clearTyping(this.chatKeyFor(connectionId, id));
         }
       }
     });
@@ -319,7 +324,10 @@ export class BaileysSessionManager implements OnApplicationShutdown {
 
           if (!isSelfOriginated && state.botConfigId) {
             const jid = message.key.remoteJidAlt ?? message.key.remoteJid;
-            if (jid) this.receiptTracker.markChatActive(jid);
+            if (jid)
+              this.receiptTracker.markChatActive(
+                this.chatKeyFor(connectionId, jid),
+              );
             await this.botRouter
               ?.registerHumanMessage(
                 message,
@@ -371,7 +379,10 @@ export class BaileysSessionManager implements OnApplicationShutdown {
           continue;
 
         const jid = update.key.remoteJidAlt ?? update.key.remoteJid;
-        if (jid) this.receiptTracker.markChatActive(jid);
+        if (jid)
+          this.receiptTracker.markChatActive(
+            this.chatKeyFor(connectionId, jid),
+          );
       }
     });
 
@@ -406,6 +417,15 @@ export class BaileysSessionManager implements OnApplicationShutdown {
           const phoneNumber =
             socket.user?.id?.split('@')[0].split(':')[0] ?? null;
           await this.connections.markConnected(connectionId, phoneNumber);
+          if (state.botConfigId) {
+            void this.botRouter
+              ?.recoverPending(connectionId, state.botConfigId, state.tenantId)
+              .catch((error: unknown) => {
+                this.logger.warn(
+                  `No fue posible recuperar mensajes pendientes en ${connectionId}: ${this.errorMessage(error)}`,
+                );
+              });
+          }
           this.logger.log(`WhatsApp conectado: ${connectionId}`);
 
           if (!state.botConfigId) {
@@ -620,12 +640,23 @@ export class BaileysSessionManager implements OnApplicationShutdown {
       if (!isPhoneJid(message.key.remoteJidAlt)) {
         message.key.remoteJidAlt = phoneJid;
       }
+      if (lid) {
+        this.chatAddresses.set(`${connectionId}|${lid}`, jidUser(phoneJid));
+      }
       await this.contacts.recordInbound(connectionId, jidUser(phoneJid), lid);
     } catch (error) {
       this.logger.warn(
         `No fue posible registrar el remitente en ${connectionId}: ${this.errorMessage(error)}`,
       );
     }
+  }
+
+  private chatKeyFor(connectionId: string, jid: string): string {
+    if (isLidJid(jid)) {
+      const phone = this.chatAddresses.get(`${connectionId}|${jidUser(jid)}`);
+      if (phone) return chatKey(connectionId, phoneToJid(phone));
+    }
+    return chatKey(connectionId, jid);
   }
 
   /** Detiene la conexión sin reintentar y deja el estado para intervención humana. */

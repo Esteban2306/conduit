@@ -64,7 +64,6 @@ export interface ScenarioExpect {
 interface BotRouterInternals {
   debouncer: { pending: Map<string, unknown> };
   respond: (...args: unknown[]) => Promise<void>;
-  processAccumulatedMessages: (...args: unknown[]) => Promise<void>;
 }
 
 const ADMIN_PHONE = '573000000999';
@@ -241,7 +240,6 @@ async function main(): Promise<void> {
   const router = conduit.app.get(BotRouter);
   const internals = router as unknown as BotRouterInternals;
   const contacts = conduit.app.get(WhatsAppContactService);
-  track(internals, 'processAccumulatedMessages');
   track(internals, 'respond');
   track(conduit.app.get(ConversationSummarizer), 'refreshIfNeeded');
   const executor = conduit.app.get(ToolExecutorService);

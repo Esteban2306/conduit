@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "notes": "Banco de conversaciones de Leonice Spa. 'prior' se siembra en Leonice antes de empezar; 'turns' se inyectan como mensajes de WhatsApp; 'expect' se evalúa al final. 'knownFailure' marca casos que hoy deben fallar (C1 mezcla de chats, A1 turnos cortados/vacíos, A2 promesa falsa de persona, C3 fecha desconocida).",
+  "notes": "Banco de conversaciones de Leonice Spa. 'prior' se siembra en Leonice antes de empezar; 'turns' se inyectan como mensajes de WhatsApp; 'expect' se evalúa al final. 'knownFailure' marca casos que hoy deben fallar (A1 turnos cortados/vacíos, A2 promesa falsa de persona, C3 fecha desconocida).",
   "scenarios": [
     { "id": "b01", "category": "saludo", "title": "Saludo simple",
       "turns": [{ "actor": "A", "messages": [{ "text": "Hola buenas tardes" }] }],
@@ -154,7 +154,7 @@
     { "id": "b37", "category": "audio", "title": "Nota de voz",
       "turns": [{ "actor": "A", "messages": [{ "audio": true }] }],
       "expect": { "route": "IA" } },
-    { "id": "b38", "category": "concurrencia", "title": "Dos clientas escribiendo a la vez", "knownFailure": "C1",
+    { "id": "b38", "category": "concurrencia", "title": "Dos clientas escribiendo a la vez",
       "turns": [
         { "actor": "A", "messages": [{ "text": "Hola, quiero saber el precio del spa coreano" }] },
         { "actor": "B", "messages": [{ "text": "Buenas, ¿dónde queda el spa?" }], "concurrentWithPrevious": true }

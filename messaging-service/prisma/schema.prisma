@@ -444,10 +444,12 @@ model BotMessage{
   processedBy    String  @default("bot")
   intent         String?
   tokenUsed      Int?
+  waMessageId    String?
   createdAt      DateTime @default(now())
 
   conversation Conversation @relation(fields: [conversationId], references: [id])
 
+  @@unique([conversationId, waMessageId])
   @@index([conversationId])
   @@index([conversationId, createdAt])
   @@index([connectionId])

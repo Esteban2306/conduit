@@ -256,11 +256,15 @@ Gestiona conversaciones de bots y procesamiento con IA.
 #### Flujo de Conversación:
 
 ```
-Mensaje WhatsApp → BotRouter
+Mensaje WhatsApp → BotRouter.route()
   ↓
-ConversationService.getOrCreate()
+chatKey(connectionId, jid) = `${connectionId}|${dirección canónica}`
   ↓
-AcquireLock (30s timeout)
+ConversationService.getOrCreate() + saveInbound(waMessageId)   ← se guarda al llegar (idempotente)
+  ↓
+MessageDebouncer.schedule(chatKey)   ← solo decide CUÁNDO responder
+  ↓
+respond(): AcquireLock (120s) → lee de la BD lo pendiente del chat
   ↓
 ImageAnalysisService (si tiene imagen)
   ↓
@@ -275,6 +279,22 @@ GuardarResponse + Eventos
   ↓
 ChannelRouter → Enviar por WhatsApp
 ```
+
+#### Aislamiento por chat y recuperación
+
+- **Una sola clave por chat**: `chatKey(connectionId, jid)` en `src/channels/whatsapp/utils/chat-key.ts`. La dirección canónica es el teléfono (sin sufijo de dispositivo) o `<lid>@lid` si WhatsApp no lo reveló. La resolución LID→teléfono ocurre en un único punto (`BaileysSessionManager.chatKeyFor`, alimentado al registrar al remitente). El debouncer y el tracker de actividad usan la clave de forma opaca.
+- **Guardar primero, decidir después**: cada mensaje entrante se persiste al llegar con `BotMessage.waMessageId` (índice único `conversationId + waMessageId`). Un reenvío de WhatsApp se descarta por esa unicidad. Los acuses ("ok", "gracias") se guardan con `processedBy = 'ignored'` y no cuentan como pendientes.
+- **Cancelar no pierde nada**: si el spa está usando el chat o la clienta está escribiendo, el turno se reprograma y lee lo pendiente desde la base.
+- **Reinicio**: al abrir la conexión, `BotRouter.recoverPending` busca conversaciones cuyo último mensaje es de la clienta (dentro de `maxMessageAgeMinutes`) y programa la respuesta, escalonada cada 3 s.
+
+#### Etapa futura: turnos en BullMQ (varias instancias)
+
+Hoy hay una sola instancia con el socket de WhatsApp (lease de sesión), así que el debounce vive en memoria y la base es la fuente de verdad. Para escalar a varias instancias:
+
+1. Reemplazar `MessageDebouncer.schedule` por un job en una cola `conduit-bot-turns`: `jobId = chatKey`, `delay = botResponseDelaySeconds`. Antes de agregarlo, `remove(jobId)` si sigue en espera; un mensaje nuevo del mismo chat reprograma el mismo job.
+2. Bloqueo por conversación con TTL en Redis (`SET turn:<conversationId> <instancia> NX PX 120000`, renovado mientras corre el turno), en lugar de `Conversation.lockedUntil` más el `Set` en memoria.
+3. La recuperación tras reinicio deja de hacer falta para lo programado (el job persiste en Redis), pero se conserva como barrido de seguridad.
+4. Los eventos de actividad del spa y "escribiendo" deben pasar a Redis (clave `chatKey`, TTL de 5 min) para que cualquier instancia los vea.
 
 ---
 
