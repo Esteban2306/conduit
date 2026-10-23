@@ -1,5 +1,5 @@
 import { LlmCall, recorder, SentMessage, ToolCall } from './recorder';
-import type { Scenario } from './run-bench';
+import type { Scenario } from './scenario-runner';
 
 export interface TurnResult {
   index: number;
@@ -49,6 +49,7 @@ export interface ScenarioResult {
   costUsd: number;
   inputTokens: number;
   outputTokens: number;
+  billableTokens: number;
   durationMs: number;
   skipped?: string;
   error?: string;
@@ -297,6 +298,7 @@ export function evaluateScenario(input: EvaluateInput): ScenarioResult {
       0,
     ),
     outputTokens: ownLlm.reduce((a, c) => a + c.output, 0),
+    billableTokens: ownLlm.reduce((a, c) => a + c.billable, 0),
     durationMs: input.durationMs,
   };
 }

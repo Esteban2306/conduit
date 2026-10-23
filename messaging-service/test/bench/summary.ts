@@ -139,6 +139,9 @@ export function summarize(
       },
       projectedPer1000Usd:
         (convCost.reduce((a, b) => a + b, 0) / Math.max(1, ran.length)) * 1000,
+      meanBillableTokens: Math.round(
+        ran.reduce((a, r) => a + r.billableTokens, 0) / Math.max(1, ran.length),
+      ),
       meanTokens: Math.round(
         ran.reduce((a, r) => a + r.inputTokens + r.outputTokens, 0) /
           Math.max(1, ran.length),
@@ -148,7 +151,7 @@ export function summarize(
             dailyTokenLimit /
               Math.max(
                 1,
-                ran.reduce((a, r) => a + r.inputTokens + r.outputTokens, 0) /
+                ran.reduce((a, r) => a + r.billableTokens, 0) /
                   Math.max(1, ran.length),
               ),
           )
@@ -187,7 +190,8 @@ export function renderSummary(
     `| Costo/turno IA p50 / p95 | ${usd(s.perTurn.costUsd.p50)} / ${usd(s.perTurn.costUsd.p95)} |`,
     `| Costo/conversación p50 / p95 | ${usd(s.perConversation.costUsd.p50)} / ${usd(s.perConversation.costUsd.p95)} |`,
     `| Costo proyectado por 1.000 conversaciones | $${s.perConversation.projectedPer1000Usd.toFixed(2)} |`,
-    `| Tokens contados por conversación (media) | ${s.perConversation.meanTokens} |`,
+    `| Tokens crudos por conversación (media) | ${s.perConversation.meanTokens} |`,
+    `| Tokens que descuenta Conduit por conversación (media, caché al 10 %) | ${s.perConversation.meanBillableTokens} |`,
     `| Conversaciones que caben en el tope diario de producción | ${s.perConversation.conversationsPerDailyCap ?? 'sin tope'}${s.perConversation.dailyTokenLimit ? ` (tope ${s.perConversation.dailyTokenLimit} tokens/día)` : ''} |`,
     `| Latencia mensaje→respuesta p50 / p95 (incluye debounce) | ${s.perTurn.latencyMs.p50} / ${s.perTurn.latencyMs.p95} ms |`,
     `| Tiempo de modelo por turno p50 / p95 | ${s.perTurn.llmMs.p50} / ${s.perTurn.llmMs.p95} ms |`,

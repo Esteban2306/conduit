@@ -14,6 +14,7 @@ export interface LlmCall {
   input: number;
   output: number;
   thinking: number;
+  billable: number;
   cacheWrite: number;
   cacheRead: number;
   stopReason: string | null;
@@ -39,6 +40,7 @@ export interface SentMessage {
   content: string;
   connectionId: string | null;
   at: number;
+  queuedMs?: number;
 }
 
 export const turnStorage = new AsyncLocalStorage<TurnContext>();
@@ -48,6 +50,8 @@ class Recorder {
   readonly tools: ToolCall[] = [];
   readonly sent: SentMessage[] = [];
   private readonly inflight = new Map<string, number>();
+  concurrent = 0;
+  peakConcurrent = 0;
   spentUsd = 0;
   budgetExceeded = false;
 
@@ -59,11 +63,14 @@ class Recorder {
     const id = this.ctx()?.scenarioId;
     if (!id) return () => undefined;
     this.inflight.set(id, (this.inflight.get(id) ?? 0) + 1);
+    this.concurrent++;
+    this.peakConcurrent = Math.max(this.peakConcurrent, this.concurrent);
     let done = false;
     return () => {
       if (done) return;
       done = true;
       this.inflight.set(id, (this.inflight.get(id) ?? 1) - 1);
+      this.concurrent--;
     };
   }
 
@@ -146,6 +153,11 @@ export function instrumentAnthropic(): void {
       input: response.usage.input_tokens,
       output: response.usage.output_tokens,
       thinking: response.usage.output_tokens_details?.thinking_tokens ?? 0,
+      billable:
+        response.usage.input_tokens +
+        (response.usage.cache_creation_input_tokens ?? 0) +
+        Math.ceil((response.usage.cache_read_input_tokens ?? 0) / 10) +
+        response.usage.output_tokens,
       cacheWrite: response.usage.cache_creation_input_tokens ?? 0,
       cacheRead: response.usage.cache_read_input_tokens ?? 0,
       stopReason: response.stop_reason,

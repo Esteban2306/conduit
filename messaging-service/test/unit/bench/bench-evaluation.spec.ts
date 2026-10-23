@@ -5,7 +5,7 @@ import { DISABLED, envFileKeys, isolatedEnv } from 'test/bench/isolated-env';
 import { recorder } from 'test/bench/recorder';
 import { evaluateScenario, TurnResult } from 'test/bench/evaluate';
 import { summarize } from 'test/bench/summary';
-import type { Scenario } from 'test/bench/run-bench';
+import type { Scenario } from 'test/bench/scenario-runner';
 
 const PHONE = '573010000001';
 const OTHER = '573010000002';
@@ -41,6 +41,7 @@ function llm(turnIndex: number, stopReason = 'end_turn', scenarioId = 's') {
     input: 4000,
     output: 100,
     thinking: 40,
+    billable: 4100,
     cacheWrite: 0,
     cacheRead: 0,
     stopReason,

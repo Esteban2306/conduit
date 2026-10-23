@@ -7,6 +7,7 @@ import { Client } from 'pg';
 import { BENCH, CONDUIT_ROOT, pgUrl } from './bench.config';
 import { applyToProcess, isolatedEnv } from './isolated-env';
 import { FakeChannelPlugin, fakeSessionManager } from './fake-channel';
+import type { WarmupLevel } from 'src/channels/whatsapp/baileys/BaileysRateLimiter';
 
 export interface ConduitBench {
   app: INestApplication;
@@ -17,6 +18,10 @@ export interface ConduitBench {
   toolApiKey: string;
   webhookSecret: string;
   toolNames: Map<string, string>;
+  whatsappPlugin: FakeChannelPlugin;
+  integrationId: string;
+  integrationSecret: string;
+  refreshToolNames: () => Promise<void>;
   sourceLimits: {
     dailyTokenLimit: number | null;
     minuteRequestLimit: number | null;
@@ -30,7 +35,6 @@ const BOT_TABLES = [
   'AiModelConfig',
   'BotAiSettings',
   'BotPromptTemplate',
-  'ToolDefinition',
   'BotEscalationContact',
 ];
 
@@ -124,9 +128,15 @@ async function insertRow(
   );
 }
 
+export interface ConduitOptions {
+  pacing?: WarmupLevel;
+  connections?: number;
+}
+
 export async function startConduit(
   runtimeDir: string,
   logFile: string,
+  options: ConduitOptions = {},
 ): Promise<ConduitBench> {
   prepareConduitEnv(runtimeDir);
   const source = await readSource();
@@ -148,6 +158,8 @@ export async function startConduit(
   const { SecretEncryptionService } =
     await import('src/shared/security/secret-encryption.service');
   const { ApiKeyService } = await import('src/auth/api/ApiKeyService');
+  const { ExternalIntegrationService } =
+    await import('src/external/integrations/ExternalIntegration.service');
   const sourceEncryption = new SecretEncryptionService({
     get: () => source.masterKey,
   } as never);
@@ -168,11 +180,19 @@ export async function startConduit(
     verbose: write('VERBOSE'),
   };
 
+  const whatsappPlugin = new FakeChannelPlugin(
+    'WHATSAPP',
+    'bench-whatsapp',
+    options.pacing
+      ? { level: options.pacing, timeZone: 'America/Bogota' }
+      : undefined,
+  );
+
   const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
     .overrideProvider(BaileysSessionManager)
     .useValue(fakeSessionManager())
     .overrideProvider(BaileysPlugin)
-    .useValue(new FakeChannelPlugin('WHATSAPP', 'bench-whatsapp'))
+    .useValue(whatsappPlugin)
     .overrideProvider(GmailResendPlugin)
     .useValue(new FakeChannelPlugin('EMAIL', 'bench-resend'))
     .overrideProvider(SmtpPlugin)
@@ -220,13 +240,6 @@ export async function startConduit(
   for (const table of BOT_TABLES) {
     for (const raw of source.rows[table]) {
       const row: Row = { ...raw };
-      if (table === 'ToolDefinition') {
-        const url = new URL(String(row.endpointUrl));
-        row.endpointUrl = `${leoniceBase}${url.pathname}`;
-        if (row.authSecretEncrypted)
-          row.authSecretEncrypted = encryption.encrypt(toolApiKey);
-        toolNames.set(String(row.id), String(row.name));
-      }
       if (table === 'AiModelConfig') {
         const plainKey = sourceEncryption.open(String(row.apiKey));
         row.apiKey = encryption.seal(plainKey);
@@ -250,7 +263,7 @@ export async function startConduit(
   }
 
   const connectionIds: string[] = [];
-  for (let i = 0; i < BENCH.connections; i++) {
+  for (let i = 0; i < (options.connections ?? BENCH.connections); i++) {
     const id = randomUUID();
     await db.query(
       `INSERT INTO "WhatsAppConnection" (id, "tenantId", "botConfigId", name, "phoneNumber", status, "warmupLevel", "campaignPolicy", "connectedAt", "updatedAt")
@@ -260,6 +273,9 @@ export async function startConduit(
     connectionIds.push(id);
   }
 
+  const integration = await app
+    .get(ExternalIntegrationService)
+    .create(source.bot.id as string, tenant.id, { name: 'bench-leonice' });
   const { key: apiKey } = await app
     .get(ApiKeyService)
     .create(tenant.id, 'bench-leonice');
@@ -287,6 +303,16 @@ export async function startConduit(
     toolApiKey,
     webhookSecret,
     toolNames,
+    whatsappPlugin,
+    integrationId: integration.id,
+    integrationSecret: integration.secret,
+    refreshToolNames: async () => {
+      const { rows } = await db.query<{ id: string; name: string }>(
+        'SELECT id, name FROM "ToolDefinition"',
+      );
+      toolNames.clear();
+      for (const row of rows) toolNames.set(row.id, row.name);
+    },
     sourceLimits,
     db,
     close: async () => {
