@@ -29,6 +29,7 @@ import {
 import { chatKey } from 'src/channels/whatsapp/utils/chat-key';
 import { maskError, maskSecrets } from 'src/shared/security/mask-secrets';
 import { IGNORED_INBOUND } from '../conversation/ConversationService';
+import { ExecutedToolCall, hasUnrecoveredToolFailure } from './tool-failure';
 
 interface TurnContext {
   tenantId: string;
@@ -908,12 +909,12 @@ export class BotRouter {
   }
 
   private applyToolFailureDiscipline(
-    result: { content: string; toolCallsExecuted?: Array<{ ok: boolean }> },
+    result: { content: string; toolCallsExecuted?: ExecutedToolCall[] },
     phoneNumber: string,
   ): string {
-    const hasFailedToolCall = result.toolCallsExecuted?.some((t) => !t.ok);
-
-    if (!hasFailedToolCall) return result.content;
+    if (!hasUnrecoveredToolFailure(result.toolCallsExecuted)) {
+      return result.content;
+    }
 
     this.logger.warn(
       `Tool call fallida detectada en la respuesta para ${phoneNumber} — se ` +
