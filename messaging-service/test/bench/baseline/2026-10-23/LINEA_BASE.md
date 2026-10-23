@@ -24,10 +24,15 @@ Reproducir: `pnpm bench:baseline`. Datos: [`results.json`](results.json) · tabl
 
 Pasa. A recibió el precio del spa coreano y B la dirección y el horario, cada una en su turno. Antes, la conversación de B guardaba ambos mensajes y A no recibía respuesta (C1).
 
-## Pendiente en esta corrida
+## Estado de b14, b21 y b44 tras esta corrida
 
-- b14 falla: no usó `crear_reserva_whatsapp`. Se cambió la fecha del caso a "el próximo lunes a las 9am"; no está investigada la causa.
-- b21 tiene la bandera `genérico-por-herramienta` en su segundo turno.
+Verificado con corridas parciales posteriores (`BENCH_ONLY`), no con una corrida completa:
+
+- b21: la bandera `genérico-por-herramienta` venía de `applyToolFailureDiscipline`, que sustituía la respuesta si cualquier llamada de la herramienta había fallado, aunque una llamada posterior de la misma herramienta saliera bien. Ahora solo cuenta un fallo sin recuperar (`hasUnrecoveredToolFailure`). En la corrida parcial el turno 2 ofrece horarios reales.
+- b14: queda marcado como fallo conocido P1. El bot no tiene forma de saber si la clienta ya existe: `registrar_cliente` solo con el teléfono responde 201 tanto si la crea como si ya existía, y pide los términos del servicio otra vez. Fallaba también en la línea base anterior. Un cambio de prompt que llamaba a `registrar_cliente` primero rompió b13 (409 para clienta nueva activa el mensaje genérico), así que no se aplicó.
+- b44 (nuevo, "¿Qué día es hoy?"): pasa y responde "jueves, 22 de octubre de 2026".
+- b13 y b18 varían entre corridas con el mismo código (b18 pasó 2 de 2 al repetirlo; b13 se queda sin turnos del guion cuando el bot pide los consentimientos uno por uno).
+- Cuatro corridas completas posteriores a esta (03:49 a 11:27 UTC) salieron inválidas: el proceso de Conduit estuvo suspendido unos 16 minutos a mitad de corrida (el log no tiene líneas entre 11:28:08 y 11:44:00 y los temporizadores de 8 s dispararon tarde), lo que produce timeouts. No se usaron como línea base. Para repetir la línea base completa conviene dejar el equipo despierto y con la tapa abierta.
 
 ## Cambios al banco desde la línea base anterior
 

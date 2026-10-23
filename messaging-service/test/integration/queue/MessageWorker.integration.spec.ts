@@ -150,6 +150,7 @@ describe('messageWorker - integration', () => {
       variables: { nombre: 'Juan' },
       inlineBody: '<h1>Cuerpo renderizado</h1>',
       inlineSubject: 'Asunto renderizado',
+      connectionId: undefined,
     } as MessageJobPayload);
 
     const result = await waitForJob(QUEUE_NAMES.MESSAGES);
@@ -200,6 +201,7 @@ describe('messageWorker - integration', () => {
       inlineBody: '<p>Hola {{nombre}}</p>',
       inlineSubject: 'Test Subject',
       variables: { nombre: 'Test' },
+      connectionId: undefined,
     } as MessageJobPayload);
 
     // esperamos el mensaje que no manda el Job y esperamos un fallo aqui

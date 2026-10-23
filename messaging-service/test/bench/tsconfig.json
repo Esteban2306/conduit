@@ -4,5 +4,11 @@
     "module": "commonjs",
     "moduleResolution": "node",
     "resolvePackageJsonExports": false
-  }
+  },
+  "include": [
+    "./**/*.ts"
+  ],
+  "exclude": [
+    "node_modules"
+  ]
 }

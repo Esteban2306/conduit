@@ -3,9 +3,13 @@ import * as os from 'os';
 import * as path from 'path';
 import { DISABLED, envFileKeys, isolatedEnv } from 'test/bench/isolated-env';
 import { recorder } from 'test/bench/recorder';
-import { evaluateScenario, TurnResult } from 'test/bench/evaluate';
+import {
+  evaluateScenario,
+  mentionsToday,
+  TurnResult,
+} from 'test/bench/evaluate';
 import { summarize } from 'test/bench/summary';
-import type { Scenario } from 'test/bench/scenario-runner';
+import type { Scenario } from 'test/bench/scenario-types';
 
 const PHONE = '573010000001';
 const OTHER = '573010000002';
@@ -169,6 +173,7 @@ describe('evaluateScenario', () => {
       input: 10,
       output: 5,
       thinking: 0,
+      billable: 15,
       cacheWrite: 0,
       cacheRead: 0,
       stopReason: 'tool_use',
@@ -337,5 +342,24 @@ describe('summarize', () => {
     expect(summary.perTurn.inputTokens.p50).toBe(4000);
     expect(summary.perConversation.conversationsPerDailyCap).toBe(97);
     expect(summary.perTurn.thinkingTokens.share).toBeCloseTo(0.4);
+  });
+});
+
+describe('mentionsToday', () => {
+  const now = new Date('2026-10-23T03:30:00Z');
+
+  it('acepta la fecha de hoy en zona Bogotá con día de la semana', () => {
+    expect(mentionsToday('Hoy es jueves 22 de octubre.', now)).toBe(true);
+    expect(mentionsToday('HOY ES JUEVES, 22 DE OCTUBRE DE 2026', now)).toBe(
+      true,
+    );
+  });
+
+  it('rechaza una respuesta que no sabe la fecha o da otro día', () => {
+    expect(mentionsToday('No tengo acceso a la fecha de hoy.', now)).toBe(
+      false,
+    );
+    expect(mentionsToday('Hoy es viernes 23 de octubre.', now)).toBe(false);
+    expect(mentionsToday('Hoy es jueves 21 de octubre.', now)).toBe(false);
   });
 });

@@ -366,7 +366,10 @@ describe('BotConfigService: ninguna respuesta lleva la apiKey', () => {
       } as never,
       'tenant-1',
     );
-    const stored = prisma.aiModelConfig.create.mock.calls[0][0].data;
+    const stored = prisma.aiModelConfig.create.mock.calls[0][0].data as {
+      apiKey: string;
+      apiKeyLast4: string;
+    };
     expect(stored.apiKey).not.toContain(REAL_KEY);
     expect(enc.open(stored.apiKey)).toBe(REAL_KEY);
     expect(stored.apiKeyLast4).toBe('xyz9');

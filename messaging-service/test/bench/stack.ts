@@ -1,3 +1,4 @@
+import type { MessageSpec } from './scenario-types';
 import { ChildProcess, spawn } from 'child_process';
 import { randomBytes } from 'crypto';
 import * as fs from 'fs';
@@ -13,13 +14,7 @@ import type {
   ToolCallRequest,
 } from 'src/bot/tools/ToolExecutor.service';
 
-export interface MessageSpec {
-  text?: string;
-  sticker?: boolean;
-  audio?: boolean;
-  reaction?: string;
-  image?: { caption?: string };
-}
+export type { MessageSpec };
 
 export interface BotRouterInternals {
   debouncer: { pending: Map<string, unknown> };

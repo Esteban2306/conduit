@@ -1,42 +1,10 @@
 import { BENCH } from './bench.config';
 import { recorder, turnStorage, TurnContext } from './recorder';
 import { evaluateScenario, ScenarioResult, TurnResult } from './evaluate';
-import { ADMIN_PHONE, MessageSpec, Stack, sleep, waMessage } from './stack';
+import { ADMIN_PHONE, Stack, sleep, waMessage } from './stack';
+import type { Scenario } from './scenario-types';
+export type { Scenario, ScenarioExpect, TurnSpec } from './scenario-types';
 import { chatKey } from 'src/channels/whatsapp/utils/chat-key';
-
-export interface TurnSpec {
-  actor: string;
-  messages: MessageSpec[];
-  concurrentWithPrevious?: boolean;
-  expect?: { route?: string };
-}
-
-export interface Scenario {
-  id: string;
-  category: string;
-  title: string;
-  knownFailure?: string;
-  prior?: {
-    client?: { name: string; birthDate: string };
-    reservations?: unknown[];
-  };
-  turns: TurnSpec[];
-  expect: ScenarioExpect;
-}
-
-export interface ScenarioExpect {
-  route?: string;
-  toolsAny?: string[];
-  toolsAll?: string[];
-  toolsForbidden?: string[];
-  replyMatches?: string;
-  replyNotMatches?: string;
-  finalState?: { reservationStatus?: string; reservationCountAtLeast?: number };
-  noFalseHumanPromise?: boolean;
-  notCutOrEmpty?: boolean;
-  noCrossTalk?: boolean;
-  everyActorAnswered?: boolean;
-}
 
 const BURST_GAP_MS = 1200;
 const SETTLE_MS = 900;

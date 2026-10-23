@@ -1,5 +1,5 @@
 import { LlmCall, recorder, SentMessage, ToolCall } from './recorder';
-import type { Scenario } from './scenario-runner';
+import type { Scenario } from './scenario-types';
 
 export interface TurnResult {
   index: number;
@@ -76,6 +76,30 @@ interface EvaluateInput {
   inbound: Array<{ phone: string; content: string }>;
   adminPhone: string;
   durationMs: number;
+  now?: Date;
+}
+
+const TODAY_TIME_ZONE = 'America/Bogota';
+
+const plain = (text: string) =>
+  text
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+
+export function mentionsToday(
+  replies: string,
+  now: Date = new Date(),
+): boolean {
+  const parts = new Intl.DateTimeFormat('es-CO', {
+    timeZone: TODAY_TIME_ZONE,
+    weekday: 'long',
+    day: 'numeric',
+  }).formatToParts(now);
+  const weekday = parts.find((p) => p.type === 'weekday')?.value ?? '';
+  const day = parts.find((p) => p.type === 'day')?.value ?? '';
+  const text = plain(replies);
+  return text.includes(plain(weekday)) && new RegExp(`\\b${day}\\b`).test(text);
 }
 
 export function evaluateScenario(input: EvaluateInput): ScenarioResult {
@@ -197,6 +221,9 @@ export function evaluateScenario(input: EvaluateInput): ScenarioResult {
     !new RegExp(expect.replyMatches, 'i').test(allReplies)
   )
     failures.push(`respuesta sin /${expect.replyMatches}/`);
+  if (expect.replyShowsToday && !mentionsToday(allReplies, input.now)) {
+    failures.push('la respuesta no dice la fecha de hoy');
+  }
   if (
     expect.replyNotMatches &&
     new RegExp(expect.replyNotMatches, 'i').test(allReplies)
