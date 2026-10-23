@@ -32,3 +32,10 @@ export function promptIsoDate(
     day: '2-digit',
   }).format(date);
 }
+
+export function promptDateLine(
+  timeZone: string,
+  date: Date = new Date(),
+): string {
+  return `Fecha y hora actual: ${promptNow(timeZone, date)}.`;
+}

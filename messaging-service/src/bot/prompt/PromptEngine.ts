@@ -10,7 +10,7 @@ import { PromptRenderer } from './PromptRenderer';
 import { HistoryMessage } from '../conversation/interfaces/ConversationHistory';
 import { KnowledgeAssembler } from '../knowledge/KnowledgeAssembler';
 import { ExternalDataResolver } from 'src/external/ExternalDataResolver';
-import { promptNow } from './prompt-clock';
+import { promptDateLine } from './prompt-clock';
 
 export interface BuiltPrompt {
   systemPrompt: string;
@@ -93,7 +93,7 @@ export class PromptEngine {
     cacheable.push(MEMORY_DISCIPLINE, SECURITY_DISCIPLINE);
     if (input.hasTools) cacheable.push(TOOL_RESULT_DISCIPLINE);
 
-    const dynamic: string[] = [`Fecha y hora actual: ${promptNow(timeZone)}.`];
+    const dynamic: string[] = [promptDateLine(timeZone)];
     const { block } = this.contextBuilder.build(input.context, input.summary);
     if (block) dynamic.push(block);
     if (input.leadingBotMessages?.length) {
@@ -160,7 +160,11 @@ export class PromptEngine {
       this.templates.findActive(botConfigId, type),
     ]);
 
-    const vars = this.variables.resolve(settings, this.timeZone());
-    return this.renderer.render(template, vars);
+    const timeZone = this.timeZone();
+    const vars = this.variables.resolve(settings, timeZone);
+    const rendered = this.renderer.render(template, vars);
+    return type === PromptTemplateType.CONVERSATION
+      ? `${rendered}\n\n${promptDateLine(timeZone)}`
+      : rendered;
   }
 }

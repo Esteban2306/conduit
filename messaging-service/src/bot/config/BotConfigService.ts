@@ -7,10 +7,16 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from 'src/shared/prisma.service';
 import { CreateBotConfigDto } from '../dto/create-bot-config.dto';
-import { AiProvider, BotStatus, Prisma } from '@prisma/client';
+import {
+  AiProvider,
+  BotStatus,
+  Prisma,
+  PromptTemplateType,
+} from '@prisma/client';
 import { CreateAiModelDto } from '../dto/create-ai-model.dto';
 import { SecretEncryptionService } from 'src/shared/security/secret-encryption.service';
 import { AI_MODEL_PUBLIC_SELECT } from '../dto/ai-model-public';
+import { findUnknownToolReferences } from '../prompt/tool-references';
 
 @Injectable()
 export class BotConfigService {
@@ -142,6 +148,8 @@ export class BotConfigService {
         ? BotStatus.INACTIVE
         : BotStatus.ACTIVE;
 
+    if (newStatus === BotStatus.ACTIVE) await this.assertCanActivate(id);
+
     const updated = await this.prisma.botConfig.update({
       where: { id },
       data: { status: newStatus },
@@ -258,6 +266,35 @@ export class BotConfigService {
       },
       select: AI_MODEL_PUBLIC_SELECT,
     });
+  }
+
+  private async assertCanActivate(botConfigId: string): Promise<void> {
+    const template = await this.prisma.botPromptTemplate.findFirst({
+      where: {
+        botConfigId,
+        type: PromptTemplateType.CONVERSATION,
+        isActive: true,
+      },
+      select: { content: true },
+    });
+    if (!template?.content.trim()) {
+      throw new BadRequestException(
+        'El bot no tiene una plantilla CONVERSATION propia; sin ella respondería con la plantilla genérica. Guárdala en prompts/CONVERSATION antes de activarlo.',
+      );
+    }
+    const tools = await this.prisma.toolDefinition.findMany({
+      where: { botConfigId, isActive: true },
+      select: { name: true },
+    });
+    const unknown = findUnknownToolReferences(
+      template.content,
+      tools.map((t) => t.name),
+    );
+    if (unknown.length > 0) {
+      throw new BadRequestException(
+        `La plantilla CONVERSATION nombra herramientas que el bot no tiene: ${unknown.join(', ')}.`,
+      );
+    }
   }
 
   private safeSelect() {
