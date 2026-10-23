@@ -19,7 +19,9 @@ export class ExternalDataResolver {
   ) {}
 
   async resolve(botConfigId: string): Promise<ResolvedExternalData> {
-    const rows = await this.store.get(botConfigId);
+    const rows = (await this.store.get(botConfigId)).filter(
+      (row) => row.value.trim() !== '',
+    );
 
     if (rows.length === 0) return { variables: {}, compiledBlock: null };
 
