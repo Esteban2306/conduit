@@ -49,6 +49,14 @@ export interface IncomingMessageDto {
   imageUrl?: string;
 }
 
+const AI_UNAVAILABLE_FIRST =
+  '¡Hola! Recibimos tu mensaje 🙌 En este momento nuestro asistente no está disponible; ' +
+  'una persona del equipo te responderá lo antes posible por este mismo chat.';
+
+const AI_UNAVAILABLE_AGAIN =
+  'Sigo sin poder atenderte yo, pero una persona del equipo ya tiene tu mensaje ' +
+  'y te escribirá por este chat en cuanto pueda. 🙏';
+
 @Injectable()
 export class BotRouter {
   private readonly logger = new Logger(BotRouter.name);
@@ -789,39 +797,58 @@ export class BotRouter {
   }
 
   /**
-   * La IA no respondió (sin saldo, proveedor caído, sin modelos): el cliente
-   * recibe un aviso honesto en vez de silencio y el equipo es notificado.
-   * Como mucho un aviso cada 30 min por conversación; mientras tanto los
-   * mensajes quedan guardados para el equipo o para cuando la IA vuelva.
+   * La IA no respondió (sin saldo, proveedor caído, sin modelos). La clienta
+   * siempre recibe una respuesta: el aviso completo la primera vez y uno más
+   * corto si vuelve a fallar dentro de la ventana. El equipo se notifica
+   * hasta que el aviso realmente salga; después no se repite en la ventana.
+   * Los mensajes quedan guardados para cuando la IA vuelva.
    */
   private async handleAiUnavailable(
     turn: TurnContext,
     context: Record<string, unknown>,
     detail: string,
   ): Promise<void> {
-    const last =
+    const now = Date.now();
+    const windowStart =
       typeof context.aiFallbackAt === 'string'
         ? new Date(context.aiFallbackAt).getTime()
         : 0;
-    if (Date.now() - last < this.AI_FALLBACK_COOLDOWN_MS) return;
+    const inWindow = now - windowStart < this.AI_FALLBACK_COOLDOWN_MS;
 
-    await this.conversationService.updateContext(turn.conversationId, {
-      contextPatch: { aiFallbackAt: new Date().toISOString() },
-    });
     await this.sendReply(
       turn,
-      '¡Hola! Recibimos tu mensaje 🙌 En este momento nuestro asistente no está disponible; ' +
-        'una persona del equipo te responderá lo antes posible por este mismo chat.',
+      inWindow ? AI_UNAVAILABLE_AGAIN : AI_UNAVAILABLE_FIRST,
       0,
     );
-    await this.botEscalation.notifyToolFailure(
-      turn.tenantId,
-      turn.botConfig.id,
-      'TECHNICAL_ERROR',
-      'asistente de IA',
-      turn.phoneNumber,
-      maskSecrets(detail),
-    );
+
+    let teamNotified = inWindow && context.aiFallbackNotified === true;
+    if (!teamNotified) {
+      try {
+        teamNotified = Boolean(
+          await this.botEscalation.notifyToolFailure(
+            turn.tenantId,
+            turn.botConfig.id,
+            'TECHNICAL_ERROR',
+            'asistente de IA',
+            turn.phoneNumber,
+            maskSecrets(detail),
+          ),
+        );
+      } catch (error) {
+        this.logger.error(
+          `No fue posible avisar al equipo de la falla de IA: ${maskError(error)}`,
+        );
+      }
+    }
+
+    await this.conversationService.updateContext(turn.conversationId, {
+      contextPatch: {
+        aiFallbackAt: inWindow
+          ? context.aiFallbackAt
+          : new Date(now).toISOString(),
+        aiFallbackNotified: teamNotified,
+      },
+    });
   }
 
   /**

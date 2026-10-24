@@ -21,7 +21,7 @@ export class BotEscalationService {
     toolName: string,
     clientPhoneNumber: string,
     errorDetail: string | null,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const contacts = await this.prisma.botEscalationContact.findMany({
       where: { botConfigId },
     });
@@ -32,10 +32,10 @@ export class BotEscalationService {
     });
 
     if (relevant.length === 0) {
-      this.logger.warn(
-        `Fallo técnico en tool "${toolName}" sin ningún contacto de escalamiento configurado para bot ${botConfigId} — nadie fue notificado.`,
+      this.logger.error(
+        `Fallo en "${toolName}" sin ningún contacto de escalamiento configurado para el bot ${botConfigId}: NADIE fue notificado.`,
       );
-      return;
+      return false;
     }
 
     const message =
@@ -45,6 +45,7 @@ export class BotEscalationService {
       `Detalle: ${errorDetail ?? 'sin detalle'}\n\n` +
       `El bot ya avisó al cliente que hubo un problema y que será contactado por una persona.`;
 
+    let dispatched = 0;
     for (const contact of relevant) {
       if (!contact.connectionId) {
         this.logger.error(
@@ -61,11 +62,19 @@ export class BotEscalationService {
           variables: {},
           options: { priority: 'high' },
         });
+        dispatched += 1;
       } catch (err) {
         this.logger.error(
           `No fue posible notificar al contacto de escalamiento "${contact.label}": ${err.message}`,
         );
       }
     }
+
+    if (dispatched === 0) {
+      this.logger.error(
+        `Fallo en "${toolName}": ningún contacto de escalamiento pudo ser notificado (bot ${botConfigId}).`,
+      );
+    }
+    return dispatched > 0;
   }
 }

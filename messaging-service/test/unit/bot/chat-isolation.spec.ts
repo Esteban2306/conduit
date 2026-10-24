@@ -182,7 +182,20 @@ class Store {
           );
         },
       ),
-      updateContext: later(() => undefined),
+      updateContext: later(
+        (
+          conversationId: string,
+          update: { contextPatch?: Record<string, unknown> },
+        ) => {
+          const conversation = this.conversations.get(conversationId);
+          if (conversation && update.contextPatch) {
+            conversation.context = {
+              ...conversation.context,
+              ...update.contextPatch,
+            };
+          }
+        },
+      ),
       appendActionMemory: later(() => undefined),
     };
   }
@@ -211,6 +224,8 @@ function world(
 ) {
   const metrics = new ReplyMetricsService();
   let promptMaxTokens = 400;
+  let notifyResult = true;
+  const notifications: unknown[][] = [];
   const sends: Array<{ to: string; content: string; conversationId: string }> =
     [];
   const aiCalls: string[] = [];
@@ -301,7 +316,12 @@ function world(
     } as never,
     { getActiveToolsForBot: later(() => []) } as never,
     {} as never,
-    { notifyToolFailure: later(() => undefined) } as never,
+    {
+      notifyToolFailure: later((...args: unknown[]) => {
+        notifications.push(args);
+        return notifyResult;
+      }),
+    } as never,
     { refreshIfNeeded: later(() => undefined) } as never,
     metrics,
   );
@@ -407,6 +427,10 @@ function world(
     router,
     sends,
     metrics,
+    notifications,
+    setNotifyResult: (value: boolean) => {
+      notifyResult = value;
+    },
     setMaxTokens: (value: number) => {
       promptMaxTokens = value;
     },
@@ -705,5 +729,79 @@ describe('Respuestas cortadas por tope de tokens (etapa 4)', () => {
     expect(
       w.sends.every((s) => s.content.replace(/[\u200B\s]/g, '') !== ''),
     ).toBe(true);
+  });
+});
+
+describe('IA no disponible: la clienta siempre recibe respuesta y el equipo se entera de verdad', () => {
+  beforeEach(() => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+  const WINDOW_MS = 30 * 60 * 1000;
+
+  it('el primer fallo manda el aviso completo y avisa al equipo', async () => {
+    const w = world(new Store(), () => '');
+    w.inbound(A, 'hola');
+    await settle(DELAY_MS + 2_000);
+    expect(w.sends).toHaveLength(1);
+    expect(w.sends[0].content).toMatch(/asistente no está disponible/);
+    expect(w.notifications).toHaveLength(1);
+  });
+
+  it('un segundo fallo dentro de la ventana también responde (aviso corto) y no repite el aviso al equipo ya notificado', async () => {
+    const w = world(new Store(), () => '');
+    w.inbound(A, 'hola');
+    await settle(DELAY_MS + 2_000);
+    w.inbound(A, 'sigo aquí');
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.sends).toHaveLength(2);
+    expect(w.sends[1].content).toMatch(
+      /una persona del equipo ya tiene tu mensaje/,
+    );
+    expect(w.sends.every((s) => s.content.trim() !== '')).toBe(true);
+    expect(w.notifications).toHaveLength(1);
+  });
+
+  it('si el aviso al equipo no salió (sin contactos o falla), se reintenta en el siguiente fallo', async () => {
+    const w = world(new Store(), () => '');
+    w.setNotifyResult(false);
+    w.inbound(A, 'hola');
+    await settle(DELAY_MS + 2_000);
+    w.inbound(A, 'otra vez');
+    await settle(DELAY_MS + 2_000);
+    expect(w.notifications).toHaveLength(2);
+
+    w.setNotifyResult(true);
+    w.inbound(A, 'y otra');
+    await settle(DELAY_MS + 2_000);
+    expect(w.notifications).toHaveLength(3);
+    w.inbound(A, 'última');
+    await settle(DELAY_MS + 2_000);
+    expect(w.notifications).toHaveLength(3);
+    expect(w.sends).toHaveLength(4);
+  });
+
+  it('pasada la ventana vuelve el aviso completo y se vuelve a avisar al equipo', async () => {
+    const w = world(new Store(), () => '');
+    w.inbound(A, 'hola');
+    await settle(DELAY_MS + 2_000);
+    await settle(WINDOW_MS + 1_000);
+    w.inbound(A, 'hola de nuevo');
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.sends).toHaveLength(2);
+    expect(w.sends[1].content).toMatch(/asistente no está disponible/);
+    expect(w.notifications).toHaveLength(2);
+  });
+
+  it('un error al notificar no deja a la clienta sin respuesta', async () => {
+    const w = world(new Store(), () => '');
+    w.setNotifyResult(Promise.reject(new Error('sin red')) as never);
+    w.inbound(A, 'hola');
+    await settle(DELAY_MS + 2_000);
+    expect(w.sends).toHaveLength(1);
   });
 });

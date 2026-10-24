@@ -11,6 +11,7 @@ import { HistoryMessage } from '../conversation/interfaces/ConversationHistory';
 import { KnowledgeAssembler } from '../knowledge/KnowledgeAssembler';
 import { ExternalDataResolver } from 'src/external/ExternalDataResolver';
 import { promptDateLine } from './prompt-clock';
+import { lengthGuide } from './length-guide';
 
 export interface BuiltPrompt {
   systemPrompt: string;
@@ -86,7 +87,11 @@ export class PromptEngine {
     const timeZone = this.timeZone();
     const vars = this.variables.resolve(settings, timeZone);
 
-    const cacheable: string[] = [this.renderer.render(template, vars)];
+    const maxTokens = settings?.maxTokensConversation ?? 800;
+    const cacheable: string[] = [
+      this.renderer.render(template, vars),
+      lengthGuide(maxTokens),
+    ];
     if (assembled.compiled)
       cacheable.push(`Conocimiento:\n${assembled.compiled}`);
     if (external.compiledBlock) cacheable.push(external.compiledBlock);
@@ -115,7 +120,7 @@ export class PromptEngine {
       systemPrompt,
       cacheablePrompt,
       dynamicPrompt,
-      maxTokens: settings?.maxTokensConversation ?? 800,
+      maxTokens,
       temperature: settings?.temperature ?? 0.7,
       reasoningMode: settings?.reasoningMode ?? ReasoningMode.AUTO,
     };
