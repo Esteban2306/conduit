@@ -19,7 +19,12 @@ export interface Scenario {
   title: string;
   knownFailure?: string;
   prior?: {
-    client?: { name: string; birthDate: string };
+    client?: {
+      name: string;
+      birthDate: string;
+      hairLength?: string;
+      hairColor?: string;
+    };
     reservations?: unknown[];
   };
   turns: TurnSpec[];
