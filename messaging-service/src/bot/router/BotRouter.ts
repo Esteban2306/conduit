@@ -512,6 +512,9 @@ export class BotRouter {
       botConfig.id,
     );
     const toolByName = new Map(tools.map((t) => [t.spec.name, t]));
+    const readOnlyTools = new Set(
+      tools.filter((t) => t.readOnly).map((t) => t.spec.name),
+    );
 
     const builtPrompt = await this.promptEngine.buildConversationPrompt(
       botConfig.id,
@@ -692,7 +695,11 @@ export class BotRouter {
       }
     }
 
-    const finalContent = this.applyToolFailureDiscipline(aiResult, phoneNumber);
+    const finalContent = this.applyToolFailureDiscipline(
+      aiResult,
+      phoneNumber,
+      readOnlyTools,
+    );
 
     if (this.receiptTracker.isChatActive(sessionKey, 30000)) {
       this.logger.log(
@@ -734,7 +741,11 @@ export class BotRouter {
           return;
         }
 
-        reply = this.applyToolFailureDiscipline(retryResult, phoneNumber);
+        reply = this.applyToolFailureDiscipline(
+          retryResult,
+          phoneNumber,
+          readOnlyTools,
+        );
         tokensUsed = retryResult.tokensUsed;
       } catch (retryErr) {
         this.logger.error(
@@ -911,8 +922,9 @@ export class BotRouter {
   private applyToolFailureDiscipline(
     result: { content: string; toolCallsExecuted?: ExecutedToolCall[] },
     phoneNumber: string,
+    readOnlyTools: ReadonlySet<string>,
   ): string {
-    if (!hasUnrecoveredToolFailure(result.toolCallsExecuted)) {
+    if (!hasUnrecoveredToolFailure(result.toolCallsExecuted, readOnlyTools)) {
       return result.content;
     }
 

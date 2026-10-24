@@ -31,6 +31,7 @@ export interface ToolCall {
   httpStatus: number | null;
   ms: number;
   errorDetail: string | null;
+  failure?: { args: string; body: string };
 }
 
 export interface SentMessage {

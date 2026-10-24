@@ -4,7 +4,7 @@
   "scenarios": [
     { "id": "b01", "category": "saludo", "title": "Saludo simple",
       "turns": [{ "actor": "A", "messages": [{ "text": "Hola buenas tardes" }] }],
-      "expect": { "route": "IA", "toolsForbidden": ["crear_reserva_whatsapp", "cancelar_reserva_whatsapp"] } },
+      "expect": { "route": "IA", "replyMatches": "Sof[ií]a", "toolsForbidden": ["crear_reserva_whatsapp", "cancelar_reserva_whatsapp"] } },
     { "id": "b02", "category": "saludo", "title": "Saludo con nombre de clienta recurrente",
       "prior": { "client": { "name": "Marcela Ríos", "birthDate": "1988-03-14" } },
       "turns": [{ "actor": "A", "messages": [{ "text": "Buenos días! soy Marcela" }] }],
@@ -50,14 +50,15 @@
         { "actor": "A", "messages": [{ "text": "Soy Laura Gómez, nací el 2 de febrero de 1995. Acepto los términos, no tengo alergias ni estoy embarazada" }] },
         { "actor": "A", "messages": [{ "text": "sí, confirmo" }] }
       ],
-      "expect": { "toolsAll": ["crear_reserva_whatsapp"], "finalState": { "reservationCountAtLeast": 1 } } },
-    { "id": "b14", "category": "agendar", "title": "Agendar sin valoración, clienta recurrente", "knownFailure": "P1",
+      "expect": { "toolsAll": ["registrar_cliente", "crear_reserva_whatsapp"], "finalState": { "reservationCountAtLeast": 1, "clientNameMatches": "Laura G[oó]mez", "clientConsents": ["TERMINOS_SERVICIO"] } } },
+    { "id": "b14", "category": "agendar", "title": "Agendar sin valoración, clienta recurrente",
       "prior": { "client": { "name": "Diana Pardo", "birthDate": "1990-07-21" } },
       "turns": [
         { "actor": "A", "messages": [{ "text": "Hola! quiero separar uñas acrílicas para el próximo lunes a las 9am" }] },
+        { "actor": "A", "messages": [{ "text": "Diana Pardo, nací el 21 de julio de 1990" }] },
         { "actor": "A", "messages": [{ "text": "sí, confírmala" }] }
       ],
-      "expect": { "toolsAny": ["consultar_disponibilidad", "disponibilidad_combo"], "toolsAll": ["crear_reserva_whatsapp"] } },
+      "expect": { "toolsAny": ["consultar_disponibilidad", "disponibilidad_combo"], "toolsAll": ["crear_reserva_whatsapp"], "finalState": { "reservationCountAtLeast": 1, "clientNameMatches": "Diana Pardo" } } },
     { "id": "b15", "category": "agendar", "title": "Agendar con valoración previa (alisado)",
       "turns": [
         { "actor": "A", "messages": [{ "text": "Quiero hacerme un alisado, nunca he ido, ¿cómo es el proceso?" }] }

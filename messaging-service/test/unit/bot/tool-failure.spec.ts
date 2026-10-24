@@ -43,4 +43,44 @@ describe('hasUnrecoveredToolFailure', () => {
       ]),
     ).toBe(true);
   });
+
+  describe('con herramientas de solo lectura', () => {
+    const reads = new Set(['disponibilidad_combo', 'consultar_disponibilidad']);
+
+    it('una consulta fallida queda resuelta si otra consulta posterior salió bien', () => {
+      expect(
+        hasUnrecoveredToolFailure(
+          [
+            { name: 'disponibilidad_combo', ok: false },
+            { name: 'consultar_disponibilidad', ok: true },
+          ],
+          reads,
+        ),
+      ).toBe(false);
+    });
+
+    it('sin ninguna consulta posterior exitosa sigue siendo un fallo', () => {
+      expect(
+        hasUnrecoveredToolFailure(
+          [
+            { name: 'consultar_disponibilidad', ok: true },
+            { name: 'disponibilidad_combo', ok: false },
+          ],
+          reads,
+        ),
+      ).toBe(true);
+    });
+
+    it('una acción fallida nunca se perdona por una consulta posterior', () => {
+      expect(
+        hasUnrecoveredToolFailure(
+          [
+            { name: 'crear_reserva_whatsapp', ok: false },
+            { name: 'consultar_disponibilidad', ok: true },
+          ],
+          reads,
+        ),
+      ).toBe(true);
+    });
+  });
 });

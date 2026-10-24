@@ -175,6 +175,7 @@ export function evaluateScenario(input: EvaluateInput): ScenarioResult {
       status: t.status,
       httpStatus: t.httpStatus,
       ms: t.ms,
+      ...(t.failure ? { failure: t.failure } : {}),
     }));
     turn.requestedTools = llm.flatMap((c) => c.toolUses ?? []);
     turn.sent = replies.map((s) => s.content);
@@ -231,7 +232,10 @@ export function evaluateScenario(input: EvaluateInput): ScenarioResult {
     failures.push(`respuesta contiene /${expect.replyNotMatches}/`);
 
   const stateA = input.finalState.A as
-    | { reservations?: Array<{ status: string }> }
+    | {
+        reservations?: Array<{ status: string }>;
+        client?: { name?: string; consents?: string[] } | null;
+      }
     | undefined;
   if (expect.finalState?.reservationStatus) {
     const status = stateA?.reservations?.[0]?.status;
@@ -244,6 +248,21 @@ export function evaluateScenario(input: EvaluateInput): ScenarioResult {
     const count = stateA?.reservations?.length ?? 0;
     if (count < expect.finalState.reservationCountAtLeast)
       failures.push(`reservas creadas: ${count}`);
+  }
+
+  if (expect.finalState?.clientNameMatches !== undefined) {
+    const name = stateA?.client?.name;
+    if (
+      !name ||
+      !new RegExp(expect.finalState.clientNameMatches, 'i').test(name)
+    )
+      failures.push(
+        `ficha de la clienta sin nombre /${expect.finalState.clientNameMatches}/ (${name ?? 'sin ficha'})`,
+      );
+  }
+  for (const consent of expect.finalState?.clientConsents ?? []) {
+    if (!stateA?.client?.consents?.includes(consent))
+      failures.push(`la ficha no registra el consentimiento ${consent}`);
   }
 
   const notifications = recorder.sent

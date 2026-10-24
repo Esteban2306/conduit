@@ -20,6 +20,7 @@ export interface ResolvedTool {
   maxImageSizeBytes: number | null;
   injectPhoneParamName: string | null;
   pausesBotMinutes: number | null;
+  readOnly: boolean;
 }
 
 @Injectable()
@@ -151,6 +152,9 @@ export class ToolDefinitionService {
         maxImageSizeBytes: d.maxImageSizeBytes,
         injectPhoneParamName: d.injectPhoneParamName,
         pausesBotMinutes: d.pausesBotMinutes,
+        readOnly: ['GET', 'HEAD'].includes(
+          (d.httpMethod ?? 'POST').toUpperCase(),
+        ),
       };
     });
   }

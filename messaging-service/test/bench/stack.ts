@@ -228,6 +228,13 @@ export async function startStack(
       httpStatus: outcome.httpStatus,
       ms: Date.now() - t0,
       errorDetail: outcome.errorDetail,
+      failure:
+        outcome.status === 'SUCCESS'
+          ? undefined
+          : {
+              args: JSON.stringify(request.params).slice(0, 400),
+              body: JSON.stringify(outcome.responseBody).slice(0, 400),
+            },
     });
     return outcome;
   };

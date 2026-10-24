@@ -34,7 +34,12 @@ export interface ScenarioExpect {
   replyMatches?: string;
   replyNotMatches?: string;
   replyShowsToday?: boolean;
-  finalState?: { reservationStatus?: string; reservationCountAtLeast?: number };
+  finalState?: {
+    reservationStatus?: string;
+    reservationCountAtLeast?: number;
+    clientNameMatches?: string;
+    clientConsents?: string[];
+  };
   noFalseHumanPromise?: boolean;
   notCutOrEmpty?: boolean;
   noCrossTalk?: boolean;
