@@ -71,7 +71,7 @@ export class AiOrchestrator {
           model,
           apiKey,
           baseUrl: config.baseUrl ?? '',
-          maxTokens: input.maxTokens ?? 400,
+          maxTokens: input.maxTokens ?? 800,
           temperature: input.temperature ?? 0.7,
           tools: input.tools,
           toolExecutor: input.toolExecutor,

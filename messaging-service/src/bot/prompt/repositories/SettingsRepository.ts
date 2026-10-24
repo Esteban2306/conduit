@@ -17,7 +17,7 @@ export const SETTINGS_DEFAULTS = {
   emojiLevel: 'LOW',
   allowMarkdown: false,
   temperature: 0.7,
-  maxTokensConversation: 400,
+  maxTokensConversation: 800,
   maxTokensImage: 200,
   maxTokensSummary: 300,
 };

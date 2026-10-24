@@ -111,7 +111,8 @@ export class AnthropicProvider implements AiProvider {
         (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use',
       );
 
-      if (toolUseBlocks.length === 0 || !input.toolExecutor) {
+      const cutOffMidTool = response.stop_reason === 'max_tokens';
+      if (toolUseBlocks.length === 0 || !input.toolExecutor || cutOffMidTool) {
         const content = response.content
           .filter((b): b is Anthropic.TextBlock => b.type === 'text')
           .map((b) => b.text)

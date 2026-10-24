@@ -115,7 +115,7 @@ export class PromptEngine {
       systemPrompt,
       cacheablePrompt,
       dynamicPrompt,
-      maxTokens: settings?.maxTokensConversation ?? 400,
+      maxTokens: settings?.maxTokensConversation ?? 800,
       temperature: settings?.temperature ?? 0.7,
       reasoningMode: settings?.reasoningMode ?? ReasoningMode.AUTO,
     };

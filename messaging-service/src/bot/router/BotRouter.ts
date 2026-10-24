@@ -2,7 +2,7 @@ import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import { BotConfigService } from '../config/BotConfigService';
 import { ConversationService } from '../conversation/ConversationService';
 import { downloadMediaMessage, WAMessage } from '@whiskeysockets/baileys';
-import { BotStatus } from '@prisma/client';
+import { BotStatus, ReasoningMode } from '@prisma/client';
 import { EventBusService } from 'src/infra/events/event.service';
 import { EVENT_TYPES } from 'src/infra/events/constants/event.types';
 import { AiOrchestrator } from '../ai/AiOrchestrator';
@@ -30,6 +30,8 @@ import { chatKey } from 'src/channels/whatsapp/utils/chat-key';
 import { maskError, maskSecrets } from 'src/shared/security/mask-secrets';
 import { IGNORED_INBOUND } from '../conversation/ConversationService';
 import { ExecutedToolCall, hasUnrecoveredToolFailure } from './tool-failure';
+import { cutAtSentence, isBlank } from './reply-guard';
+import { ReplyMetricsService } from './reply-metrics.service';
 
 interface TurnContext {
   tenantId: string;
@@ -61,6 +63,7 @@ export class BotRouter {
   private readonly MAX_REPLIES_PER_CONTACT_HOUR = 30;
   private readonly RECOVERY_STAGGER_MS = 3000;
   private readonly OWNER_DISCARD_RETRY_MS = 30_000;
+  private static readonly TRUNCATED_RETRY_MAX_TOKENS = 2048;
 
   constructor(
     @Inject(forwardRef(() => BaileysSessionManager))
@@ -78,6 +81,7 @@ export class BotRouter {
     private readonly toolExecutorService: ToolExecutorService,
     private readonly botEscalation: BotEscalationService,
     private readonly summarizer: ConversationSummarizer,
+    private readonly replyMetrics: ReplyMetricsService,
   ) {}
 
   async route(
@@ -638,22 +642,30 @@ export class BotRouter {
         }
       : undefined;
 
-    let aiResult: Awaited<ReturnType<AiOrchestrator['generateResponse']>>;
-    try {
-      aiResult = await this.aiOrchestrator.generateResponse({
+    const generate = (
+      overrides: {
+        reasoningMode?: typeof builtPrompt.reasoningMode;
+        maxTokens?: number;
+      } = {},
+    ) =>
+      this.aiOrchestrator.generateResponse({
         botConfigId: botConfig.id,
         systemPrompt: builtPrompt.systemPrompt,
         systemBlocks: this.systemBlocksOf(builtPrompt),
-        reasoningMode: builtPrompt.reasoningMode,
+        reasoningMode: overrides.reasoningMode ?? builtPrompt.reasoningMode,
         userMessage: userMessageForAI,
         history: aiData.history,
         context: aiData.context,
         summary: aiData.summary,
-        maxTokens: builtPrompt.maxTokens,
+        maxTokens: overrides.maxTokens ?? builtPrompt.maxTokens,
         temperature: builtPrompt.temperature,
         tools: tools.length ? tools.map((t) => t.spec) : undefined,
         toolExecutor: toolExecutorFn,
       });
+
+    let aiResult: Awaited<ReturnType<AiOrchestrator['generateResponse']>>;
+    try {
+      aiResult = await generate();
     } catch (error) {
       const detail = maskError(error);
       this.logger.error(`IA no disponible para ${phoneNumber}: ${detail}`);
@@ -661,31 +673,21 @@ export class BotRouter {
       return;
     }
 
-    if (!aiResult.content.trim()) {
+    if (isBlank(aiResult.content)) {
+      this.replyMetrics.increment('empty');
       this.logger.warn(
         `Respuesta vacía de la IA para ${phoneNumber} (stop=${aiResult.stopReason ?? 'n/d'}); se reintenta sin razonamiento.`,
       );
       try {
-        aiResult = await this.aiOrchestrator.generateResponse({
-          botConfigId: botConfig.id,
-          systemPrompt: builtPrompt.systemPrompt,
-          systemBlocks: this.systemBlocksOf(builtPrompt),
-          reasoningMode: 'OFF',
-          userMessage: userMessageForAI,
-          history: aiData.history,
-          context: aiData.context,
-          summary: aiData.summary,
-          maxTokens: builtPrompt.maxTokens,
-          temperature: builtPrompt.temperature,
-          tools: tools.length ? tools.map((t) => t.spec) : undefined,
-          toolExecutor: toolExecutorFn,
-        });
+        aiResult = await generate({ reasoningMode: 'OFF' });
       } catch (error) {
         const detail = maskError(error);
+        this.replyMetrics.increment('emptyFallback');
         await this.handleAiUnavailable(turn, aiData.context, detail);
         return;
       }
-      if (!aiResult.content.trim()) {
+      if (isBlank(aiResult.content)) {
+        this.replyMetrics.increment('emptyFallback');
         await this.handleAiUnavailable(
           turn,
           aiData.context,
@@ -693,6 +695,16 @@ export class BotRouter {
         );
         return;
       }
+      this.replyMetrics.increment('emptyRecovered');
+    }
+
+    if (aiResult.stopReason === 'max_tokens') {
+      aiResult = await this.recoverTruncatedReply(
+        aiResult,
+        builtPrompt.maxTokens,
+        phoneNumber,
+        generate,
+      );
     }
 
     const finalContent = this.applyToolFailureDiscipline(
@@ -746,6 +758,14 @@ export class BotRouter {
           phoneNumber,
           readOnlyTools,
         );
+        if (isBlank(reply)) {
+          await this.handleAiUnavailable(
+            turn,
+            aiData.context,
+            'El reintento por respuesta duplicada salió vacío',
+          );
+          return;
+        }
         tokensUsed = retryResult.tokensUsed;
       } catch (retryErr) {
         this.logger.error(
@@ -852,12 +872,56 @@ export class BotRouter {
     return true;
   }
 
+  private async recoverTruncatedReply(
+    truncated: Awaited<ReturnType<AiOrchestrator['generateResponse']>>,
+    configuredMaxTokens: number,
+    phoneNumber: string,
+    generate: (overrides: {
+      reasoningMode?: ReasoningMode;
+      maxTokens?: number;
+    }) => ReturnType<AiOrchestrator['generateResponse']>,
+  ) {
+    this.replyMetrics.increment('truncated');
+    const ceiling = Math.min(
+      configuredMaxTokens * 2,
+      BotRouter.TRUNCATED_RETRY_MAX_TOKENS,
+    );
+    this.logger.warn(
+      `Respuesta cortada por tope de tokens para ${phoneNumber}; se regenera con ${ceiling}.`,
+    );
+    let result = truncated;
+    try {
+      const retry = await generate({
+        reasoningMode: 'OFF',
+        maxTokens: ceiling,
+      });
+      if (!isBlank(retry.content)) result = retry;
+    } catch (error) {
+      this.logger.warn(
+        `No fue posible regenerar la respuesta cortada: ${maskError(error)}`,
+      );
+    }
+    if (result.stopReason !== 'max_tokens') {
+      this.replyMetrics.increment('truncatedRecovered');
+      return result;
+    }
+    this.replyMetrics.increment('truncatedCut');
+    return { ...result, content: cutAtSentence(result.content) };
+  }
+
   private async sendReply(
     turn: TurnContext,
     content: string,
     tokensUsed: number,
     imageVerified?: boolean,
   ): Promise<void> {
+    if (isBlank(content)) {
+      this.replyMetrics.increment('blockedEmpty');
+      this.logger.error(
+        `Se descartó un envío vacío para ${turn.phoneNumber}; no se manda nada al canal.`,
+      );
+      return;
+    }
     await this.eventBus.publishAsync(EVENT_TYPES.CHANNEL_SEND_REQUESTED, {
       phoneNumber: turn.phoneNumber,
       content,

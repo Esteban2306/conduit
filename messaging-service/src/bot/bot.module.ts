@@ -17,6 +17,7 @@ import { ChannelsModule } from 'src/channels/channels.module';
 import { forwardRef } from '@nestjs/common';
 import { ImageAnalysisService } from './ai/ImageAnalysisService';
 import { MessageDebouncer } from './router/MessageDebouncer';
+import { ReplyMetricsService } from './router/reply-metrics.service';
 import { OpenRouterProvider } from './ai/providers/OpenRouterProvider';
 import { PromptModule } from './prompt/Prompt.module';
 import { ToolDefinitionService } from './tools/ToolDefinitionService';
@@ -54,6 +55,7 @@ import { ConversationAdminController } from './admin/ConversationAdmin.controlle
     CustomProvider,
     ImageAnalysisService,
     MessageDebouncer,
+    ReplyMetricsService,
     ToolDefinitionService,
     ToolExecutorService,
     BotEscalationService,
@@ -66,6 +68,7 @@ import { ConversationAdminController } from './admin/ConversationAdmin.controlle
     AiOrchestrator,
     AiModelSelectorService,
     MessageDebouncer,
+    ReplyMetricsService,
   ],
 })
 export class BotModule {}

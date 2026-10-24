@@ -17,6 +17,7 @@ import { MessageDebouncer } from 'src/bot/router/MessageDebouncer';
 import { messageReceiptTracker } from 'src/channels/whatsapp/baileys/MessageReceiptTracker';
 import { BaileysSessionManager } from 'src/channels/whatsapp/baileys/BaileysSessionManager';
 import { EVENT_TYPES } from 'src/infra/events/constants/event.types';
+import { ReplyMetricsService } from 'src/bot/router/reply-metrics.service';
 
 const CONN = '1e93c204-5e78-4dca-bd5c-cbda632c91c9';
 const BOT = 'bot-1';
@@ -202,13 +203,22 @@ class Store {
 
 function world(
   store = new Store(),
-  ai: (userMessage: string, call: number) => string = (m) =>
+  ai: (
+    userMessage: string,
+    call: number,
+  ) => string | { content: string; stopReason: string } = (m) =>
     `respuesta a: ${m}`,
 ) {
+  const metrics = new ReplyMetricsService();
+  let promptMaxTokens = 400;
   const sends: Array<{ to: string; content: string; conversationId: string }> =
     [];
   const aiCalls: string[] = [];
-  const aiInputs: Array<{ userMessage: string; reasoningMode?: string }> = [];
+  const aiInputs: Array<{
+    userMessage: string;
+    reasoningMode?: string;
+    maxTokens?: number;
+  }> = [];
   const conversations = store.service();
   const debouncer = new MessageDebouncer();
   const tracker = new messageReceiptTracker();
@@ -263,11 +273,16 @@ function world(
     eventBus as never,
     {
       generateResponse: later(
-        (input: { userMessage: string; reasoningMode?: string }) => {
+        (input: {
+          userMessage: string;
+          reasoningMode?: string;
+          maxTokens?: number;
+        }) => {
           aiCalls.push(input.userMessage);
           aiInputs.push(input);
+          const out = ai(input.userMessage, aiCalls.length);
           return {
-            content: ai(input.userMessage, aiCalls.length),
+            ...(typeof out === 'string' ? { content: out } : out),
             tokensUsed: 10,
             toolCallsExecuted: [],
           };
@@ -280,7 +295,7 @@ function world(
     {
       buildConversationPrompt: later(() => ({
         systemPrompt: '',
-        maxTokens: 400,
+        maxTokens: promptMaxTokens,
         temperature: 0.7,
       })),
     } as never,
@@ -288,6 +303,7 @@ function world(
     {} as never,
     { notifyToolFailure: later(() => undefined) } as never,
     { refreshIfNeeded: later(() => undefined) } as never,
+    metrics,
   );
   (router as unknown as { logger: object }).logger = {
     debug: jest.fn(),
@@ -390,6 +406,10 @@ function world(
     store,
     router,
     sends,
+    metrics,
+    setMaxTokens: (value: number) => {
+      promptMaxTokens = value;
+    },
     aiCalls,
     aiInputs,
     inbound,
@@ -573,5 +593,117 @@ describe('Respuestas vacías de la IA (etapa de tokens)', () => {
       'respuesta a: primera',
       'respuesta a: segunda',
     ]);
+  });
+});
+
+describe('Respuestas cortadas por tope de tokens (etapa 4)', () => {
+  beforeEach(() => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('una respuesta cortada se regenera una vez con techo mayor y sin razonamiento', async () => {
+    const w = world(new Store(), (m, call) =>
+      call === 1
+        ? {
+            content: 'Te cuento que el tratamiento incluye una limpie',
+            stopReason: 'max_tokens',
+          }
+        : {
+            content: 'Te cuento que el tratamiento incluye limpieza completa.',
+            stopReason: 'end_turn',
+          },
+    );
+    w.inbound(A, 'hola');
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.aiInputs.map((i) => [i.reasoningMode, i.maxTokens])).toEqual([
+      [undefined, 400],
+      ['OFF', 800],
+    ]);
+    expect(w.sends.map((s) => s.content)).toEqual([
+      'Te cuento que el tratamiento incluye limpieza completa.',
+    ]);
+    expect(w.metrics.snapshot()).toMatchObject({
+      truncated: 1,
+      truncatedRecovered: 1,
+      truncatedCut: 0,
+    });
+  });
+
+  it('si la regeneración también se corta, envía hasta la última oración completa', async () => {
+    const w = world(new Store(), () => ({
+      content:
+        'Hola, soy Sofía. Tenemos horario el lunes. Para reservar necesito tu nom',
+      stopReason: 'max_tokens',
+    }));
+    w.inbound(A, 'hola');
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.aiInputs).toHaveLength(2);
+    expect(w.sends.map((s) => s.content)).toEqual([
+      'Hola, soy Sofía. Tenemos horario el lunes.',
+    ]);
+    expect(w.metrics.snapshot()).toMatchObject({
+      truncated: 1,
+      truncatedRecovered: 0,
+      truncatedCut: 1,
+    });
+  });
+
+  it('el techo de la regeneración nunca pasa de 2048 tokens', async () => {
+    const w = world(new Store(), (m, call) =>
+      call === 1
+        ? { content: 'Texto cortado', stopReason: 'max_tokens' }
+        : 'Texto completo.',
+    );
+    w.setMaxTokens(1500);
+    w.inbound(A, 'hola');
+    await settle(DELAY_MS + 2_000);
+    expect(w.aiInputs[1].maxTokens).toBe(2048);
+  });
+
+  it('un vacío tras la regeneración no se envía y activa el aviso de IA no disponible', async () => {
+    const w = world(new Store(), (m, call) =>
+      call === 1 ? { content: 'Cortado a med', stopReason: 'max_tokens' } : '',
+    );
+    w.inbound(A, 'hola');
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.sends.every((s) => s.content.trim() !== '')).toBe(true);
+    expect(w.sends.map((s) => s.content)).toEqual(['Cortado a med']);
+  });
+
+  it('cuenta los vacíos reintentados y recuperados', async () => {
+    const w = world(new Store(), (m, call) => (call === 1 ? '   ' : 'Listo.'));
+    w.inbound(A, 'hola');
+    await settle(DELAY_MS + 2_000);
+    expect(w.metrics.snapshot()).toMatchObject({
+      empty: 1,
+      emptyRecovered: 1,
+      emptyFallback: 0,
+    });
+  });
+
+  it('un reintento por respuesta duplicada que sale vacío no envía una burbuja en blanco', async () => {
+    const w = world(new Store(), (m, call) =>
+      call === 1
+        ? 'Misma respuesta de siempre.'
+        : call === 2
+          ? 'Misma respuesta de siempre.'
+          : call === 3
+            ? '\u200B'
+            : 'Otra.',
+    );
+    w.inbound(A, 'uno');
+    await settle(DELAY_MS + 2_000);
+    w.inbound(A, 'dos');
+    await settle(DELAY_MS + 2_000);
+
+    expect(
+      w.sends.every((s) => s.content.replace(/[\u200B\s]/g, '') !== ''),
+    ).toBe(true);
   });
 });

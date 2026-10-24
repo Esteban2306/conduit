@@ -371,7 +371,7 @@ model BotAiSettings {
   restrictions      String? @db.Text
 
   temperature       Float   @default(0.7)
-  maxTokensConversation Int @default(400)
+  maxTokensConversation Int @default(800)
   maxTokensImage        Int   @default(200)
   maxTokensSummary      Int   @default(300)
   reasoningMode         ReasoningMode @default(AUTO)

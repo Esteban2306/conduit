@@ -8,6 +8,8 @@ import {
 } from 'src/infra/events/constants/event.types';
 import { EventBusService } from 'src/infra/events/event.service';
 import type { DomainEvent } from 'src/infra/events/interface/event.interface';
+import { isBlank, splitBubbles } from 'src/bot/router/reply-guard';
+import { ReplyMetricsService } from 'src/bot/router/reply-metrics.service';
 
 @Injectable()
 export class BaileysMessageSender {
@@ -17,6 +19,7 @@ export class BaileysMessageSender {
     private readonly baileysPlugin: BaileysPlugin,
     private readonly conversationService: ConversationService,
     private readonly eventBus: EventBusService,
+    private readonly replyMetrics: ReplyMetricsService,
   ) {}
 
   @OnEvent(EVENT_TYPES.CHANNEL_SEND_REQUESTED)
@@ -35,29 +38,54 @@ export class BaileysMessageSender {
       sentBy,
     } = event.payload;
 
-    try {
-      const result = await this.baileysPlugin.send({
-        to: phoneNumber,
-        content,
-        subject: '',
-        connectionId: connectionId ?? '',
-        priority: 'conversation',
-      });
+    if (isBlank(content)) {
+      this.replyMetrics.increment('blockedEmpty');
+      this.logger.error(`Envío vacío bloqueado para ${phoneNumber}`);
+      return { success: false, error: 'EMPTY_MESSAGE' };
+    }
 
-      if (result.success) {
+    try {
+      const bubbles = sentBy === 'human' ? [content] : splitBubbles(content);
+      const delivered: string[] = [];
+      let result: Awaited<ReturnType<BaileysPlugin['send']>> | undefined;
+      for (const bubble of bubbles) {
+        result = await this.baileysPlugin.send({
+          to: phoneNumber,
+          content: bubble,
+          subject: '',
+          connectionId: connectionId ?? '',
+          priority: 'conversation',
+        });
+        if (!result.success) break;
+        delivered.push(bubble);
+      }
+      if (delivered.length > 0 && result && !result.success) {
+        this.logger.error(
+          `Se enviaron ${delivered.length} de ${bubbles.length} burbujas a ${phoneNumber}: ${result.error}`,
+        );
+        result = { ...result, success: true };
+      }
+      const savedContent =
+        bubbles.length > 1 ? delivered.join('\n\n') : content;
+
+      if (result?.success) {
         if (conversationId && sentBy === 'human') {
           // Queda como mensaje humano: activa la pausa por takeover del bot.
           await this.conversationService.saveHumanOutbound(
             conversationId,
-            content,
+            savedContent,
             connectionId ?? undefined,
           );
         } else if (conversationId) {
-          await this.conversationService.saveOutbound(conversationId, content, {
-            tokensUsed,
-            imageVerified,
-            connectionId: connectionId ?? undefined,
-          });
+          await this.conversationService.saveOutbound(
+            conversationId,
+            savedContent,
+            {
+              tokensUsed,
+              imageVerified,
+              connectionId: connectionId ?? undefined,
+            },
+          );
         } else {
           this.logger.debug(
             `Mensaje enviado a ${phoneNumber} sin conversationId — no se persiste en historial de conversación (envío administrativo/proactivo).`,
@@ -70,13 +98,13 @@ export class BaileysMessageSender {
         });
         return { success: true };
       } else {
-        this.logger.error(`Fallo enviando a ${phoneNumber}: ${result.error}`);
+        this.logger.error(`Fallo enviando a ${phoneNumber}: ${result?.error}`);
         this.eventBus.publish(EVENT_TYPES.CHANNEL_SEND_FAILED, {
           phoneNumber,
-          error: result.error ?? 'Error desconocido',
-          retryable: result.retryable ?? false,
+          error: result?.error ?? 'Error desconocido',
+          retryable: result?.retryable ?? false,
         });
-        return { success: false, error: result.error };
+        return { success: false, error: result?.error };
       }
     } catch (error) {
       this.logger.error(`Error en BaileysMessageSender: ${error.message}`);

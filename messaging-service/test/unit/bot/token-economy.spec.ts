@@ -227,7 +227,7 @@ describe('PromptEngine: bloque cacheable sin datos de la conversación', () => {
     expect(built.reasoningMode).toBe(ReasoningMode.OFF);
   });
 
-  it('sin ajustes conserva el comportamiento anterior (razonamiento AUTO, 400 tokens)', async () => {
+  it('sin ajustes conserva el comportamiento anterior (razonamiento AUTO, 800 tokens)', async () => {
     const built = await engine(null).buildConversationPrompt('bot', {
       userMessage: 'hola',
       history: [],
@@ -235,7 +235,7 @@ describe('PromptEngine: bloque cacheable sin datos de la conversación', () => {
       summary: null,
     });
     expect(built.reasoningMode).toBe(ReasoningMode.AUTO);
-    expect(built.maxTokens).toBe(400);
+    expect(built.maxTokens).toBe(800);
   });
 });
 
