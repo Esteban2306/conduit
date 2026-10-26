@@ -23,6 +23,12 @@ import { BaileysSessionManager } from 'src/channels/whatsapp/baileys/BaileysSess
 import { EVENT_TYPES } from 'src/infra/events/constants/event.types';
 import { ReplyMetricsService } from 'src/bot/router/reply-metrics.service';
 
+jest.mock('src/channels/whatsapp/baileys/human-timing', () => ({
+  ...jest.requireActual('src/channels/whatsapp/baileys/human-timing'),
+  jittered: (ms: number) => ms,
+  readDelayMs: () => 500,
+}));
+
 const CONN = '1e93c204-5e78-4dca-bd5c-cbda632c91c9';
 const BOT = 'bot-1';
 const TENANT = 'tenant-1';
@@ -167,6 +173,7 @@ class Store {
           id: m.id,
           content: m.content,
           hasImage: false,
+          waMessageId: m.waMessageId ?? null,
         })),
         summary: null,
       })),
@@ -286,8 +293,11 @@ function world(
   const conversations = store.service();
   const debouncer = new MessageDebouncer();
   const tracker = new messageReceiptTracker();
+  const order: string[] = [];
   const socket = {
-    readMessages: later(() => undefined),
+    readMessages: later((_keys?: unknown) => {
+      order.push('read');
+    }),
     presenceSubscribe: later(() => undefined),
   };
   const sessionManager = { get: () => socket };
@@ -303,6 +313,7 @@ function world(
         },
       ) => {
         if (type !== EVENT_TYPES.CHANNEL_SEND_REQUESTED) return;
+        order.push('send');
         sends.push({
           to: payload.phoneNumber,
           content: payload.content,
@@ -509,6 +520,8 @@ function world(
   return {
     store,
     router,
+    socket,
+    order,
     sends,
     metrics,
     notifications,
@@ -865,9 +878,7 @@ describe('IA no disponible: la clienta siempre recibe respuesta y el equipo se e
     await settle(DELAY_MS + 2_000);
 
     expect(w.sends).toHaveLength(2);
-    expect(w.sends[1].content).toMatch(
-      /Sigo sin poder atenderte/,
-    );
+    expect(w.sends[1].content).toMatch(/Sigo sin poder atenderte/);
     expect(w.sends.every((s) => s.content.trim() !== '')).toBe(true);
     expect(w.notifications).toHaveLength(1);
   });
@@ -1459,5 +1470,39 @@ describe('Resultados de herramientas y traspaso (etapa 6)', () => {
     expect(stubborn.sends[0].content).toMatch(
       /^No pude completarlo: No hay horario disponible ese día\./,
     );
+  });
+});
+
+describe('Secuencia humana por turno', () => {
+  beforeEach(() => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('marca como leídos todos los mensajes del turno y solo después envía', async () => {
+    const w = world();
+    w.inbound(A, 'hola', 'WA-1');
+    await settle(1_000);
+    w.inbound(A, 'quiero una cita', 'WA-2');
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.socket.readMessages).toHaveBeenCalledTimes(1);
+    expect(w.socket.readMessages).toHaveBeenCalledWith([
+      { remoteJid: `${A}@s.whatsapp.net`, id: 'WA-1', fromMe: false },
+      { remoteJid: `${A}@s.whatsapp.net`, id: 'WA-2', fromMe: false },
+    ]);
+    expect(w.order).toEqual(['read', 'send']);
+  });
+
+  it('si el dueño está activo en ese chat no marca leído ni responde', async () => {
+    const w = world();
+    w.ownerReads(A);
+    w.inbound(A, 'mensaje de A', 'WA-9');
+    await settle(DELAY_MS - 2_000);
+
+    expect(w.socket.readMessages).not.toHaveBeenCalled();
+    expect(w.order).toEqual([]);
   });
 });

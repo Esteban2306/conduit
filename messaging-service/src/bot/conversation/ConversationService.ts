@@ -54,7 +54,12 @@ export interface ConversationForAI {
   /** Mensajes del negocio previos al primer turno del cliente en la ventana. */
   leadingBotMessages: string[];
   /** Lo que el cliente escribió desde la última respuesta: lo que hay que responder. */
-  pending: { id: string; content: string; hasImage: boolean }[];
+  pending: {
+    id: string;
+    content: string;
+    hasImage: boolean;
+    waMessageId: string | null;
+  }[];
   summary: string | null;
 }
 
@@ -350,6 +355,7 @@ export class ConversationService {
           content: true,
           hasImage: true,
           processedBy: true,
+          waMessageId: true,
           createdAt: true,
         },
       })
@@ -372,7 +378,12 @@ export class ConversationService {
           m.processedBy !== IGNORED_INBOUND &&
           (!closedAt || m.createdAt > closedAt),
       )
-      .map((m) => ({ id: m.id, content: m.content, hasImage: m.hasImage }));
+      .map((m) => ({
+        id: m.id,
+        content: m.content,
+        hasImage: m.hasImage,
+        waMessageId: m.waMessageId,
+      }));
 
     const answered = recent
       .slice(0, lastOutbound + 1)

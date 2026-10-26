@@ -13,6 +13,7 @@ import { normalizeWhatsAppAddress } from '../utils/whatsapp-address.util';
 import { isLidAddress, phoneToJid } from '../utils/jid.util';
 import { WhatsAppContactService } from '../contacts/WhatsAppContactService';
 import { SentMessageStore } from './SentMessageStore';
+import { typingMs } from './human-timing';
 
 @Injectable()
 export class BaileysPlugin implements IChannelPlugin {
@@ -123,24 +124,23 @@ export class BaileysPlugin implements IChannelPlugin {
       }
     }
 
-    return this.sendMessage(sock, payload);
+    return this.sendMessage(sock, payload, isConversation);
   }
 
   private async sendMessage(
     sock: WASocket,
     payload: ChannelSendPayload,
+    isConversation: boolean,
   ): Promise<ChannelSendResult> {
     try {
       const jid = isLidAddress(payload.to)
         ? payload.to
         : phoneToJid(payload.to);
-      const text = this.addInvisibleVariation(this.stripHtml(payload.content));
+      const clean = this.stripHtml(payload.content);
+      const text = isConversation ? clean : this.addInvisibleVariation(clean);
 
       await sock.sendPresenceUpdate('composing', jid);
-      const typingMs =
-        Math.min(text.length * 40, 4000) + this.randomInt(500, 1500);
-
-      await this.sleep(typingMs);
+      await this.sleep(typingMs(clean.length));
       await sock.sendPresenceUpdate('paused', jid);
 
       const response = await sock.sendMessage(jid, { text });

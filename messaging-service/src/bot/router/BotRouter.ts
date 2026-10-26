@@ -24,6 +24,10 @@ import { HandoffService } from '../handoff/Handoff.service';
 import { FAILURE_STREAKS_KEY } from '../handoff/handoff-defaults';
 import { promisesHumanContact } from '../handoff/handoff-promise';
 import { TurnBudget } from '../ai/turn-budget';
+import {
+  jittered,
+  readDelayMs,
+} from 'src/channels/whatsapp/baileys/human-timing';
 import { IntentHandler } from '../intent/IntentHandler';
 import { isTaskDone } from '../intent/intent-turn';
 import { AiOutageDigestService } from '../tools/AiOutageDigest.service';
@@ -79,6 +83,7 @@ export class BotRouter {
   private readonly AI_FALLBACK_COOLDOWN_MS = 30 * 60 * 1000;
   private readonly MAX_REPLIES_PER_CONTACT_HOUR = 30;
   private readonly RECOVERY_STAGGER_MS = 3000;
+  private readonly readGates = new Map<string, Promise<void>>();
   private readonly OWNER_DISCARD_RETRY_MS = 30_000;
   private static readonly TRUNCATED_RETRY_MAX_TOKENS = 2048;
 
@@ -265,7 +270,7 @@ export class BotRouter {
     };
     this.debouncer.schedule(
       sessionKey,
-      (botConfig.botResponseDelaySeconds ?? 15) * 1000,
+      jittered((botConfig.botResponseDelaySeconds ?? 15) * 1000),
       () => this.respond(turn),
     );
   }
@@ -387,6 +392,7 @@ export class BotRouter {
           await this.answerPending(turn);
         } while (this.rerunRequested.has(id));
       } finally {
+        this.readGates.delete(id);
         await this.conversationService.releaseLock(id);
       }
     } finally {
@@ -461,6 +467,11 @@ export class BotRouter {
       botConfig.maxHistoryMessages,
     );
     if (aiData.pending.length === 0) return;
+
+    this.readGates.set(
+      conversationId,
+      this.markTurnRead(turn, aiData.pending),
+    );
 
     const lastBotMessage = await this.conversationService.lastOutbound(
       botConfig.id,
@@ -1131,6 +1142,7 @@ export class BotRouter {
       );
       return;
     }
+    await this.readGates.get(turn.conversationId);
     await this.eventBus.publishAsync(EVENT_TYPES.CHANNEL_SEND_REQUESTED, {
       phoneNumber: turn.phoneNumber,
       content,
@@ -1395,6 +1407,36 @@ export class BotRouter {
     if (na.includes(nb) || nb.includes(na)) return true;
 
     return false;
+  }
+
+  /**
+   * Marca como leídos todos los mensajes del turno tras una pausa humana
+   * (1–4 s), en paralelo con la IA. La respuesta espera a esta lectura
+   * (`sendReply`), así que el orden es siempre leído → escribiendo → envío.
+   */
+  private async markTurnRead(
+    turn: TurnContext,
+    pending: Array<{ waMessageId: string | null }>,
+  ): Promise<void> {
+    try {
+      const ids = pending
+        .map((m) => m.waMessageId)
+        .filter((id): id is string => !!id);
+      const sock = this.sessionManager.get(turn.connectionId);
+      if (ids.length === 0 || !sock) return;
+
+      await this.sleep(readDelayMs());
+      const remoteJid = isLidAddress(turn.phoneNumber)
+        ? turn.phoneNumber
+        : phoneToJid(turn.phoneNumber);
+      await sock.readMessages(
+        ids.map((id) => ({ remoteJid, id, fromMe: false })),
+      );
+    } catch (err) {
+      this.logger.debug(
+        `no se puede marcar como leído: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   private async markAsRead(

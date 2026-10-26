@@ -15,6 +15,12 @@ import { ConversationService } from 'src/bot/conversation/ConversationService';
 import { ContextBuilder } from 'src/bot/prompt/ContextBuilder';
 import { BotRouter } from 'src/bot/router/BotRouter';
 
+jest.mock('src/channels/whatsapp/baileys/human-timing', () => ({
+  ...jest.requireActual('src/channels/whatsapp/baileys/human-timing'),
+  jittered: (ms: number) => ms,
+  readDelayMs: () => 500,
+}));
+
 describe('isIgnorableAcknowledgement', () => {
   it.each(['sí', 'si', 'no', 'ok', 'listo', 'dale', 'Sí.', '👍'])(
     'procesa "%s" cuando el bot hizo una pregunta',
@@ -233,6 +239,7 @@ describe('BotRouter — nunca deja mensajes sin responder', () => {
       logger: { debug: jest.fn(), warn: jest.fn(), log: jest.fn() },
       processingConversations: new Set<string>(),
       rerunRequested: new Set<string>(),
+      readGates: new Map<string, Promise<void>>(),
       conversationService,
       debouncer: { hasPending: jest.fn(), debounce: jest.fn() },
     });
