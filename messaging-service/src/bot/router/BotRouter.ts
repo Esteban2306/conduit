@@ -17,6 +17,7 @@ import {
   ToolExecutorService,
   AttachedImage,
 } from '../tools/ToolExecutor.service';
+import { IntentHandler } from '../intent/IntentHandler';
 import { AiOutageDigestService } from '../tools/AiOutageDigest.service';
 import { BotEscalationService } from '../tools/BotEscalation.service';
 import { ConversationSummarizer } from '../conversation/ConversationSummarizer';
@@ -92,6 +93,7 @@ export class BotRouter {
     private readonly summarizer: ConversationSummarizer,
     private readonly replyMetrics: ReplyMetricsService,
     private readonly aiOutageDigest: AiOutageDigestService,
+    private readonly intentHandler: IntentHandler,
   ) {}
 
   async route(
@@ -440,6 +442,37 @@ export class BotRouter {
     }
 
     if (await this.exceedsReplyBudget(turn, aiData.context)) return;
+
+    const intentText = aiData.pending
+      .filter((m) => !m.hasImage)
+      .map((m) => m.content)
+      .join('\n');
+    const intentOutcome = await this.intentHandler.handle({
+      tenantId,
+      botConfigId: botConfig.id,
+      conversationId,
+      phoneNumber,
+      connectionId,
+      text: aiData.pending.some((m) => m.hasImage) ? '' : intentText,
+      hasImage: aiData.pending.some((m) => m.hasImage),
+      turnId: aiData.pending[aiData.pending.length - 1].id,
+      lastBotMessage: await this.conversationService.lastOutbound(
+        botConfig.id,
+        phoneNumber,
+      ),
+      loadTools: () =>
+        this.toolDefinitionService.getActiveToolsForBot(botConfig.id),
+      send: async (reply) => {
+        this.publishResponseRequest(
+          conversationId,
+          botConfig.id,
+          intentText,
+          false,
+        );
+        await this.sendReply(turn, reply, 0);
+      },
+    });
+    if (intentOutcome.handled) return;
 
     if (!botConfig.aiModels || botConfig.aiModels.length === 0) {
       this.logger.error(

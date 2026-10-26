@@ -169,6 +169,7 @@ class Store {
       isBotPaused: jest.fn(() => false),
       countBotRepliesSince: later(() => 0),
       lastOutboundContent: later(() => null),
+      lastOutbound: later(() => null),
       findLastHumanMessage: later(
         (_bot: string, phone: string, cutoff: Date) => {
           const conv = this.conversationOf(phone);
@@ -225,6 +226,9 @@ function world(
   const metrics = new ReplyMetricsService();
   let promptMaxTokens = 400;
   let notifyResult = true;
+  const intentHandle = jest.fn((_turn?: unknown) =>
+    Promise.resolve({ handled: false }),
+  );
   const notifications: unknown[][] = [];
   const sends: Array<{ to: string; content: string; conversationId: string }> =
     [];
@@ -326,6 +330,7 @@ function world(
         notifications.push(args);
       },
     } as never,
+    { handle: intentHandle } as never,
   );
   (router as unknown as { logger: object }).logger = {
     debug: jest.fn(),
@@ -430,6 +435,7 @@ function world(
     sends,
     metrics,
     notifications,
+    intentHandle,
     setNotifyResult: (value: boolean) => {
       notifyResult = value;
     },
@@ -778,5 +784,45 @@ describe('IA no disponible: la clienta siempre recibe respuesta y el equipo se e
     expect(w.sends).toHaveLength(2);
     expect(w.sends[1].content).toMatch(/asistente no está disponible/);
     expect(w.notifications).toHaveLength(2);
+  });
+});
+
+describe('Despachador de intenciones antes de la IA (etapa 5)', () => {
+  beforeEach(() => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('si el despachador responde, la IA no se llama y nadie más recibe nada', async () => {
+    const w = world(new Store(), () => 'respuesta IA');
+    w.intentHandle.mockImplementationOnce((turn: any) =>
+      turn.send('respuesta fija').then(() => ({ handled: true })),
+    );
+    w.inbound(A, 'horario');
+    await settle(DELAY_MS + 2_000);
+    expect(w.aiCalls).toHaveLength(0);
+    expect(w.sends.map((s) => s.content)).toEqual(['respuesta fija']);
+  });
+
+  it('si el despachador no decide, el turno sigue a la IA con el mismo texto', async () => {
+    const w = world(new Store(), () => 'respuesta IA');
+    w.inbound(A, 'quiero agendar un masaje');
+    await settle(DELAY_MS + 2_000);
+    expect(w.intentHandle).toHaveBeenCalledTimes(1);
+    expect(w.aiCalls).toEqual(['quiero agendar un masaje']);
+    expect(w.sends.map((s) => s.content)).toEqual(['respuesta IA']);
+  });
+
+  it('recibe el texto de la ráfaga unido, el chat verificado y el último mensaje del bot', async () => {
+    const w = world(new Store(), () => 'ok');
+    w.inbound(A, 'hola');
+    w.inbound(A, 'quiero cancelar');
+    await settle(DELAY_MS + 2_000);
+    const turn = w.intentHandle.mock.calls[0][0] as any;
+    expect(turn.text).toBe('hola\nquiero cancelar');
+    expect(turn.phoneNumber).toBe(A);
+    expect(turn.hasImage).toBe(false);
   });
 });

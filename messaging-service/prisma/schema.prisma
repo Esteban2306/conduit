@@ -339,6 +339,7 @@ model BotConfig {
   externalIntegrations ExternalIntegration[]
   toolDefinitions ToolDefinition[]
   escalationContacts BotEscalationContact[]
+  quickReplies BotQuickReply[]
 }
 
 model BotAiSettings {
@@ -743,4 +744,26 @@ model BotEscalationContact {
   botConfig BotConfig @relation(fields: [botConfigId], references: [id])
 
   @@index([botConfigId])
+}
+
+enum IntentMode {
+  OFF
+  SHADOW
+  ACTIVE
+}
+
+model BotQuickReply {
+  id              String     @id @default(uuid())
+  botConfigId     String
+  intent          String
+  mode            IntentMode @default(SHADOW)
+  variants        Json       @default("{}")
+  cooldownSeconds Int        @default(0)
+  version         Int        @default(1)
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  botConfig BotConfig @relation(fields: [botConfigId], references: [id], onDelete: Cascade)
+
+  @@unique([botConfigId, intent])
 }

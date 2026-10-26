@@ -121,7 +121,7 @@ describe('isolated-env', () => {
 describe('evaluateScenario', () => {
   beforeEach(reset);
 
-  it('clasifica rutas: IA con modelo, ignorado sin respuesta, directo sin modelo', () => {
+  it('clasifica rutas: IA con modelo, ignorado sin respuesta, plantilla sin modelo ni herramienta', () => {
     llm(0);
     reply(0, 'Hola, ¿en qué te ayudo?', 5_000);
     reply(2, 'Recibimos tu mensaje', 25_000);
@@ -140,7 +140,7 @@ describe('evaluateScenario', () => {
     expect(result.turns.map((t) => t.route)).toEqual([
       'IA',
       'ignorado',
-      'directo',
+      'plantilla',
     ]);
     expect(result.pass).toBe(true);
   });
@@ -162,7 +162,7 @@ describe('evaluateScenario', () => {
     ];
     const result = run(scenario({}, turns), [turn(0), turn(1), turn(2)]);
     expect(result.failures).toEqual([
-      'turno 3: ruta directo, se esperaba ignorado',
+      'turno 3: ruta plantilla, se esperaba ignorado',
     ]);
   });
 

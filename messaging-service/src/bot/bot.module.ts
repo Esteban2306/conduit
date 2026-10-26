@@ -22,6 +22,11 @@ import { OpenRouterProvider } from './ai/providers/OpenRouterProvider';
 import { PromptModule } from './prompt/Prompt.module';
 import { ToolDefinitionService } from './tools/ToolDefinitionService';
 import { ToolExecutorService } from './tools/ToolExecutor.service';
+import { IntentConfigService } from './intent/IntentConfig.service';
+import { IntentHandler } from './intent/IntentHandler';
+import { IntentResolver } from './intent/IntentResolver';
+import { IntentMetricsService } from './intent/intent-metrics.service';
+import { QuickReplyController } from './intent/QuickReply.controller';
 import { AiOutageDigestService } from './tools/AiOutageDigest.service';
 import { BotEscalationService } from './tools/BotEscalation.service';
 import { SecurityModule } from 'src/shared/security/security.module';
@@ -38,7 +43,11 @@ import { ConversationAdminController } from './admin/ConversationAdmin.controlle
     SecurityModule,
     OrchestratorModule,
   ],
-  controllers: [ToolDefinitionController, ConversationAdminController],
+  controllers: [
+    ToolDefinitionController,
+    ConversationAdminController,
+    QuickReplyController,
+  ],
   providers: [
     ConversationService,
     ConversationSummarizer,
@@ -61,6 +70,10 @@ import { ConversationAdminController } from './admin/ConversationAdmin.controlle
     ToolExecutorService,
     BotEscalationService,
     AiOutageDigestService,
+    IntentResolver,
+    IntentConfigService,
+    IntentMetricsService,
+    IntentHandler,
     AiErrorClassifier,
   ],
   exports: [
@@ -71,6 +84,7 @@ import { ConversationAdminController } from './admin/ConversationAdmin.controlle
     AiModelSelectorService,
     MessageDebouncer,
     ReplyMetricsService,
+    IntentMetricsService,
   ],
 })
 export class BotModule {}

@@ -536,6 +536,21 @@ export class ConversationService {
   }
 
   /** Último mensaje enviado al cliente (bot, humano o proactivo). */
+  async lastOutbound(
+    botConfigId: string,
+    phoneNumber: string,
+  ): Promise<{ content: string; at: Date } | null> {
+    const message = await this.prisma.botMessage.findFirst({
+      where: {
+        direction: MessageDirection.OUTBOUND,
+        conversation: { botConfigId, phoneNumber },
+      },
+      orderBy: { createdAt: 'desc' },
+      select: { content: true, createdAt: true },
+    });
+    return message ? { content: message.content, at: message.createdAt } : null;
+  }
+
   async lastOutboundContent(
     botConfigId: string,
     phoneNumber: string,

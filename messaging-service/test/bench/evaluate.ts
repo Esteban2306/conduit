@@ -155,7 +155,13 @@ export function evaluateScenario(input: EvaluateInput): ScenarioResult {
     if (!turn.settled) flags.push('timeout');
 
     turn.route =
-      llm.length > 0 ? 'IA' : replies.length > 0 ? 'directo' : 'ignorado';
+      llm.length > 0
+        ? 'IA'
+        : replies.length > 0
+          ? tools.length > 0
+            ? 'directo'
+            : 'plantilla'
+          : 'ignorado';
     turn.llmCalls = llm.length;
     turn.inputTokens = llm.reduce(
       (a, c) => a + c.input + c.cacheWrite + c.cacheRead,
@@ -183,7 +189,11 @@ export function evaluateScenario(input: EvaluateInput): ScenarioResult {
   }
 
   const failures: string[] = [];
-  const expect = scenario.expect;
+  const activeMode = process.env.INTENT_DEFAULT_MODE === 'ACTIVE';
+  const expect =
+    activeMode && scenario.expectActive
+      ? scenario.expectActive
+      : scenario.expect;
   const toolNames = [
     ...new Set([
       ...ownTools.map((t) => t.name),
@@ -195,6 +205,7 @@ export function evaluateScenario(input: EvaluateInput): ScenarioResult {
 
   turns.forEach((t, i) => {
     let wanted =
+      (activeMode ? scenario.turns[i]?.expectActive?.route : undefined) ??
       scenario.turns[i]?.expect?.route ??
       t.expect?.route ??
       (i === 0 ? expect.route : undefined);

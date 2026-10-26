@@ -44,3 +44,21 @@ Verificado con corridas parciales posteriores (`BENCH_ONLY`), no con una corrida
 ## Diferencias con producción y no verificado
 
 Igual que en la línea base anterior: sin limitador de envío ni "escribiendo…", topes del modelo levantados, `BusinessSettings` ficticios, una conexión simulada por trabajador, descarga de imágenes fallida por diseño. No verificado: entrega real por WhatsApp, LID y reconexiones, latencia real hacia Leonice, topes por minuto bajo concurrencia real.
+
+## Etapa 5 — despachador de intenciones (2026-10-26)
+
+Misma muestra (56 conversaciones, 69 turnos), modelo real, dos modos del despachador. Corridas: `2026-10-26T16-06-49` (SOMBRA) y `2026-10-26T16-18-32` (ACTIVO, `INTENT_DEFAULT_MODE=ACTIVE`).
+
+| Métrica | SOMBRA (= comportamiento anterior) | ACTIVO |
+|---|---|---|
+| Turnos sin IA (directo/plantilla) | 0 de 69 | 17 de 69 (24,6 %) |
+| Tokens de entrada, total | 1 115 615 | 806 933 (−27,7 %) |
+| Tokens de salida, total | 16 354 | 11 726 (−28,3 %) |
+| Costo total del banco | $0,0327 | $0,0228 (−30,5 %) |
+| Aciertos | 49/52 | 49/52 |
+| Latencia mensaje→respuesta p50, turnos sin IA | — | 8,1 s (casi todo es la espera de 8 s del debounce) |
+
+- SOMBRA no cambia ningún turno: todas las rutas siguen en IA y el despachador solo registra 15 clasificaciones.
+- Los fallos (b10, b13, b40) son la variación conocida del modelo en turnos que siguen yendo a la IA; b40 falla igual en ambos modos.
+- `expectActive` en `scenarios.json` fija lo esperado cuando la intención responde sin IA (p. ej. cancelar entrega el enlace en vez de cancelar en el chat).
+- Los casos b48, b49, b54 y b55 son negativos: parecen una intención pero deben ir a la IA, y en modo ACTIVO lo hacen.

@@ -11,6 +11,7 @@ export interface TurnSpec {
   messages: MessageSpec[];
   concurrentWithPrevious?: boolean;
   expect?: { route?: string };
+  expectActive?: { route?: string };
 }
 
 export interface Scenario {
@@ -29,6 +30,7 @@ export interface Scenario {
   };
   turns: TurnSpec[];
   expect: ScenarioExpect;
+  expectActive?: ScenarioExpect;
 }
 
 export interface ScenarioExpect {
