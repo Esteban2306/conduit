@@ -17,6 +17,7 @@ import {
   ToolExecutorService,
   AttachedImage,
 } from '../tools/ToolExecutor.service';
+import { AiOutageDigestService } from '../tools/AiOutageDigest.service';
 import { BotEscalationService } from '../tools/BotEscalation.service';
 import { ConversationSummarizer } from '../conversation/ConversationSummarizer';
 import { isIgnorableAcknowledgement } from './acknowledgement';
@@ -90,6 +91,7 @@ export class BotRouter {
     private readonly botEscalation: BotEscalationService,
     private readonly summarizer: ConversationSummarizer,
     private readonly replyMetrics: ReplyMetricsService,
+    private readonly aiOutageDigest: AiOutageDigestService,
   ) {}
 
   async route(
@@ -799,8 +801,9 @@ export class BotRouter {
   /**
    * La IA no respondió (sin saldo, proveedor caído, sin modelos). La clienta
    * siempre recibe una respuesta: el aviso completo la primera vez y uno más
-   * corto si vuelve a fallar dentro de la ventana. El equipo se notifica
-   * hasta que el aviso realmente salga; después no se repite en la ventana.
+   * corto si vuelve a fallar dentro de la ventana. El equipo recibe un solo
+   * aviso agrupado por bot (AiOutageDigestService), que reintenta si nadie
+   * pudo ser notificado.
    * Los mensajes quedan guardados para cuando la IA vuelva.
    */
   private async handleAiUnavailable(
@@ -821,24 +824,14 @@ export class BotRouter {
       0,
     );
 
-    let teamNotified = inWindow && context.aiFallbackNotified === true;
+    const teamNotified = inWindow && context.aiFallbackNotified === true;
     if (!teamNotified) {
-      try {
-        teamNotified = Boolean(
-          await this.botEscalation.notifyToolFailure(
-            turn.tenantId,
-            turn.botConfig.id,
-            'TECHNICAL_ERROR',
-            'asistente de IA',
-            turn.phoneNumber,
-            maskSecrets(detail),
-          ),
-        );
-      } catch (error) {
-        this.logger.error(
-          `No fue posible avisar al equipo de la falla de IA: ${maskError(error)}`,
-        );
-      }
+      this.aiOutageDigest.report(
+        turn.tenantId,
+        turn.botConfig.id,
+        turn.phoneNumber,
+        maskSecrets(detail),
+      );
     }
 
     await this.conversationService.updateContext(turn.conversationId, {
@@ -846,7 +839,7 @@ export class BotRouter {
         aiFallbackAt: inWindow
           ? context.aiFallbackAt
           : new Date(now).toISOString(),
-        aiFallbackNotified: teamNotified,
+        aiFallbackNotified: true,
       },
     });
   }
