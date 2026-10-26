@@ -50,7 +50,15 @@ const WARMUP_CONFIG = {
 interface FailureResult {
   success: false;
   retryable?: boolean;
+  errorCode?: string;
   error?: string;
+}
+
+export interface LimiterHydration {
+  conversationSentAt: number[];
+  campaignSentAt: number[];
+  riskLevel: number;
+  riskUpdatedAt: Date | null;
 }
 
 export enum JobPriority {
@@ -153,6 +161,8 @@ export class BaileysRateLimiter {
   private reconnectThrottleUntil: number | null = null;
   private readonly RECONNECT_THROTTLE_MS = 60000;
 
+  private onRiskChange: ((level: number) => void) | null = null;
+
   constructor(
     private readonly connectionId: string,
     initialLevel: WarmupLevel = WarmupLevel.NORMAL,
@@ -166,6 +176,46 @@ export class BaileysRateLimiter {
     this.nextBreakAt = this.randomInt(
       config.breakEveryMin,
       config.breakEveryMax,
+    );
+  }
+
+  setRiskListener(listener: (level: number) => void): void {
+    this.onRiskChange = listener;
+  }
+
+  /**
+   * Reconstruye lo que el limitador sabía antes de un reinicio: cuántos
+   * mensajes salieron en la última hora y en el día, cuándo salió el último y
+   * el riesgo acumulado (que baja un nivel por hora transcurrida). Sin esto,
+   * reiniciar equivale a empezar con los contadores en cero.
+   */
+  hydrate(state: LimiterHydration): void {
+    const now = Date.now();
+    const hourAgo = now - 3_600_000;
+    this.conversationTimestamps = state.conversationSentAt.filter(
+      (t) => t > hourAgo,
+    );
+    this.sentTimestamps = state.campaignSentAt.filter((t) => t > hourAgo);
+
+    const today = this.clock.at().dateKey;
+    this.dailySentCount = state.campaignSentAt.filter(
+      (t) => this.clock.at(new Date(t)).dateKey === today,
+    ).length;
+
+    const all = [...state.conversationSentAt, ...state.campaignSentAt];
+    if (all.length > 0) this.lastSendAt = Math.max(...all);
+
+    const decayed = state.riskUpdatedAt
+      ? Math.floor(
+          (now - state.riskUpdatedAt.getTime()) / this.RISK_RESET_INTERVAL,
+        )
+      : 0;
+    this.riskLevel = Math.min(
+      this.MAX_RISK_LEVEL,
+      Math.max(1, state.riskLevel - decayed),
+    );
+    this.logger.log(
+      `Estado recuperado: ${this.conversationTimestamps.length} respuestas/h, ${this.sentTimestamps.length} campañas/h, ${this.dailySentCount} campañas hoy, riesgo ${this.riskLevel}/${this.MAX_RISK_LEVEL}`,
     );
   }
 
@@ -391,6 +441,7 @@ export class BaileysRateLimiter {
       this.handleFailure(job, {
         retryable: job.retryable && result.retryable !== false,
         resolveWith: result,
+        countsAsRisk: result.errorCode !== 'WHATSAPP_NOT_CONNECTED',
       });
       return;
     }
@@ -410,13 +461,22 @@ export class BaileysRateLimiter {
 
   private handleFailure(
     job: QueuedJob,
-    opts: { retryable: boolean; rejectWith?: unknown; resolveWith?: unknown },
+    opts: {
+      retryable: boolean;
+      rejectWith?: unknown;
+      resolveWith?: unknown;
+      countsAsRisk?: boolean;
+    },
   ): void {
-    this.recentFailures++;
-    this.logger.warn(`Fallo en job. Fallos recientes: ${this.recentFailures}`);
+    if (opts.countsAsRisk !== false) {
+      this.recentFailures++;
+      this.logger.warn(
+        `Fallo en job. Fallos recientes: ${this.recentFailures}`,
+      );
 
-    if (this.recentFailures >= this.FAILURE_THRESHOLD) {
-      this.escalateRisk('múltiples fallos de envío');
+      if (this.recentFailures >= this.FAILURE_THRESHOLD) {
+        this.escalateRisk('múltiples fallos de envío');
+      }
     }
 
     const canRetry = opts.retryable && job.attempts < job.maxAttempts;
@@ -489,9 +549,15 @@ export class BaileysRateLimiter {
     );
   }
 
+  private setRisk(level: number): void {
+    if (level === this.riskLevel) return;
+    this.riskLevel = level;
+    this.onRiskChange?.(level);
+  }
+
   private escalateRisk(reason: string): void {
     if (this.riskLevel < this.MAX_RISK_LEVEL) {
-      this.riskLevel++;
+      this.setRisk(this.riskLevel + 1);
       this.recentFailures = 0;
       this.recentDisconnects = 0;
       this.logger.warn(
@@ -503,7 +569,7 @@ export class BaileysRateLimiter {
   private onSuccessfulSend(): void {
     const totalToday = this.dailySentCount + this.conversationTimestamps.length;
     if (totalToday > 0 && totalToday % 10 === 0 && this.riskLevel > 1) {
-      this.riskLevel--;
+      this.setRisk(this.riskLevel - 1);
       this.logger.log(
         `Riesgo reducido a ${this.riskLevel}/${this.MAX_RISK_LEVEL} por envíos exitosos`,
       );
@@ -519,7 +585,7 @@ export class BaileysRateLimiter {
       this.lastRiskReset = now;
 
       if (this.riskLevel > 1) {
-        this.riskLevel = Math.max(1, this.riskLevel - 1);
+        this.setRisk(Math.max(1, this.riskLevel - 1));
         this.logger.log(
           `Riesgo reducido pasivamente a ${this.riskLevel}/${this.MAX_RISK_LEVEL}`,
         );
@@ -564,7 +630,7 @@ export class BaileysRateLimiter {
       this.lastDayRest = today;
 
       if (this.riskLevel > 2) {
-        this.riskLevel = 2;
+        this.setRisk(2);
         this.logger.log(
           `Riesgo reseteado al amanecer: ${this.riskLevel}/${this.MAX_RISK_LEVEL}`,
         );

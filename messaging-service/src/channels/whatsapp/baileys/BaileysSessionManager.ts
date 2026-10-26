@@ -68,8 +68,6 @@ export class BaileysSessionManager implements OnApplicationShutdown {
 
   /** Cachés que deben sobrevivir a las reconexiones del socket. */
   private readonly msgRetryCaches = new Map<string, TtlCacheStore>();
-  /** Conexiones que ya abrieron al menos una vez en este proceso. */
-  private readonly openedOnce = new Set<string>();
   private readonly chatAddresses = new Map<string, string>();
 
   private readonly reconnectAttempts = new Map<string, number>();
@@ -218,6 +216,11 @@ export class BaileysSessionManager implements OnApplicationShutdown {
       connectionId,
       connection.warmupLevel as unknown as WarmupLevel,
     );
+    await this.limiter.hydrate(connectionId).catch((error: unknown) => {
+      this.logger.warn(
+        `No fue posible recuperar el estado del limitador de ${connectionId}: ${this.errorMessage(error)}`,
+      );
+    });
 
     const { state: authState, saveCreds } = await usePrismaAuthState(
       this.prisma,
@@ -407,12 +410,7 @@ export class BaileysSessionManager implements OnApplicationShutdown {
           state.connectedAt = Date.now();
           state.lastReconnectAt = Date.now();
           state.connected = true;
-          // El estado se recrea con cada socket: lo que dice si es una
-          // reconexión es haber abierto antes en este proceso.
-          if (this.openedOnce.has(connectionId)) {
-            this.limiter.enterReconnectThrottle(connectionId);
-          }
-          this.openedOnce.add(connectionId);
+          this.limiter.enterReconnectThrottle(connectionId);
 
           const phoneNumber =
             socket.user?.id?.split('@')[0].split(':')[0] ?? null;

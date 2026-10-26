@@ -89,6 +89,7 @@ export class BaileysPlugin implements IChannelPlugin {
         priority: isConversation
           ? JobPriority.CONVERSATION
           : JobPriority.CAMPAIGN,
+        maxAttempts: 1,
       },
     );
   }

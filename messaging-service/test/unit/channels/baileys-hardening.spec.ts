@@ -200,6 +200,7 @@ describe('BaileysSessionManager — cierres de conexión y lease', () => {
       connections as any,
       {
         getOrCreate: jest.fn(),
+        hydrate: jest.fn().mockResolvedValue(undefined),
         enterReconnectThrottle: jest.fn(),
         reportDisconnect: jest.fn(),
       } as any,
