@@ -64,30 +64,40 @@ export class TemplateRepository {
     });
   }
 
+  /**
+   * La restricción única (bot, tipo, isActive) admite una sola fila inactiva:
+   * se borran las inactivas antes de desactivar la vigente, o la tercera
+   * edición de un prompt fallaba con 409.
+   */
   async upsert(
     botConfigId: string,
     type: PromptTemplateType,
     content: string,
   ): Promise<BotPromptTemplate> {
-    await this.prisma.botPromptTemplate.updateMany({
-      where: { botConfigId, type },
-      data: { isActive: false },
-    });
+    return this.prisma.$transaction(async (tx) => {
+      const last = await tx.botPromptTemplate.findFirst({
+        where: { botConfigId, type },
+        orderBy: { version: 'desc' },
+        select: { version: true },
+      });
 
-    const last = await this.prisma.botPromptTemplate.findFirst({
-      where: { botConfigId, type },
-      orderBy: { version: 'desc' },
-      select: { version: true },
-    });
+      await tx.botPromptTemplate.deleteMany({
+        where: { botConfigId, type, isActive: false },
+      });
+      await tx.botPromptTemplate.updateMany({
+        where: { botConfigId, type },
+        data: { isActive: false },
+      });
 
-    return this.prisma.botPromptTemplate.create({
-      data: {
-        botConfigId,
-        type,
-        content,
-        version: (last?.version ?? 0) + 1,
-        isActive: true,
-      },
+      return tx.botPromptTemplate.create({
+        data: {
+          botConfigId,
+          type,
+          content,
+          version: (last?.version ?? 0) + 1,
+          isActive: true,
+        },
+      });
     });
   }
 
