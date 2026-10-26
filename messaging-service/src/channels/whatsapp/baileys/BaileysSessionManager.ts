@@ -18,6 +18,7 @@ import { usePrismaAuthState } from './BaileysAuthState';
 import { messageReceiptTracker } from './MessageReceiptTracker';
 import { BaileysRateLimiterRegistry } from './BaileysRateLimiterRegistry';
 import { BotSentMessageRegistry } from 'src/channels/whatsapp/baileys/BotSentMessageRegistry';
+import { OpsAlertService } from '../alerts/OpsAlert.service';
 import { WhatsAppContactService } from '../contacts/WhatsAppContactService';
 import { SentMessageStore } from './SentMessageStore';
 import { TtlCacheStore } from './TtlCacheStore';
@@ -33,6 +34,7 @@ import { chatKey } from '../utils/chat-key';
 interface SocketState {
   botConfigId: string | null;
   tenantId: string;
+  label: string;
   reconnectCount: number;
   lastReconnectAt: number | null;
   connectedAt: number | null;
@@ -70,6 +72,9 @@ export class BaileysSessionManager implements OnApplicationShutdown {
   private readonly msgRetryCaches = new Map<string, TtlCacheStore>();
   private readonly chatAddresses = new Map<string, string>();
 
+  private readonly downTimers = new Map<string, NodeJS.Timeout>();
+  private readonly DOWN_ALERT_MS = 10 * 60 * 1000;
+
   private readonly reconnectAttempts = new Map<string, number>();
   private readonly streakStartedAt = new Map<string, number>();
   private readonly stabilityTimers = new Map<string, NodeJS.Timeout>();
@@ -91,6 +96,7 @@ export class BaileysSessionManager implements OnApplicationShutdown {
     private readonly botSentRegistry: BotSentMessageRegistry,
     private readonly contacts: WhatsAppContactService,
     private readonly sentMessages: SentMessageStore,
+    private readonly alerts: OpsAlertService,
   ) {
     this.leaseTimer = setInterval(() => {
       void this.renewLeases();
@@ -153,6 +159,7 @@ export class BaileysSessionManager implements OnApplicationShutdown {
     }
 
     this.clearRetryState(connectionId);
+    this.clearDownAlert(connectionId);
     const retry = this.leaseRetryTimers.get(connectionId);
     if (retry) clearTimeout(retry);
     this.leaseRetryTimers.delete(connectionId);
@@ -265,6 +272,7 @@ export class BaileysSessionManager implements OnApplicationShutdown {
     const state: SocketState = {
       botConfigId: connection.botConfigId ?? null,
       tenantId: connection.tenantId,
+      label: connection.name,
       reconnectCount: 0,
       lastReconnectAt: null,
       connectedAt: null,
@@ -355,8 +363,24 @@ export class BaileysSessionManager implements OnApplicationShutdown {
         const ageMs = Date.now() - Number(message.messageTimestamp ?? 0) * 1000;
         if (ageMs > MAX_MESSAGE_AGE_MS) {
           this.logger.debug(
-            `Mensaje descartado en ${connectionId}: antigüedad de ${Math.round(ageMs / 1000)}s supera el máximo permitido (posible backlog mal etiquetado por WhatsApp como 'notify').`,
+            `Mensaje en ${connectionId}: antigüedad de ${Math.round(ageMs / 1000)}s supera el máximo permitido; se guarda sin responder.`,
           );
+          await this.botRouter
+            ?.recordMissedInbound(
+              message,
+              state.botConfigId,
+              connectionId,
+              state.tenantId,
+            )
+            .then((phone) => {
+              if (phone)
+                this.alerts.report(
+                  state.tenantId,
+                  'undelivered',
+                  `${phone}: mensaje recibido hace ${Math.round(ageMs / 60000)} min sin responder`,
+                );
+            })
+            .catch(() => {});
           continue;
         }
 
@@ -410,6 +434,7 @@ export class BaileysSessionManager implements OnApplicationShutdown {
           state.connectedAt = Date.now();
           state.lastReconnectAt = Date.now();
           state.connected = true;
+          this.clearDownAlert(connectionId);
           this.limiter.enterReconnectThrottle(connectionId);
 
           const phoneNumber =
@@ -479,6 +504,11 @@ export class BaileysSessionManager implements OnApplicationShutdown {
             this.logger.error(
               `Conexión ${connectionId}: sesión cerrada desde el teléfono (401). Se requiere escanear un QR nuevo.`,
             );
+            this.alertTeam(
+              connectionId,
+              state,
+              'la sesión se cerró desde el teléfono (401); hay que escanear un QR nuevo y mientras tanto el bot no responde',
+            );
             await this.haltConnection(connectionId, state, 'ERROR');
             return;
           }
@@ -490,6 +520,11 @@ export class BaileysSessionManager implements OnApplicationShutdown {
                 `que WhatsApp asocia a automatización. Revisa que no haya otro Conduit usando la misma ` +
                 `base de datos y reconecta manualmente.`,
             );
+            this.alertTeam(
+              connectionId,
+              state,
+              'otra instancia o dispositivo abrió la misma sesión (440); se detuvo la reconexión automática. Revisa que no haya dos Conduit con la misma base de datos',
+            );
             await this.haltConnection(connectionId, state, 'ERROR');
             return;
           }
@@ -498,6 +533,11 @@ export class BaileysSessionManager implements OnApplicationShutdown {
             this.logger.error(
               `Conexión ${connectionId}: WhatsApp rechazó la cuenta (403). Posible bloqueo del número. ` +
                 `Se detiene toda actividad de esta conexión.`,
+            );
+            this.alertTeam(
+              connectionId,
+              state,
+              'WhatsApp rechazó la cuenta (403): posible bloqueo del número. Se detuvo toda la actividad',
             );
             await this.haltConnection(connectionId, state, 'BANNED');
             return;
@@ -563,6 +603,11 @@ export class BaileysSessionManager implements OnApplicationShutdown {
               .catch(() => {});
 
             this.reportRiskOncePerCooldown(connectionId, code);
+            this.alertTeam(
+              connectionId,
+              state,
+              `entró en cuarentena tras ${attempts} fallos de conexión seguidos (código ${code ?? 'desconocido'}); requiere reconexión manual`,
+            );
 
             state.stopped = true;
             this.states.delete(connectionId);
@@ -572,10 +617,14 @@ export class BaileysSessionManager implements OnApplicationShutdown {
 
           this.reportDisconnect(connectionId, code);
 
-          const backoff = Math.min(
-            5000 * Math.pow(2, Math.max(attempts - 1, 0)),
-            this.MAX_BACKOFF_MS,
+          const backoff = Math.round(
+            Math.min(
+              5000 * Math.pow(2, Math.max(attempts - 1, 0)),
+              this.MAX_BACKOFF_MS,
+            ) *
+              (0.8 + Math.random() * 0.4),
           );
+          this.scheduleDownAlert(connectionId, state);
 
           this.logger.debug(
             `Reintento #${attempts} para ${connectionId} en ${Math.round(backoff / 1000)}s`,
@@ -657,6 +706,41 @@ export class BaileysSessionManager implements OnApplicationShutdown {
     return chatKey(connectionId, jid);
   }
 
+  private alertTeam(
+    connectionId: string,
+    state: SocketState,
+    text: string,
+  ): void {
+    this.alerts.report(
+      state.tenantId,
+      'connection',
+      `${state.label}: ${text}`,
+      { immediate: true, dedupeKey: `${connectionId}:${text}` },
+    );
+  }
+
+  private scheduleDownAlert(connectionId: string, state: SocketState): void {
+    if (this.downTimers.has(connectionId)) return;
+    const timer = setTimeout(() => {
+      this.downTimers.delete(connectionId);
+      if (!state.connected && !state.stopped) {
+        this.alertTeam(
+          connectionId,
+          state,
+          `sin conexión desde hace ${Math.round(this.DOWN_ALERT_MS / 60000)} minutos; los mensajes de los clientes esperan sin respuesta`,
+        );
+      }
+    }, this.DOWN_ALERT_MS);
+    timer.unref();
+    this.downTimers.set(connectionId, timer);
+  }
+
+  private clearDownAlert(connectionId: string): void {
+    const timer = this.downTimers.get(connectionId);
+    if (timer) clearTimeout(timer);
+    this.downTimers.delete(connectionId);
+  }
+
   /** Detiene la conexión sin reintentar y deja el estado para intervención humana. */
   private async haltConnection(
     connectionId: string,
@@ -721,6 +805,14 @@ export class BaileysSessionManager implements OnApplicationShutdown {
           this.logger.error(
             `Conexión ${connectionId}: otra instancia tomó la sesión. Se cierra el socket local.`,
           );
+          const state = this.states.get(connectionId);
+          if (state) {
+            this.alertTeam(
+              connectionId,
+              state,
+              'otra instancia de Conduit tomó la sesión; se cerró el socket local para evitar expulsiones (440)',
+            );
+          }
           await this.stop(connectionId);
           this.scheduleLeaseRetry(connectionId, heldUntil);
         }

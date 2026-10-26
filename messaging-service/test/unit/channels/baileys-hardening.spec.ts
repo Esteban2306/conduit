@@ -34,12 +34,10 @@ class FakeSocket {
   };
   onWhatsApp = jest.fn().mockResolvedValue([{ exists: true }]);
   sendPresenceUpdate = jest.fn().mockResolvedValue(undefined);
-  sendMessage = jest
-    .fn()
-    .mockResolvedValue({
-      key: { id: 'WAID1' },
-      message: { conversation: 'x' },
-    });
+  sendMessage = jest.fn().mockResolvedValue({
+    key: { id: 'WAID1' },
+    message: { conversation: 'x' },
+  });
   end = jest.fn().mockResolvedValue(undefined);
 }
 
@@ -172,6 +170,7 @@ describe('BaileysPlugin — endurecimiento', () => {
 describe('BaileysSessionManager — cierres de conexión y lease', () => {
   let connections: Record<string, jest.Mock>;
   let manager: BaileysSessionManager;
+  let alerts: { report: jest.Mock };
 
   beforeEach(() => {
     fakeSockets.length = 0;
@@ -181,6 +180,7 @@ describe('BaileysSessionManager — cierres de conexión y lease', () => {
         tenantId: 't1',
         botConfigId: null,
         warmupLevel: 'NORMAL',
+        name: 'Línea del spa',
       }),
       acquireSessionLease: jest.fn().mockResolvedValue(null),
       releaseSessionLease: jest.fn().mockResolvedValue(undefined),
@@ -194,6 +194,7 @@ describe('BaileysSessionManager — cierres de conexión y lease', () => {
         deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
       },
     };
+    alerts = { report: jest.fn() };
     manager = new BaileysSessionManager(
       {} as any,
       prisma as any,
@@ -208,6 +209,7 @@ describe('BaileysSessionManager — cierres de conexión y lease', () => {
       { consume: jest.fn() } as any,
       { recordInbound: jest.fn(), findAddressByLid: jest.fn() } as any,
       { find: jest.fn() } as any,
+      alerts as any,
     );
   });
 
@@ -258,5 +260,89 @@ describe('BaileysSessionManager — cierres de conexión y lease', () => {
     for (let i = 0; i < 5; i++) await flush();
 
     expect(fakeSockets).toHaveLength(2);
+  });
+
+  it('401, 440 y 403 avisan al equipo de inmediato por un canal que no es WhatsApp', async () => {
+    for (const [code, fragment] of [
+      [401, 'QR nuevo'],
+      [440, 'misma sesión'],
+      [403, 'bloqueo'],
+    ] as const) {
+      fakeSockets.length = 0;
+      alerts.report.mockClear();
+      await manager.start('c1');
+      close(code);
+      await flush();
+      await flush();
+      expect(alerts.report).toHaveBeenCalledWith(
+        't1',
+        'connection',
+        expect.stringContaining(fragment),
+        expect.objectContaining({ immediate: true }),
+      );
+      expect(alerts.report.mock.calls[0][2]).toContain('Línea del spa');
+      await manager.stop('c1');
+    }
+  });
+
+  it('una caída recuperable avisa solo si pasan 10 minutos sin conexión, y no si vuelve antes', async () => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+    try {
+      await manager.start('c1');
+      fakeSockets[0].ev.emit('connection.update', { connection: 'open' });
+      await flush();
+      close(428);
+      await jest.advanceTimersByTimeAsync(9 * 60_000);
+      expect(alerts.report).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(2 * 60_000);
+      expect(alerts.report).toHaveBeenCalledWith(
+        't1',
+        'connection',
+        expect.stringContaining('sin conexión desde hace 10 minutos'),
+        expect.anything(),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('un mensaje demasiado viejo se guarda sin responder y se avisa, en vez de perderse', async () => {
+    connections.findForSessionManager.mockResolvedValue({
+      id: 'c1',
+      tenantId: 't1',
+      botConfigId: 'bot1',
+      warmupLevel: 'NORMAL',
+      name: 'Línea del spa',
+    });
+    const botRouter = {
+      route: jest.fn().mockResolvedValue(undefined),
+      recordMissedInbound: jest.fn().mockResolvedValue('573001112233'),
+      recoverPending: jest.fn().mockResolvedValue(0),
+    };
+    manager.setBotRouter(botRouter as any);
+    await manager.start('c1');
+    fakeSockets[0].ev.emit('messages.upsert', {
+      type: 'notify',
+      messages: [
+        {
+          key: {
+            remoteJid: '573001112233@s.whatsapp.net',
+            id: 'OLD1',
+            fromMe: false,
+          },
+          messageTimestamp: Math.floor(Date.now() / 1000) - 3 * 3600,
+          message: { conversation: 'hola, ¿siguen atendiendo?' },
+        },
+      ],
+    });
+    await flush();
+    await flush();
+    expect(botRouter.route).not.toHaveBeenCalled();
+    expect(botRouter.recordMissedInbound).toHaveBeenCalledTimes(1);
+    expect(alerts.report).toHaveBeenCalledWith(
+      't1',
+      'undelivered',
+      expect.stringContaining('573001112233'),
+    );
   });
 });

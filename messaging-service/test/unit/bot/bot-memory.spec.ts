@@ -75,16 +75,19 @@ describe('isIgnorableAcknowledgement', () => {
 
 describe('ConversationService.getConversationForAI', () => {
   function serviceWith(
-    messages: Array<[string, string, boolean?, string?]>,
+    messages: Array<[string, string, boolean?, string?, string?]>,
     context: Record<string, unknown> = {},
     queued: Array<{ groupId: string; content: string; createdAt: Date }> = [],
   ) {
-    const rows = messages.map(([direction, content, hasImage, at], index) => ({
-      direction,
-      content,
-      hasImage: hasImage ?? false,
-      createdAt: new Date(at ?? Date.UTC(2026, 9, 10, 12, index)),
-    }));
+    const rows = messages.map(
+      ([direction, content, hasImage, at, processedBy], index) => ({
+        direction,
+        processedBy,
+        content,
+        hasImage: hasImage ?? false,
+        createdAt: new Date(at ?? Date.UTC(2026, 9, 10, 12, index)),
+      }),
+    );
     const prisma = {
       conversation: {
         findUnique: jest.fn().mockResolvedValue({
@@ -135,6 +138,17 @@ describe('ConversationService.getConversationForAI', () => {
     expect(data.history[1].content).toBe(
       'Claro, ¿para qué día?\n\nTengo el viernes libre.',
     );
+  });
+
+  it('un mensaje que llegó demasiado tarde para responderse solo no queda pendiente para el bot', async () => {
+    const service = serviceWith([
+      ['INBOUND', 'hola', false, undefined, 'expired_reply'],
+      ['INBOUND', '¿siguen ahí?', false, undefined, 'expired_reply'],
+    ]);
+
+    const data = await service.getConversationForAI('c1', 6);
+
+    expect(data.pending).toEqual([]);
   });
 
   it('separa lo pendiente (todo lo escrito desde la última respuesta)', async () => {

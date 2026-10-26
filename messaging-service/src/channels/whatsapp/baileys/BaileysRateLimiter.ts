@@ -13,9 +13,9 @@ export enum WarmupLevel {
 /**
  * Límites por nivel de calentamiento. Los `maxPerHour`/`maxPerDay`, pausas
  * y ráfagas aplican solo al carril de campaña (mensajes que inicia el
- * negocio). `conversationMaxPerHour` es un techo de seguridad para las
- * respuestas a clientes que escribieron: no debería alcanzarse en uso
- * normal, existe para cortar un bucle desbocado.
+ * negocio). `conversationMaxPerHour` es el ritmo habitual de respuestas a
+ * clientes que escribieron: al acercarse se espacian los envíos, al pasarlo
+ * salen a un ritmo lento y solo el 150 % bloquea hasta que la hora lo libere.
  */
 const WARMUP_CONFIG = {
   [WarmupLevel.FRESH]: {
@@ -125,6 +125,7 @@ export class BaileysRateLimiter {
   private readonly GLOBAL_GAP_MS = 3000;
   private readonly CONVERSATION_GAP_MIN_MS = 1500;
   private readonly CONVERSATION_GAP_MAX_MS = 4000;
+  private readonly CONVERSATION_SOFT_CEILING = 1.5;
   private readonly CONVERSATION_RECONNECT_GAP_MIN_MS = 8000;
   private readonly CONVERSATION_RECONNECT_GAP_MAX_MS = 15000;
 
@@ -354,20 +355,29 @@ export class BaileysRateLimiter {
     const now = Date.now();
     const config = WARMUP_CONFIG[this.warmupLevel];
 
-    const oneHourAgo = now - 3600000;
-    this.conversationTimestamps = this.conversationTimestamps.filter(
-      (t) => t > oneHourAgo,
-    );
-    if (this.conversationTimestamps.length >= config.conversationMaxPerHour) {
+    const used = this.recentConversationCount();
+    const usual = config.conversationMaxPerHour;
+    const ceiling = Math.floor(usual * this.CONVERSATION_SOFT_CEILING);
+    const natural = Math.max(this.nextConversationAt, this.globalGapEnd());
+
+    if (used >= ceiling) {
       const oldest = Math.min(...this.conversationTimestamps);
       return {
         ms: oldest + 3600000 - now + 1000,
-        reason: `techo de seguridad de conversación (${config.conversationMaxPerHour}/h)`,
+        reason: `techo absoluto de conversación (${ceiling}/h)`,
       };
     }
 
-    const notBefore = Math.max(this.nextConversationAt, this.globalGapEnd());
-    return { ms: Math.max(0, notBefore - now), reason: 'separación natural' };
+    if (used >= usual) {
+      const spacing = Math.ceil(3600000 / ceiling);
+      const notBefore = Math.max(natural, this.lastSendAt + spacing);
+      return {
+        ms: Math.max(0, notBefore - now),
+        reason: `sobre el ritmo habitual (${used}/${usual} por hora): se espacia a 1 cada ${Math.round(spacing / 1000)}s`,
+      };
+    }
+
+    return { ms: Math.max(0, natural - now), reason: 'separación natural' };
   }
 
   private campaignWait(): Wait {
@@ -528,6 +538,25 @@ export class BaileysRateLimiter {
     return Math.floor(withWarmup * riskMultiplier * jitter);
   }
 
+  private recentConversationCount(): number {
+    const oneHourAgo = Date.now() - 3600000;
+    this.conversationTimestamps = this.conversationTimestamps.filter(
+      (t) => t > oneHourAgo,
+    );
+    return this.conversationTimestamps.length;
+  }
+
+  /**
+   * Con poca carga la separación es la natural; a partir de la mitad del
+   * ritmo habitual por hora se alarga hasta 3 veces, así el límite se
+   * alcanza despacio en vez de chocar con él.
+   */
+  private conversationLoadFactor(): number {
+    const usual = WARMUP_CONFIG[this.warmupLevel].conversationMaxPerHour;
+    const ratio = Math.min(this.recentConversationCount() / usual, 1);
+    return ratio < 0.5 ? 1 : 1 + (ratio - 0.5) * 4;
+  }
+
   /** Separación tras una respuesta de conversación. */
   private calculateConversationGap(): number {
     const base = this.isInReconnectThrottle()
@@ -539,7 +568,9 @@ export class BaileysRateLimiter {
           this.CONVERSATION_GAP_MIN_MS,
           this.CONVERSATION_GAP_MAX_MS,
         );
-    return Math.floor(base * Math.pow(1.25, this.riskLevel - 1));
+    return Math.floor(
+      base * Math.pow(1.25, this.riskLevel - 1) * this.conversationLoadFactor(),
+    );
   }
 
   private isInReconnectThrottle(): boolean {

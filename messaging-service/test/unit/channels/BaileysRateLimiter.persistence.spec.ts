@@ -16,26 +16,50 @@ describe('BaileysRateLimiter: estado que sobrevive al reinicio', () => {
   const limiter = (level = WarmupLevel.NORMAL) =>
     new BaileysRateLimiter('conn-persist-1', level);
 
-  it('tras un reinicio respeta el techo por hora de respuestas ya enviadas', async () => {
+  it('tras un reinicio sigue contando lo enviado: sobre el ritmo habitual espacia, en el techo absoluto espera', async () => {
     jest.useFakeTimers({ now: MORNING });
-    const rl = limiter(WarmupLevel.FRESH);
-    rl.hydrate({
-      conversationSentAt: Array.from({ length: 60 }, (_, i) =>
-        minutesAgo(59 - i * 0.9),
+    const soft = limiter(WarmupLevel.FRESH);
+    soft.hydrate({
+      conversationSentAt: [
+        ...Array.from({ length: 59 }, (_, i) => minutesAgo(59 - i * 0.9)),
+        MORNING.getTime() - 5_000,
+      ],
+      campaignSentAt: [],
+      riskLevel: 1,
+      riskUpdatedAt: null,
+    });
+    const started = Date.now();
+    let softAt = 0;
+    void soft.enqueue(
+      () => {
+        softAt = Date.now();
+        return ok();
+      },
+      { priority: JobPriority.CONVERSATION },
+    );
+    await jest.advanceTimersByTimeAsync(3 * 60_000);
+    expect(softAt - started).toBeGreaterThanOrEqual(30_000);
+    expect(softAt - started).toBeLessThanOrEqual(60_000);
+
+    const hard = limiter(WarmupLevel.FRESH);
+    hard.hydrate({
+      conversationSentAt: Array.from(
+        { length: 90 },
+        (_, i) => Date.now() - (59 - i * 0.6) * 60_000,
       ),
       campaignSentAt: [],
       riskLevel: 1,
       riskUpdatedAt: null,
     });
     const sent: number[] = [];
-    void rl.enqueue(
+    void hard.enqueue(
       () => {
         sent.push(Date.now());
         return ok();
       },
       { priority: JobPriority.CONVERSATION },
     );
-    await jest.advanceTimersByTimeAsync(30_000);
+    await jest.advanceTimersByTimeAsync(20_000);
     expect(sent).toEqual([]);
     await jest.advanceTimersByTimeAsync(2 * 60_000);
     expect(sent).toHaveLength(1);

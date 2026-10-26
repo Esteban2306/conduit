@@ -16,7 +16,7 @@ const DIGEST_WINDOW_MS = 60_000;
 const DEDUPE_MS = 10 * 60_000;
 const TITLES: Record<OpsAlertKind, string> = {
   connection: 'WhatsApp: problema con la conexión',
-  undelivered: 'WhatsApp: respuestas que no pudieron entregarse',
+  undelivered: 'WhatsApp: mensajes sin responder o respuestas sin entregar',
 };
 
 /**

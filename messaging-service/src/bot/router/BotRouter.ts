@@ -42,7 +42,10 @@ import {
 } from 'src/channels/whatsapp/utils/jid.util';
 import { chatKey } from 'src/channels/whatsapp/utils/chat-key';
 import { maskError, maskSecrets } from 'src/shared/security/mask-secrets';
-import { IGNORED_INBOUND } from '../conversation/ConversationService';
+import {
+  EXPIRED_REPLY,
+  IGNORED_INBOUND,
+} from '../conversation/ConversationService';
 import {
   EXPECTED_FAILURES_BEFORE_OFFER,
   FailureStreaks,
@@ -468,10 +471,7 @@ export class BotRouter {
     );
     if (aiData.pending.length === 0) return;
 
-    this.readGates.set(
-      conversationId,
-      this.markTurnRead(turn, aiData.pending),
-    );
+    this.readGates.set(conversationId, this.markTurnRead(turn, aiData.pending));
 
     const lastBotMessage = await this.conversationService.lastOutbound(
       botConfig.id,
@@ -664,7 +664,8 @@ export class BotRouter {
               content: {
                 error: true,
                 status: 'TURN_TIMEOUT',
-                message: 'Se agotó el tiempo del turno; no se ejecutó la acción.',
+                message:
+                  'Se agotó el tiempo del turno; no se ejecutó la acción.',
               },
             };
           }
@@ -1017,10 +1018,7 @@ export class BotRouter {
 
     await this.sendReply(
       turn,
-      await this.handoffService.aiUnavailableText(
-        turn.botConfig.id,
-        inWindow,
-      ),
+      await this.handoffService.aiUnavailableText(turn.botConfig.id, inWindow),
       0,
     );
 
@@ -1296,6 +1294,47 @@ export class BotRouter {
     }
 
     return { content: input.content, replaced: false };
+  }
+
+  /**
+   * Mensaje que llegó con demasiada antigüedad para responderse solo (por
+   * ejemplo tras una caída larga): se guarda para que el equipo lo vea y
+   * queda fuera de lo pendiente del bot. Devuelve el chat afectado.
+   */
+  async recordMissedInbound(
+    message: WAMessage,
+    botConfigId: string,
+    connectionId: string,
+    tenantId: string,
+  ): Promise<string | null> {
+    const jid = message.key.remoteJidAlt ?? message.key.remoteJid;
+    const messageId = message.key.id;
+    if (!jid || !messageId || isIgnorableJid(jid)) return null;
+
+    const { text, hasImage } = this.extractContent(message);
+    if (!text && !hasImage) return null;
+
+    const botConfig = await this.botConfigService.getConfigForRouting(
+      botConfigId,
+      tenantId,
+    );
+    if (!botConfig) return null;
+
+    const phoneNumber = conversationAddress(jid);
+    const conversation = await this.conversationService.getOrCreate({
+      botConfigId: botConfig.id,
+      phoneNumber,
+      tenantId: botConfig.tenantId,
+      connectionId,
+    });
+    const saved = await this.conversationService.saveInbound(
+      conversation.id,
+      text ?? '[imagen]',
+      hasImage,
+      connectionId,
+      { waMessageId: messageId, processedBy: EXPIRED_REPLY },
+    );
+    return saved.created ? phoneNumber : null;
   }
 
   async registerHumanMessage(
