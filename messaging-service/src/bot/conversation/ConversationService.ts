@@ -32,6 +32,8 @@ function closedAtOf(context: ConversationContext | null): Date | null {
 /** Mínimo de mensajes recientes que el modelo ve completos. */
 export const MIN_HISTORY_WINDOW = 12;
 export const IGNORED_INBOUND = 'ignored';
+export const EXPIRED_REPLY = 'expired_reply';
+const NOT_PENDING_MARKERS = [IGNORED_INBOUND, EXPIRED_REPLY];
 /** Recorte por mensaje: suficiente para listas de horarios o precios. */
 const MAX_MESSAGE_CHARS = 1500;
 /** Acciones (llamadas a herramientas) que se recuerdan por conversación. */
@@ -225,6 +227,41 @@ export class ConversationService {
     });
   }
 
+  /**
+   * Respuestas ya decididas que esperan salir por la bandeja de salida: para
+   * el modelo y para "qué falta por responder" ya cuentan como dichas, así un
+   * mensaje nuevo no provoca una segunda respuesta a lo mismo.
+   */
+  private async queuedReplies(conversationId: string) {
+    const rows = await this.prisma.outboundReply.findMany({
+      where: {
+        conversationId,
+        status: { in: ['PENDING', 'SENDING'] },
+      },
+      orderBy: [{ createdAt: 'asc' }, { seq: 'asc' }],
+      select: { groupId: true, content: true, createdAt: true },
+    });
+    const groups = new Map<string, { content: string[]; createdAt: Date }>();
+    for (const row of rows) {
+      const group = groups.get(row.groupId);
+      if (group) group.content.push(row.content);
+      else
+        groups.set(row.groupId, {
+          content: [row.content],
+          createdAt: row.createdAt,
+        });
+    }
+    return [...groups.entries()].map(([groupId, g]) => ({
+      id: groupId,
+      direction: MessageDirection.OUTBOUND as string,
+      content: g.content.join('\n\n'),
+      hasImage: false,
+      processedBy: 'bot',
+      waMessageId: null as string | null,
+      createdAt: g.createdAt,
+    }));
+  }
+
   async saveInbound(
     conversationId: string,
     content: string,
@@ -280,7 +317,7 @@ export class ConversationService {
         SELECT m.direction, m."createdAt"
         FROM "BotMessage" m
         WHERE m."conversationId" = c.id
-          AND NOT (m.direction = ${MessageDirection.INBOUND} AND m."processedBy" = ${IGNORED_INBOUND})
+          AND NOT (m.direction = ${MessageDirection.INBOUND} AND m."processedBy" IN (${Prisma.join(NOT_PENDING_MARKERS)}))
         ORDER BY m."createdAt" DESC
         LIMIT 1
       ) last ON true
@@ -288,6 +325,10 @@ export class ConversationService {
         AND c."lastConnectionId" = ${connectionId}
         AND last.direction = ${MessageDirection.INBOUND}
         AND last."createdAt" > ${since}
+        AND NOT EXISTS (
+          SELECT 1 FROM "OutboundReply" o
+          WHERE o."conversationId" = c.id AND o.status::text IN ('PENDING', 'SENDING')
+        )
       ORDER BY last."createdAt" ASC
     `;
   }
@@ -360,6 +401,8 @@ export class ConversationService {
         },
       })
     ).reverse();
+    recent.push(...(await this.queuedReplies(conversationId)));
+    recent.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
     const closedAt = closedAtOf(conversation.context as ConversationContext);
 
     let lastOutbound = -1;
@@ -375,7 +418,7 @@ export class ConversationService {
       .filter(
         (m) =>
           m.direction === MessageDirection.INBOUND &&
-          m.processedBy !== IGNORED_INBOUND &&
+          !NOT_PENDING_MARKERS.includes(m.processedBy) &&
           (!closedAt || m.createdAt > closedAt),
       )
       .map((m) => ({

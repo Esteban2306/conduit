@@ -24,6 +24,9 @@ const EVENT_STATUS: Record<WebhookEvent, MessageStatus> = {
   'message.cancelled': MessageStatus.CANCELLED,
 };
 
+/** Eventos del sistema (no ligados a un mensaje): alertas operativas. */
+export type SystemWebhookEvent = 'ops.alert';
+
 export interface WebhookPayload {
   event: WebhookEvent;
   timestamp: string;
@@ -115,6 +118,55 @@ export class WebhookDispatcher {
       this.logger.error(
         `No fue posible registrar el webhook ${event} del mensaje ${messageId}: ${error instanceof Error ? error.message : String(error)}`,
       );
+    }
+  }
+
+  /**
+   * Alertas operativas del tenant (sesión de WhatsApp caída, respuestas sin
+   * entregar). Mismas garantías que `dispatch`: cuerpo congelado, firmado y
+   * reintentado; nunca lanza.
+   */
+  async dispatchSystem(
+    tenantId: string,
+    event: SystemWebhookEvent,
+    data: Record<string, unknown>,
+  ): Promise<number> {
+    try {
+      const webhooks = await this.prisma.webhookEndpoint.findMany({
+        where: { tenantId, isActive: true },
+        select: { id: true, events: true },
+      });
+      const relevant = webhooks.filter((w) => {
+        const events = Array.isArray(w.events) ? (w.events as string[]) : [];
+        return events.includes(event) || events.includes('*');
+      });
+      const payload = {
+        event,
+        timestamp: new Date().toISOString(),
+        data,
+      };
+
+      for (const webhook of relevant) {
+        const delivery = await this.prisma.webhookDelivery.create({
+          data: {
+            webhookId: webhook.id,
+            eventType: event,
+            payload: payload as unknown as Prisma.InputJsonValue,
+            attempts: 0,
+          },
+        });
+        await this.webhookQueue.add(
+          'deliver',
+          { deliveryId: delivery.id },
+          { jobId: `wh-${delivery.id}` },
+        );
+      }
+      return relevant.length;
+    } catch (error) {
+      this.logger.error(
+        `No fue posible registrar el webhook ${event} del tenant ${tenantId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return 0;
     }
   }
 }

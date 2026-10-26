@@ -77,6 +77,7 @@ describe('ConversationService.getConversationForAI', () => {
   function serviceWith(
     messages: Array<[string, string, boolean?, string?]>,
     context: Record<string, unknown> = {},
+    queued: Array<{ groupId: string; content: string; createdAt: Date }> = [],
   ) {
     const rows = messages.map(([direction, content, hasImage, at], index) => ({
       direction,
@@ -98,12 +99,43 @@ describe('ConversationService.getConversationForAI', () => {
         // El servicio pide orden descendente.
         findMany: jest.fn().mockResolvedValue([...rows].reverse()),
       },
+      outboundReply: { findMany: jest.fn().mockResolvedValue(queued) },
     };
     return new ConversationService(
       prisma as any,
       { publish: jest.fn() } as any,
     );
   }
+
+  it('una respuesta en la bandeja de salida cuenta como dicha: no queda nada pendiente y el modelo la ve', async () => {
+    const service = serviceWith(
+      [
+        ['INBOUND', 'hola', false, '2026-10-10T12:00:00.000Z'],
+        ['INBOUND', 'quiero reservar', false, '2026-10-10T12:01:00.000Z'],
+      ],
+      {},
+      [
+        {
+          groupId: 'g1',
+          content: 'Claro, ¿para qué día?',
+          createdAt: new Date('2026-10-10T12:02:00.000Z'),
+        },
+        {
+          groupId: 'g1',
+          content: 'Tengo el viernes libre.',
+          createdAt: new Date('2026-10-10T12:02:00.001Z'),
+        },
+      ],
+    );
+
+    const data = await service.getConversationForAI('c1', 6);
+
+    expect(data.pending).toEqual([]);
+    expect(data.history.map((h) => h.role)).toEqual(['user', 'assistant']);
+    expect(data.history[1].content).toBe(
+      'Claro, ¿para qué día?\n\nTengo el viernes libre.',
+    );
+  });
 
   it('separa lo pendiente (todo lo escrito desde la última respuesta)', async () => {
     const service = serviceWith([

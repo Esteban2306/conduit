@@ -504,7 +504,7 @@ model WebhookEndpoint {
 model WebhookDelivery {
   id           String    @id @default(uuid())
   webhookId    String
-  messageId    String
+  messageId    String?
   eventType    String
   payload      Json?
   httpStatus   Int?
@@ -515,7 +515,7 @@ model WebhookDelivery {
   createdAt    DateTime  @default(now())
 
   webhook WebhookEndpoint @relation(fields: [webhookId], references: [id])
-  message Message         @relation(fields: [messageId], references: [id])
+  message Message?        @relation(fields: [messageId], references: [id])
 }
 
 model DeadLetterMessage {
@@ -622,6 +622,9 @@ model WhatsAppConnection {
   // Lease de la sesión: una sola instancia de Conduit puede tener el socket.
   sessionOwner      String?
   sessionLeaseUntil DateTime?
+  // Nivel de riesgo anti-ban del limitador, para que sobreviva a los reinicios.
+  riskLevel         Int       @default(1)
+  riskUpdatedAt     DateTime?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
@@ -795,4 +798,43 @@ model BotIntent {
   botConfig BotConfig @relation(fields: [botConfigId], references: [id], onDelete: Cascade)
 
   @@unique([botConfigId, key])
+}
+
+enum OutboundReplyStatus {
+  PENDING
+  SENDING
+  SENT
+  FAILED
+  EXPIRED
+}
+
+/// Bandeja de salida de las respuestas del bot: cada burbuja se guarda antes
+/// de enviarse y un despachador la entrega en orden, con reintentos.
+model OutboundReply {
+  id             String              @id @default(uuid())
+  tenantId       String
+  connectionId   String
+  conversationId String?
+  phoneNumber    String
+  groupId        String
+  seq            Int
+  bubbleCount    Int
+  content        String              @db.Text
+  tokensUsed     Int                 @default(0)
+  imageVerified  Boolean?
+  waMessageId    String?
+  idempotencyKey String              @unique
+  status         OutboundReplyStatus @default(PENDING)
+  attempts       Int                 @default(0)
+  nextAttemptAt  DateTime            @default(now())
+  expiresAt      DateTime
+  lastError      String?
+  sentAt         DateTime?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  @@index([connectionId, status, nextAttemptAt])
+  @@index([conversationId, status])
+  @@index([groupId])
+  @@index([status, expiresAt])
 }

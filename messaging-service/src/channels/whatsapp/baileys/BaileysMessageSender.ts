@@ -10,6 +10,8 @@ import { EventBusService } from 'src/infra/events/event.service';
 import type { DomainEvent } from 'src/infra/events/interface/event.interface';
 import { isBlank, splitBubbles } from 'src/bot/router/reply-guard';
 import { ReplyMetricsService } from 'src/bot/router/reply-metrics.service';
+import { OutboundReplyService } from '../outbox/OutboundReply.service';
+import { OutboundReplyDispatcher } from '../outbox/OutboundReplyDispatcher';
 
 @Injectable()
 export class BaileysMessageSender {
@@ -20,6 +22,8 @@ export class BaileysMessageSender {
     private readonly conversationService: ConversationService,
     private readonly eventBus: EventBusService,
     private readonly replyMetrics: ReplyMetricsService,
+    private readonly outbox: OutboundReplyService,
+    private readonly dispatcher: OutboundReplyDispatcher,
   ) {}
 
   @OnEvent(EVENT_TYPES.CHANNEL_SEND_REQUESTED)
@@ -36,12 +40,25 @@ export class BaileysMessageSender {
       tokensUsed,
       imageVerified,
       sentBy,
+      tenantId,
     } = event.payload;
 
     if (isBlank(content)) {
       this.replyMetrics.increment('blockedEmpty');
       this.logger.error(`Envío vacío bloqueado para ${phoneNumber}`);
       return { success: false, error: 'EMPTY_MESSAGE' };
+    }
+
+    if (sentBy !== 'human' && connectionId) {
+      return this.queueReply({
+        tenantId,
+        connectionId,
+        conversationId,
+        phoneNumber,
+        content,
+        tokensUsed,
+        imageVerified,
+      });
     }
 
     try {
@@ -117,6 +134,46 @@ export class BaileysMessageSender {
         success: false,
         error: error instanceof Error ? error.message : 'Error desconocido',
       };
+    }
+  }
+
+  /**
+   * Las respuestas del bot no se envían aquí: se guardan en la bandeja de
+   * salida y el despachador las entrega en orden, con reintentos y caducidad.
+   * Así una desconexión no las pierde ni las duplica.
+   */
+  private async queueReply(input: {
+    tenantId?: string;
+    connectionId: string;
+    conversationId: string | null;
+    phoneNumber: string;
+    content: string;
+    tokensUsed?: number;
+    imageVerified?: boolean;
+  }): Promise<{ success: boolean; error?: string }> {
+    try {
+      const tenantId =
+        input.tenantId ?? (await this.outbox.tenantOf(input.connectionId));
+      if (!tenantId) {
+        return { success: false, error: 'CONNECTION_NOT_FOUND' };
+      }
+      await this.outbox.enqueue({
+        tenantId,
+        connectionId: input.connectionId,
+        conversationId: input.conversationId,
+        phoneNumber: input.phoneNumber,
+        bubbles: splitBubbles(input.content),
+        tokensUsed: input.tokensUsed,
+        imageVerified: input.imageVerified,
+      });
+      this.dispatcher.kick();
+      return { success: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(
+        `No se pudo guardar la respuesta para ${input.phoneNumber} en la bandeja de salida: ${message}`,
+      );
+      return { success: false, error: message };
     }
   }
 }

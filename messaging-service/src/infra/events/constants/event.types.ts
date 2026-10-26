@@ -87,6 +87,7 @@ export interface EventPayloadMap {
     connectionId: string | null;
     tokensUsed?: number;
     imageVerified?: boolean;
+    tenantId?: string;
     /** Quién responde: el bot (default) o una persona desde el panel. */
     sentBy?: 'bot' | 'human';
   };

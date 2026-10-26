@@ -1,3 +1,8 @@
+import { OutboundReplyService } from './whatsapp/outbox/OutboundReply.service';
+import { OutboundReplyDispatcher } from './whatsapp/outbox/OutboundReplyDispatcher';
+import { OpsAlertService } from './whatsapp/alerts/OpsAlert.service';
+import { WebhookModule } from 'src/webhooks/webhook.module';
+import { OrchestratorModule } from 'src/core/orchestrator/orchestrator.module';
 import { forwardRef, Module, OnModuleInit } from '@nestjs/common';
 import { GmailResendPlugin } from './email/resend/GmailResendPlugin';
 import { SmtpPlugin } from './email/smtp/SmtpBrevoPlugin';
@@ -25,6 +30,8 @@ import { SentMessageStore } from './whatsapp/baileys/SentMessageStore';
     EventModule,
     AuthModule,
     WhatsAppContactModule,
+    WebhookModule,
+    OrchestratorModule,
   ],
   controllers: [ConnectionController],
   providers: [
@@ -41,6 +48,9 @@ import { SentMessageStore } from './whatsapp/baileys/SentMessageStore';
     messageReceiptTracker,
     BotSentMessageRegistry,
     SentMessageStore,
+    OutboundReplyService,
+    OutboundReplyDispatcher,
+    OpsAlertService,
   ],
   exports: [
     ChannelPluginFactory,

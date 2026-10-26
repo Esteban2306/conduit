@@ -143,7 +143,13 @@ export class BaileysPlugin implements IChannelPlugin {
       await this.sleep(typingMs(clean.length));
       await sock.sendPresenceUpdate('paused', jid);
 
-      const response = await sock.sendMessage(jid, { text });
+      const response = payload.messageId
+        ? await sock.sendMessage(
+            jid,
+            { text },
+            { messageId: payload.messageId },
+          )
+        : await sock.sendMessage(jid, { text });
 
       if (response?.key?.id) {
         this.botSentRegistry.register(response.key.id);

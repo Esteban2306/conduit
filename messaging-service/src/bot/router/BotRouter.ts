@@ -1148,6 +1148,7 @@ export class BotRouter {
       content,
       conversationId: turn.conversationId,
       connectionId: turn.connectionId,
+      tenantId: turn.tenantId,
       tokensUsed,
       imageVerified,
     });

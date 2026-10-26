@@ -32,6 +32,7 @@ export const configValidationSchema = Joi.object({
   SMTP_USER: Joi.string().optional(),
   SMTP_PASS: Joi.string().optional(),
   SMTP_FROM_EMAIL: Joi.string().email().optional(),
+  OPS_ALERT_EMAILS: Joi.string().allow('').optional(),
   SMTP_FROM_NAME: Joi.string().optional(),
 
   WA_CHANNEL_MODE: Joi.string()
@@ -97,6 +98,9 @@ export interface AppConfig {
     fromEmail: string;
     fromName: string;
   };
+  alerts: {
+    opsEmails: string[];
+  };
   whatsapp: {
     channelMode: 'baileys' | 'greenapi' | 'walink';
     warmupLevel: string;
@@ -154,6 +158,12 @@ export const configFactory = (): AppConfig => ({
     pass: process.env.SMTP_PASS ?? '',
     fromEmail: process.env.SMTP_FROM_EMAIL ?? '',
     fromName: process.env.SMTP_FROM_NAME ?? '',
+  },
+  alerts: {
+    opsEmails: (process.env.OPS_ALERT_EMAILS ?? '')
+      .split(',')
+      .map((email) => email.trim())
+      .filter(Boolean),
   },
   whatsapp: {
     channelMode: process.env.WA_CHANNEL_MODE as

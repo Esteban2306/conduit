@@ -11,6 +11,9 @@ export interface ChannelSendPayload {
 
   priority?: 'conversation' | 'campaign';
 
+  /** Id de mensaje fijo: un reintento reenvía el mismo id y WhatsApp no lo duplica. */
+  messageId?: string;
+
   meta?: Record<string, unknown>;
 }
 
