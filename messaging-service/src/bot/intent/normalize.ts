@@ -37,3 +37,22 @@ export function normalizeText(raw: string): string {
 export function tokenCount(normalized: string): number {
   return normalized === '' ? 0 : normalized.split(' ').length;
 }
+
+const GREETING_TOKENS =
+  /^(?:hola|holi|hey|buenas|buenos dias|buen dia|buenas tardes|buenas noches|saludos|que tal|como estas|como esta|que mas|amiga|amigo)(?: |$)/;
+
+/**
+ * Quita los saludos del inicio ("hola buenas tardes quiero cancelar" →
+ * "quiero cancelar"). Devuelve null si no había saludo o no queda nada más.
+ */
+export function stripLeadingGreeting(normalized: string): string | null {
+  let rest = normalized;
+  let removed = false;
+  for (let i = 0; i < 4; i++) {
+    const match = GREETING_TOKENS.exec(rest);
+    if (!match) break;
+    rest = rest.slice(match[0].length).trim();
+    removed = true;
+  }
+  return removed && rest !== '' ? rest : null;
+}

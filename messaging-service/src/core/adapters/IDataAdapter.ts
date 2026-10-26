@@ -25,6 +25,7 @@ export interface MessagePayload {
     scheduledAt?: string;
     priority?: 'low' | 'normal' | 'high';
     webhookUrl?: string;
+    category?: 'TRANSACTIONAL' | 'MARKETING';
   };
   meta?: Record<string, unknown>;
 }

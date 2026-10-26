@@ -22,14 +22,17 @@ import { OpenRouterProvider } from './ai/providers/OpenRouterProvider';
 import { PromptModule } from './prompt/Prompt.module';
 import { ToolDefinitionService } from './tools/ToolDefinitionService';
 import { ToolExecutorService } from './tools/ToolExecutor.service';
-import { IntentConfigService } from './intent/IntentConfig.service';
+import { HardRulesService } from './intent/HardRules.service';
+import { IntentAiClassifier } from './intent/IntentAiClassifier';
+import { IntentRepository } from './intent/IntentRepository.service';
 import { IntentHandler } from './intent/IntentHandler';
 import { IntentResolver } from './intent/IntentResolver';
 import { IntentMetricsService } from './intent/intent-metrics.service';
-import { QuickReplyController } from './intent/QuickReply.controller';
+import { IntentController } from './intent/Intent.controller';
 import { AiOutageDigestService } from './tools/AiOutageDigest.service';
 import { BotEscalationService } from './tools/BotEscalation.service';
 import { SecurityModule } from 'src/shared/security/security.module';
+import { WhatsAppContactModule } from 'src/channels/whatsapp/contacts/whatsapp-contact.module';
 import { OrchestratorModule } from 'src/core/orchestrator/orchestrator.module';
 import { AiErrorClassifier } from './ai/AiErrorClassifier';
 import { ToolDefinitionController } from './tools/ToolDefinition.controller';
@@ -42,11 +45,12 @@ import { ConversationAdminController } from './admin/ConversationAdmin.controlle
     PromptModule,
     SecurityModule,
     OrchestratorModule,
+    WhatsAppContactModule,
   ],
   controllers: [
     ToolDefinitionController,
     ConversationAdminController,
-    QuickReplyController,
+    IntentController,
   ],
   providers: [
     ConversationService,
@@ -71,7 +75,9 @@ import { ConversationAdminController } from './admin/ConversationAdmin.controlle
     BotEscalationService,
     AiOutageDigestService,
     IntentResolver,
-    IntentConfigService,
+    IntentRepository,
+    HardRulesService,
+    IntentAiClassifier,
     IntentMetricsService,
     IntentHandler,
     AiErrorClassifier,

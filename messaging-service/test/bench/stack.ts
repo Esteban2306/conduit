@@ -96,6 +96,7 @@ export async function startLeonice(
     CONDUIT_INTEGRATION_ID: conduit.integrationId,
     CONDUIT_INTEGRATION_SECRET: conduit.integrationSecret,
     CONDUIT_TOOLS_PUBLIC_URL: `http://127.0.0.1:${BENCH.leonicePort}/api/v1`,
+    CONDUIT_INTENTS_MODE: process.env.BENCH_INTENTS_MODE ?? 'SHADOW',
     TS_NODE_PROJECT: path.join(LEONICE_ROOT, 'tsconfig.json'),
     TS_NODE_TRANSPILE_ONLY: 'true',
     TS_NODE_COMPILER_OPTIONS:

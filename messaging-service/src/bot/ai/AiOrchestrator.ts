@@ -82,6 +82,54 @@ export class AiOrchestrator {
     );
   }
 
+  /**
+   * Clasificación mínima: una llamada sin herramientas ni razonamiento y con
+   * muy pocos tokens de salida. Usa el modelo de rol CLASSIFIER del bot y, si
+   * no tiene, el de conversación.
+   */
+  async classify(input: {
+    botConfigId: string;
+    systemPrompt: string;
+    userMessage: string;
+    maxTokens?: number;
+  }): Promise<OrchestratorResult> {
+    const modelConfig =
+      (await this.selector.selectModel(
+        input.botConfigId,
+        AiModelRole.CLASSIFIER,
+      )) ??
+      (await this.selector.selectModel(
+        input.botConfigId,
+        AiModelRole.CONVERSATION,
+      ));
+    if (!modelConfig) {
+      throw new BadRequestException('Sin modelos de IA disponibles');
+    }
+
+    return this.executeWithFallback(
+      modelConfig,
+      input.botConfigId,
+      modelConfig.role,
+      async (config) => {
+        const provider = this.providerFactory.getProvider(
+          config.provider as AiProviderType,
+        );
+        const result = await provider.generateText({
+          prompt: input.userMessage,
+          systemPrompt: input.systemPrompt,
+          reasoningMode: 'OFF',
+          history: [],
+          model: resolveModel(config.provider as AiProviderType, config.model),
+          apiKey: await this.selector.resolveApiKey(config),
+          baseUrl: config.baseUrl ?? '',
+          maxTokens: input.maxTokens ?? 12,
+          temperature: 0,
+        });
+        return { result, config };
+      },
+    );
+  }
+
   async analyzeImage(input: AnalyzeImageInput): Promise<OrchestratorResult> {
     const modelConfig = await this.selector.selectModel(
       input.botConfigId,

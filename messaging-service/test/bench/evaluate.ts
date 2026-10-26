@@ -189,7 +189,7 @@ export function evaluateScenario(input: EvaluateInput): ScenarioResult {
   }
 
   const failures: string[] = [];
-  const activeMode = process.env.INTENT_DEFAULT_MODE === 'ACTIVE';
+  const activeMode = process.env.BENCH_INTENTS_MODE === 'ACTIVE';
   const expect =
     activeMode && scenario.expectActive
       ? scenario.expectActive

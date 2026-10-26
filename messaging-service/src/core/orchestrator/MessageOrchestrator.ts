@@ -400,6 +400,15 @@ export class MessageOrchestrator {
       }
       await this.validateConnection(payload.connectionId, tenantId);
 
+      if (
+        payload.options?.category === 'MARKETING' &&
+        (await this.contacts.isOptedOut(payload.connectionId, address))
+      ) {
+        throw new BadRequestException(
+          `El contacto ${address} pidió no recibir más mensajes: no se envían mensajes de marketing.`,
+        );
+      }
+
       // Se valida al encolar para que el integrador reciba el motivo de
       // inmediato; el plugin lo vuelve a verificar al enviar.
       const gate = await this.contacts.campaignGate(

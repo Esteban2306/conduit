@@ -220,12 +220,24 @@ function world(
   ai: (
     userMessage: string,
     call: number,
-  ) => string | { content: string; stopReason: string } = (m) =>
-    `respuesta a: ${m}`,
+  ) =>
+    | string
+    | {
+        content: string;
+        stopReason?: string;
+        toolCallsExecuted?: Array<{
+          name: string;
+          arguments: object;
+          ok: boolean;
+        }>;
+      } = (m) => `respuesta a: ${m}`,
 ) {
   const metrics = new ReplyMetricsService();
   let promptMaxTokens = 400;
   let notifyResult = true;
+  const slimPrompts: unknown[] = [];
+  const afterSlimTurn = jest.fn(() => Promise.resolve());
+  let activeTools: unknown[] = [];
   const intentHandle = jest.fn((_turn?: unknown) =>
     Promise.resolve({ handled: false }),
   );
@@ -301,9 +313,9 @@ function world(
           aiInputs.push(input);
           const out = ai(input.userMessage, aiCalls.length);
           return {
-            ...(typeof out === 'string' ? { content: out } : out),
             tokensUsed: 10,
             toolCallsExecuted: [],
+            ...(typeof out === 'string' ? { content: out } : out),
           };
         },
       ),
@@ -317,8 +329,16 @@ function world(
         maxTokens: promptMaxTokens,
         temperature: 0.7,
       })),
+      buildSlimPrompt: later((_bot: string, plan: unknown) => {
+        slimPrompts.push(plan);
+        return {
+          systemPrompt: 'slim',
+          maxTokens: promptMaxTokens,
+          temperature: 0.7,
+        };
+      }),
     } as never,
-    { getActiveToolsForBot: later(() => []) } as never,
+    { getActiveToolsForBot: later(() => activeTools) } as never,
     {} as never,
     {
       notifyToolFailure: later(() => notifyResult),
@@ -330,7 +350,7 @@ function world(
         notifications.push(args);
       },
     } as never,
-    { handle: intentHandle } as never,
+    { handle: intentHandle, afterSlimTurn } as never,
   );
   (router as unknown as { logger: object }).logger = {
     debug: jest.fn(),
@@ -436,6 +456,20 @@ function world(
     metrics,
     notifications,
     intentHandle,
+    slimPrompts,
+    afterSlimTurn,
+    setTools: (names: string[]) => {
+      activeTools = names.map((name) => ({
+        spec: { name },
+        definitionId: `def-${name}`,
+        readOnly: true,
+        requiresImageAttachment: false,
+        imageParamName: null,
+        maxImageSizeBytes: null,
+        injectPhoneParamName: null,
+        pausesBotMinutes: null,
+      }));
+    },
     setNotifyResult: (value: boolean) => {
       notifyResult = value;
     },
@@ -824,5 +858,77 @@ describe('Despachador de intenciones antes de la IA (etapa 5)', () => {
     expect(turn.text).toBe('hola\nquiero cancelar');
     expect(turn.phoneNumber).toBe(A);
     expect(turn.hasImage).toBe(false);
+  });
+});
+
+describe('LLM_SLIM en el router (etapa 5)', () => {
+  beforeEach(() => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  const plan = {
+    intentKey: 'booking',
+    prompt: 'Eres un asistente de citas',
+    tools: ['listar_tratamientos', 'crear_reserva_whatsapp'],
+    via: 'rules',
+    endsOnTools: ['crear_reserva_whatsapp'],
+  };
+
+  it('usa el prompt reducido y solo las herramientas del manejador', async () => {
+    const w = world(new Store(), () => 'ok');
+    w.setTools([
+      'listar_tratamientos',
+      'crear_reserva_whatsapp',
+      'registrar_comprobante_automatico',
+    ]);
+    w.intentHandle.mockImplementationOnce(() =>
+      Promise.resolve({ handled: false, slim: plan } as never),
+    );
+    w.inbound(A, 'quiero agendar');
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.slimPrompts).toHaveLength(1);
+    expect((w.slimPrompts[0] as { prompt: string }).prompt).toMatch(/citas/);
+    const tools = (
+      w.aiInputs[0] as unknown as { tools: Array<{ name: string }> }
+    ).tools;
+    expect(tools.map((t) => t.name)).toEqual([
+      'listar_tratamientos',
+      'crear_reserva_whatsapp',
+    ]);
+  });
+
+  it('tras responder avisa al despachador qué herramientas tuvieron éxito para abrir o cerrar el flujo', async () => {
+    const w = world(new Store(), () => ({
+      content: 'Listo, quedó agendada',
+      toolCallsExecuted: [
+        { name: 'crear_reserva_whatsapp', arguments: {}, ok: true },
+        { name: 'listar_tratamientos', arguments: {}, ok: false },
+      ],
+    }));
+    w.intentHandle.mockImplementationOnce(() =>
+      Promise.resolve({ handled: false, slim: plan } as never),
+    );
+    w.inbound(A, 'quiero agendar');
+    await settle(DELAY_MS + 2_000);
+    expect(w.afterSlimTurn).toHaveBeenCalledWith('conv-' + A, plan, [
+      'crear_reserva_whatsapp',
+    ]);
+  });
+
+  it('sin plan reducido usa el prompt completo y todas las herramientas', async () => {
+    const w = world(new Store(), () => 'ok');
+    w.setTools(['a', 'b']);
+    w.inbound(A, 'hola');
+    await settle(DELAY_MS + 2_000);
+    expect(w.slimPrompts).toHaveLength(0);
+    expect(w.afterSlimTurn).not.toHaveBeenCalled();
+    const tools = (
+      w.aiInputs[0] as unknown as { tools: Array<{ name: string }> }
+    ).tools;
+    expect(tools).toHaveLength(2);
   });
 });

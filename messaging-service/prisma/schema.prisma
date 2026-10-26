@@ -93,6 +93,7 @@ enum AiModelRole {
   CONVERSATION     
   IMAGE_ANALYSIS 
   FALLBACK         
+  CLASSIFIER
 }
 
 enum PromptTemplateType {
@@ -339,7 +340,7 @@ model BotConfig {
   externalIntegrations ExternalIntegration[]
   toolDefinitions ToolDefinition[]
   escalationContacts BotEscalationContact[]
-  quickReplies BotQuickReply[]
+  intents BotIntent[]
 }
 
 model BotAiSettings {
@@ -639,6 +640,7 @@ model WhatsAppContact {
   lastInboundAt DateTime?
   onWhatsApp    Boolean?
   checkedAt     DateTime?
+  optedOutAt    DateTime?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -752,18 +754,40 @@ enum IntentMode {
   ACTIVE
 }
 
-model BotQuickReply {
-  id              String     @id @default(uuid())
-  botConfigId     String
-  intent          String
-  mode            IntentMode @default(SHADOW)
-  variants        Json       @default("{}")
-  cooldownSeconds Int        @default(0)
-  version         Int        @default(1)
-  createdAt       DateTime   @default(now())
-  updatedAt       DateTime   @updatedAt
+enum IntentHandlerKind {
+  TEMPLATE
+  TOOL_DIRECT
+  HANDOFF
+  LLM_SLIM
+}
+
+model BotIntent {
+  id               String            @id @default(uuid())
+  botConfigId      String
+  key              String
+  name             String
+  description      String            @default("")
+  handler          IntentHandlerKind
+  mode             IntentMode        @default(SHADOW)
+  priority         Int               @default(100)
+  patterns         Json              @default("[]")
+  denyPatterns     Json              @default("[]")
+  maxTokens        Int               @default(12)
+  respectsOpenFlow Boolean           @default(false)
+  allowsQuestion   Boolean           @default(true)
+  negationOk       Boolean           @default(false)
+  fixedConfidence  Float?
+  aiClassifiable   Boolean           @default(false)
+  config           Json              @default("{}")
+  variants         Json              @default("{}")
+  cooldownSeconds  Int               @default(0)
+  schedule         Json?
+  notes            String?           @db.Text
+  version          Int               @default(1)
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
 
   botConfig BotConfig @relation(fields: [botConfigId], references: [id], onDelete: Cascade)
 
-  @@unique([botConfigId, intent])
+  @@unique([botConfigId, key])
 }

@@ -22,6 +22,12 @@ export interface BuiltPrompt {
   reasoningMode?: ReasoningMode;
 }
 
+export interface SlimPromptPlan {
+  prompt: string;
+  maxTokens?: number;
+  includeKnowledge?: boolean;
+}
+
 export interface PromptBuildInput {
   userMessage: string;
   history: HistoryMessage[];
@@ -118,6 +124,65 @@ export class PromptEngine {
     );
     return {
       systemPrompt,
+      cacheablePrompt,
+      dynamicPrompt,
+      maxTokens,
+      temperature: settings?.temperature ?? 0.7,
+      reasoningMode: settings?.reasoningMode ?? ReasoningMode.AUTO,
+    };
+  }
+
+  /**
+   * Prompt reducido de una intención (LLM_SLIM): la persona del bot, las
+   * instrucciones de esa intención, el límite de respuesta y las reglas de
+   * seguridad. Sin el prompt completo ni el conocimiento general (salvo que
+   * la intención lo pida), y el contexto de la conversación igual que el
+   * prompt completo, para no perder el hilo.
+   */
+  async buildSlimPrompt(
+    botConfigId: string,
+    plan: SlimPromptPlan,
+    input: PromptBuildInput,
+  ): Promise<BuiltPrompt> {
+    const [settings, assembled] = await Promise.all([
+      this.settingsRepo.findByBot(botConfigId),
+      plan.includeKnowledge
+        ? this.knowledge.assemble(botConfigId)
+        : Promise.resolve({ compiled: '' }),
+    ]);
+
+    const timeZone = this.timeZone();
+    const vars = this.variables.resolve(settings, timeZone);
+    const configured = settings?.maxTokensConversation ?? 800;
+    const maxTokens = plan.maxTokens ?? configured;
+
+    const cacheable: string[] = [
+      this.renderer.render(plan.prompt, vars),
+      lengthGuide(maxTokens),
+    ];
+    if (assembled.compiled) {
+      cacheable.push(`Conocimiento:\n${assembled.compiled}`);
+    }
+    cacheable.push(MEMORY_DISCIPLINE, SECURITY_DISCIPLINE);
+    if (input.hasTools) cacheable.push(TOOL_RESULT_DISCIPLINE);
+
+    const dynamic: string[] = [promptDateLine(timeZone)];
+    const { block } = this.contextBuilder.build(input.context, input.summary);
+    if (block) dynamic.push(block);
+    if (input.leadingBotMessages?.length) {
+      const previous = input.leadingBotMessages.map((m) => `- ${m}`).join('\n');
+      dynamic.push(
+        `Últimos mensajes que el negocio le envió al cliente antes de su respuesta:\n${previous}`,
+      );
+    }
+
+    const cacheablePrompt = cacheable.join('\n\n');
+    const dynamicPrompt = dynamic.join('\n\n');
+    this.logger.debug(
+      `Prompt slim | ~${Math.ceil(cacheablePrompt.length / 4)} tokens fijos + ~${Math.ceil(dynamicPrompt.length / 4)} dinámicos`,
+    );
+    return {
+      systemPrompt: `${cacheablePrompt}\n\n${dynamicPrompt}`,
       cacheablePrompt,
       dynamicPrompt,
       maxTokens,

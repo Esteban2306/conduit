@@ -37,6 +37,7 @@ export const MessagePayloadSchema = z.object({
         .datetime({ message: 'scheduledAt debe ser ISO 8601' })
         .optional(),
       priority: z.enum(['low', 'normal', 'high']).default('normal'),
+      category: z.enum(['TRANSACTIONAL', 'MARKETING']).optional(),
       webhookUrl: z
         .string()
         .url('webhookUrl debe ser una URL valida')

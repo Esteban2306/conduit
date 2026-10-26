@@ -81,6 +81,39 @@ export class WhatsAppContactService {
     });
   }
 
+  /**
+   * Marca o quita el opt-out de un contacto. Un chat identificado solo por
+   * LID se resuelve por su LID; sin contacto conocido no hay nada que marcar
+   * (la conversación guarda su propio opt-out).
+   */
+  async setOptOut(
+    connectionId: string,
+    address: string,
+    optedOut: boolean,
+  ): Promise<void> {
+    const optedOutAt = optedOut ? new Date() : null;
+    if (address.endsWith('@lid')) {
+      await this.prisma.whatsAppContact.updateMany({
+        where: { connectionId, lid: address.replace(/@lid$/, '') },
+        data: { optedOutAt },
+      });
+      return;
+    }
+    await this.prisma.whatsAppContact.upsert({
+      where: { connectionId_address: { connectionId, address } },
+      create: { connectionId, address, optedOutAt },
+      update: { optedOutAt },
+    });
+  }
+
+  async isOptedOut(connectionId: string, address: string): Promise<boolean> {
+    const contact = await this.prisma.whatsAppContact.findUnique({
+      where: { connectionId_address: { connectionId, address } },
+      select: { optedOutAt: true },
+    });
+    return Boolean(contact?.optedOutAt);
+  }
+
   /** Teléfono conocido para un LID visto antes en esta conexión. */
   async findAddressByLid(
     connectionId: string,

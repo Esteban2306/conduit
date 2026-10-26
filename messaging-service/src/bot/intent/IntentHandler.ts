@@ -1,36 +1,31 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { ConversationService } from '../conversation/ConversationService';
 import { isLidAddress } from 'src/channels/whatsapp/utils/jid.util';
+import { ConversationService } from '../conversation/ConversationService';
 import { BotEscalationService } from '../tools/BotEscalation.service';
 import { ResolvedTool } from '../tools/ToolDefinitionService';
 import { ToolExecutorService } from '../tools/ToolExecutor.service';
-import { IntentConfigService } from './IntentConfig.service';
-import { IntentResolver } from './IntentResolver';
-import { IntentDefinition } from './intent-catalog';
+import { HardRulesService } from './HardRules.service';
+import {
+  AI_CLASSIFIER_MAX_WORDS,
+  IntentAiClassifier,
+} from './IntentAiClassifier';
+import { BotIntentSet, IntentRepository } from './IntentRepository.service';
+import { Classification, IntentResolver } from './IntentResolver';
 import { IntentMetricsService } from './intent-metrics.service';
-import { RENDERERS, Rendered, fillTemplate } from './intent-render';
-import { normalizeText } from './normalize';
+import {
+  ACTIVE_FLOW_KEY,
+  IntentOutcome,
+  IntentTurn,
+  SlimPlan,
+} from './intent-turn';
+import { IntentRecord } from './intent-types';
+import { fillTemplate, renderTool } from './render-spec';
+import { normalizeText, tokenCount } from './normalize';
 
-export interface IntentTurn {
-  tenantId: string;
-  botConfigId: string;
-  conversationId: string;
-  phoneNumber: string;
-  connectionId: string;
-  text: string;
-  hasImage: boolean;
-  turnId: string;
-  lastBotMessage: { content: string; at: Date } | null;
-  loadTools: () => Promise<ResolvedTool[]>;
-  send: (text: string) => Promise<void>;
-}
-
-export interface IntentOutcome {
-  handled: boolean;
-}
-
-const OPEN_FLOW_TTL_MS = 30 * 60 * 1000;
+const OPEN_QUESTION_TTL_MS = 30 * 60 * 1000;
 const FALSE_POSITIVE_WINDOW_MS = 10 * 60 * 1000;
+const DEFAULT_FLOW_TTL_MINUTES = 30;
+const TOOL_CACHE_MAX = 200;
 
 interface LastHandled {
   intent: string;
@@ -38,12 +33,13 @@ interface LastHandled {
   at: number;
 }
 
+type Produced = { text: string } | { slim: SlimPlan } | null;
+
 /**
- * Decide por turno el manejador más barato: clasifica con el
- * IntentResolver y, según el modo de la intención, solo registra (SOMBRA) o
- * responde con plantilla / llamada directa al backend / traspaso, sin IA.
- * Si algo falla devuelve `handled: false` y el turno sigue a la IA: nunca
- * deja a la clienta sin respuesta.
+ * Decide por turno el manejador más barato: reglas duras → continuidad de un
+ * flujo abierto → clasificación determinística → clasificador de IA mínimo →
+ * manejador de la intención (plantilla, llamada directa, traspaso o LLM
+ * reducido). Si algo falla el turno sigue a la IA completa: nunca silencio.
  */
 @Injectable()
 export class IntentHandler {
@@ -51,10 +47,16 @@ export class IntentHandler {
   private readonly lastVariant = new Map<string, number>();
   private readonly lastFired = new Map<string, number>();
   private readonly lastHandled = new Map<string, LastHandled>();
+  private readonly toolCache = new Map<
+    string,
+    { body: unknown; expires: number }
+  >();
 
   constructor(
     private readonly resolver: IntentResolver,
-    private readonly config: IntentConfigService,
+    private readonly repository: IntentRepository,
+    private readonly hardRules: HardRulesService,
+    private readonly aiClassifier: IntentAiClassifier,
     private readonly metrics: IntentMetricsService,
     private readonly toolExecutor: ToolExecutorService,
     private readonly conversationService: ConversationService,
@@ -74,54 +76,130 @@ export class IntentHandler {
     }
   }
 
+  /** Clasifica sin efectos (para probar frases desde el panel/API). */
+  async dryRun(
+    botConfigId: string,
+    text: string,
+    openFlow = false,
+  ): Promise<Classification> {
+    const set = await this.repository.forBot(botConfigId);
+    return this.resolver.classify(
+      text,
+      { openFlow, timeZone: this.repository.timeZone() },
+      set.compiled,
+    );
+  }
+
+  /** El router avisa tras un turno LLM_SLIM exitoso: abre, renueva o cierra el flujo. */
+  async afterSlimTurn(
+    conversationId: string,
+    plan: SlimPlan,
+    executedTools: string[],
+  ): Promise<void> {
+    const ended = (plan.endsOnTools ?? []).some((t) =>
+      executedTools.includes(t),
+    );
+    const ttl = (plan.flowTtlMinutes ?? DEFAULT_FLOW_TTL_MINUTES) * 60_000;
+    await this.conversationService.updateContext(conversationId, {
+      contextPatch: {
+        [ACTIVE_FLOW_KEY]: ended
+          ? null
+          : {
+              intent: plan.intentKey,
+              until: new Date(Date.now() + ttl).toISOString(),
+            },
+      },
+    });
+    this.metrics.count(
+      ended ? `flow:${plan.intentKey}:ended` : `flow:${plan.intentKey}:open`,
+    );
+  }
+
   private async run(turn: IntentTurn): Promise<IntentOutcome> {
     const started = Date.now();
-    this.trackRepeats(turn);
+    const set = await this.repository.forBot(turn.botConfigId);
+    this.trackRepeats(turn, set);
 
-    const openFlow =
+    if (await this.hardRules.apply(turn)) return { handled: true };
+    if (set.compiled.length === 0) return { handled: false };
+
+    const flowIntent = this.activeFlow(turn, set);
+    const openQuestion =
       turn.lastBotMessage !== null &&
       turn.lastBotMessage.content.includes('?') &&
-      Date.now() - turn.lastBotMessage.at.getTime() < OPEN_FLOW_TTL_MS;
+      Date.now() - turn.lastBotMessage.at.getTime() < OPEN_QUESTION_TTL_MS;
 
-    const result = this.resolver.classify(turn.text, { openFlow });
+    const timeZone = this.repository.timeZone();
+    let result: Classification = this.resolver.classify(
+      turn.text,
+      { openFlow: openQuestion || flowIntent !== null, timeZone },
+      set.compiled,
+    );
+    let via: 'rules' | 'ai' = 'rules';
+
+    if (
+      !result.decided &&
+      !flowIntent &&
+      (result.reason === 'no-match' || result.reason === 'low-confidence')
+    ) {
+      const ai = await this.classifyWithAi(turn, set);
+      if (ai) {
+        result = ai;
+        via = 'ai';
+      }
+    }
+
     if (!result.decided) {
       this.metrics.count(
         `undecided:${result.reason}${result.candidate ? `:${result.candidate}` : ''}`,
       );
+      if (flowIntent) return this.continueFlow(turn, flowIntent);
       return { handled: false };
     }
 
-    const { intent, confidence } = result;
-    const settings = await this.config.forBot(turn.botConfigId);
-    const mode = settings.modeOf(intent.id);
+    const intent = result.intent;
     const base = {
       conversationId: turn.conversationId,
-      intent: intent.id,
+      intent: intent.key,
       handler: intent.handler,
-      mode,
-      confidence,
+      mode: intent.mode,
+      confidence: result.confidence,
     };
 
-    if (mode === 'OFF') return { handled: false };
-    if (mode === 'SHADOW') {
-      this.metrics.record({ ...base, outcome: 'shadow' });
-      return { handled: false };
+    if (intent.mode === 'SHADOW') {
+      this.metrics.record({
+        ...base,
+        outcome: via === 'ai' ? 'shadow-ai' : 'shadow',
+      });
+      return flowIntent
+        ? this.continueFlow(turn, flowIntent)
+        : { handled: false };
     }
 
-    const cooldown = settings.cooldownOf(intent);
-    const fireKey = `${turn.conversationId}|${intent.id}`;
+    if (flowIntent && flowIntent.key !== intent.key) {
+      await this.clearFlow(turn);
+    }
+
+    const fireKey = `${turn.conversationId}|${intent.key}`;
     const previousFire = this.lastFired.get(fireKey);
     if (
-      cooldown > 0 &&
+      intent.cooldownSeconds > 0 &&
       previousFire &&
-      Date.now() - previousFire < cooldown * 1000
+      Date.now() - previousFire < intent.cooldownSeconds * 1000
     ) {
       this.metrics.record({ ...base, outcome: 'cooldown' });
       return { handled: false };
     }
 
-    const reply = await this.produce(turn, intent, settings);
-    if (reply === null) {
+    let produced = await this.produce(turn, intent, set, result.entity, via);
+    if (produced === null && intent.config.fallbackTo) {
+      const target = set.byKey.get(intent.config.fallbackTo);
+      if (target && target.handler === 'LLM_SLIM' && target.mode === 'ACTIVE') {
+        produced = { slim: this.planOf(target, 'fallback') };
+      }
+    }
+
+    if (produced === null) {
       this.metrics.record({
         ...base,
         outcome: 'fallback',
@@ -130,111 +208,292 @@ export class IntentHandler {
       return { handled: false };
     }
 
-    await turn.send(reply);
+    if ('slim' in produced) {
+      this.metrics.record({
+        ...base,
+        intent: produced.slim.intentKey,
+        handler: 'LLM_SLIM',
+        outcome: `slim-${produced.slim.via}`,
+        latencyMs: Date.now() - started,
+      });
+      return { handled: false, slim: produced.slim };
+    }
+
+    let text = produced.text;
+    if (intent.config.greetFirstContact && turn.lastBotMessage === null) {
+      const prefix = await this.greetingPrefix(turn, intent, set);
+      if (prefix) text = `${prefix}\n\n${text}`;
+    }
+    await turn.send(text);
     this.lastFired.set(fireKey, Date.now());
     this.lastHandled.set(turn.conversationId, {
-      intent: intent.id,
+      intent: intent.key,
       normalized: result.normalized,
       at: Date.now(),
     });
     this.metrics.record({
       ...base,
-      outcome: 'handled',
+      outcome: via === 'ai' ? 'handled-ai' : 'handled',
       latencyMs: Date.now() - started,
     });
     return { handled: true };
   }
 
-  private async produce(
-    turn: IntentTurn,
-    intent: IntentDefinition,
-    settings: Awaited<ReturnType<IntentConfigService['forBot']>>,
-  ): Promise<string | null> {
-    const renderer = RENDERERS[intent.id];
-    if (!renderer) return null;
+  private activeFlow(turn: IntentTurn, set: BotIntentSet): IntentRecord | null {
+    const flow = turn.context[ACTIVE_FLOW_KEY] as
+      | { intent?: string; until?: string }
+      | null
+      | undefined;
+    if (!flow?.intent || !flow.until) return null;
+    if (new Date(flow.until).getTime() <= Date.now()) return null;
+    const record = set.byKey.get(flow.intent);
+    return record && record.handler === 'LLM_SLIM' && record.mode === 'ACTIVE'
+      ? record
+      : null;
+  }
 
-    let data: unknown = null;
-    if (intent.tool) {
-      const tools = await turn.loadTools();
-      const called = await this.callTool(turn, intent, tools);
-      if (called === 'skip-identity' && intent.identityOptional) {
-        data = null;
-      } else if (called === 'skip-identity' || called === 'failed') {
-        return null;
-      } else {
-        data = called.body;
-      }
-      if (intent.handler === 'HANDOFF') {
-        const minutes = tools.find(
-          (t) => t.spec.name === intent.tool,
-        )?.pausesBotMinutes;
-        if (minutes) {
-          await this.conversationService.pauseBot(
-            turn.conversationId,
-            minutes,
-            `Traspaso a una persona (${intent.id})`,
-          );
-        }
-      }
+  private continueFlow(turn: IntentTurn, intent: IntentRecord): IntentOutcome {
+    this.metrics.record({
+      conversationId: turn.conversationId,
+      intent: intent.key,
+      handler: 'LLM_SLIM',
+      mode: intent.mode,
+      outcome: 'slim-flow',
+    });
+    return { handled: false, slim: this.planOf(intent, 'flow') };
+  }
+
+  private async clearFlow(turn: IntentTurn): Promise<void> {
+    await this.conversationService.updateContext(turn.conversationId, {
+      contextPatch: { [ACTIVE_FLOW_KEY]: null },
+    });
+  }
+
+  private planOf(intent: IntentRecord, via: SlimPlan['via']): SlimPlan {
+    return { ...intent.config.slim!, intentKey: intent.key, via };
+  }
+
+  private async classifyWithAi(
+    turn: IntentTurn,
+    set: BotIntentSet,
+  ): Promise<Classification | null> {
+    const normalized = normalizeText(turn.text);
+    if (
+      /\n/.test(turn.text.trim()) ||
+      tokenCount(normalized) > AI_CLASSIFIER_MAX_WORDS
+    ) {
+      return null;
     }
 
-    const rendered: Rendered | null = renderer(data);
-    if (!rendered) return null;
+    const candidates = set.all.filter(
+      (i) =>
+        i.aiClassifiable &&
+        i.mode === 'ACTIVE' &&
+        i.handler !== 'HANDOFF' &&
+        !JSON.stringify(i.config.params ?? {}).includes('$entity'),
+    );
+    if (candidates.length === 0) return null;
 
-    const variants = settings.variantsOf(intent, rendered.variantKey);
-    if (variants.length === 0) return null;
-
-    const vars = {
-      agente: settings.agent,
-      negocio: settings.business,
-      ...rendered.vars,
+    const answer = await this.aiClassifier.classify(
+      turn.botConfigId,
+      turn.conversationId,
+      turn.text,
+      normalized,
+      candidates,
+      turn.lastBotMessage?.content ?? null,
+    );
+    if (!answer) return null;
+    if (!answer.key) {
+      this.metrics.count('ai-classifier:none');
+      return null;
+    }
+    const intent = candidates.find((c) => c.key === answer.key);
+    if (!intent) {
+      this.metrics.count('ai-classifier:invalid');
+      return null;
+    }
+    this.metrics.count(
+      `ai-classifier:${intent.key}${answer.cached ? ':cached' : ''}`,
+    );
+    return {
+      decided: true,
+      intent,
+      confidence: 0.7,
+      normalized,
     };
-    const chosen = this.pickVariant(turn.conversationId, intent.id, variants);
+  }
+
+  private async produce(
+    turn: IntentTurn,
+    intent: IntentRecord,
+    set: BotIntentSet,
+    entity: string | undefined,
+    via: 'rules' | 'ai',
+  ): Promise<Produced> {
+    if (intent.handler === 'LLM_SLIM') {
+      return intent.config.slim ? { slim: this.planOf(intent, via) } : null;
+    }
+
+    const vars: Record<string, string> = {
+      agente: set.agent,
+      negocio: set.business,
+    };
+    let variantKey = 'default';
+
+    if (intent.handler === 'TOOL_DIRECT') {
+      const called = await this.callTool(turn, intent, entity);
+      if (called === 'failed') return null;
+      if (called === 'skip-identity' && !intent.config.identityOptional) {
+        return null;
+      }
+      const data = called === 'skip-identity' ? null : called.body;
+      const rendered = renderTool(data, intent.config.render!, {
+        timeZone: this.repository.timeZone(),
+        extras: { entity, text: turn.text },
+      });
+      if (!rendered) return null;
+      variantKey = rendered.variantKey;
+      Object.assign(vars, rendered.vars);
+    } else if (intent.handler === 'HANDOFF') {
+      if (!(await this.handoff(turn, intent))) return null;
+    }
+
+    const variants = intent.variants[variantKey] ?? [];
+    if (variants.length === 0) return null;
+    const chosen = this.pickVariant(turn.conversationId, intent.key, variants);
     const text = fillTemplate(variants[chosen], vars);
     if (text === null) {
       this.logger.warn(
-        `La plantilla de "${intent.id}" (${rendered.variantKey}) tiene variables sin valor; el turno sigue a la IA.`,
+        `La plantilla de "${intent.key}" (${variantKey}) tiene variables sin valor; el turno sigue a la IA.`,
       );
       return null;
     }
-    return text;
+    return { text };
+  }
+
+  /**
+   * Primer mensaje del bot en esta conversación: se antepone el saludo
+   * (con el nombre si ya es clienta) a la respuesta, para no gastar un
+   * turno de IA en presentarse. Si el saludo no se puede armar, la
+   * respuesta sale sola.
+   */
+  private async greetingPrefix(
+    turn: IntentTurn,
+    answering: IntentRecord,
+    set: BotIntentSet,
+  ): Promise<string | null> {
+    const source = set.all.find(
+      (i) => i.config.greetingSource && i.mode === 'ACTIVE',
+    );
+    if (!source) return null;
+
+    let data: unknown = null;
+    if (source.config.tool) {
+      const called = await this.callTool(turn, source, undefined);
+      if (called === 'failed') return null;
+      if (called === 'skip-identity' && !source.config.identityOptional) {
+        return null;
+      }
+      data = called === 'skip-identity' ? null : called.body;
+    }
+    const rendered = source.config.render
+      ? renderTool(data, source.config.render, {
+          timeZone: this.repository.timeZone(),
+        })
+      : { variantKey: 'default', vars: {} as Record<string, string> };
+    if (!rendered) return null;
+
+    const variants = source.variants[`prefix_${rendered.variantKey}`] ?? [];
+    if (variants.length === 0) return null;
+    const chosen = this.pickVariant(
+      turn.conversationId,
+      `${answering.key}:prefix`,
+      variants,
+    );
+    return fillTemplate(variants[chosen], {
+      agente: set.agent,
+      negocio: set.business,
+      ...rendered.vars,
+    });
+  }
+
+  private async handoff(
+    turn: IntentTurn,
+    intent: IntentRecord,
+  ): Promise<boolean> {
+    const config = intent.config;
+    let pause = config.pauseMinutes;
+    if (config.tool) {
+      const tools = await turn.loadTools();
+      const resolved = tools.find((t) => t.spec.name === config.tool);
+      const called = await this.callTool(turn, intent, undefined);
+      if (called === 'failed' || called === 'skip-identity') return false;
+      pause = pause ?? resolved?.pausesBotMinutes ?? undefined;
+    }
+    await this.conversationService.pauseBot(
+      turn.conversationId,
+      pause ?? 240,
+      `Traspaso a una persona (${intent.key})`,
+    );
+    if (config.notifyTeam ?? !config.tool) {
+      try {
+        await this.botEscalation.notifyContacts(
+          turn.tenantId,
+          turn.botConfigId,
+          'TECHNICAL_ERROR',
+          `⚠️ Traspaso a una persona (${intent.name})\n\nChat: ${turn.phoneNumber}\nMotivo: ${config.reason}\nMensaje: "${turn.text.slice(0, 200)}"`,
+          'traspaso',
+        );
+      } catch (error) {
+        this.logger.error(
+          `No fue posible avisar del traspaso: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+    return true;
   }
 
   private pickVariant(
     conversationId: string,
-    intent: string,
+    key: string,
     variants: string[],
   ): number {
-    const key = `${conversationId}|${intent}`;
-    const previous = this.lastVariant.get(key);
+    const mapKey = `${conversationId}|${key}`;
+    const previous = this.lastVariant.get(mapKey);
     const next =
       previous === undefined
         ? Math.floor(Math.random() * variants.length)
         : (previous + 1) % variants.length;
-    this.lastVariant.set(key, next);
+    this.lastVariant.set(mapKey, next);
     return next;
   }
 
   private async callTool(
     turn: IntentTurn,
-    intent: IntentDefinition,
-    tools: ResolvedTool[],
+    intent: IntentRecord,
+    entity: string | undefined,
   ): Promise<{ body: unknown } | 'failed' | 'skip-identity'> {
-    const resolved = tools.find((t) => t.spec.name === intent.tool);
+    const config = intent.config;
+    const tools = await turn.loadTools();
+    const resolved = tools.find((t) => t.spec.name === config.tool);
     if (!resolved) {
-      this.metrics.count(`tool-missing:${intent.tool}`);
+      this.metrics.count(`tool-missing:${config.tool}`);
       return 'failed';
     }
     const needsPhone = resolved.injectPhoneParamName !== null;
     if (needsPhone && isLidAddress(turn.phoneNumber)) return 'skip-identity';
 
-    const params: Record<string, unknown> =
-      intent.handler === 'HANDOFF'
-        ? {
-            reason: intent.handoffReason ?? 'Solicitud de la clienta',
-            summary: `Mensaje de la clienta: "${turn.text.slice(0, 300)}"`,
-          }
-        : {};
+    const params = this.buildParams(intent, turn, entity);
+    if (params === null) return 'failed';
+
+    const cacheKey = this.cacheKey(turn, intent, params);
+    if (cacheKey) {
+      const hit = this.toolCache.get(cacheKey);
+      if (hit && hit.expires > Date.now()) {
+        this.metrics.count(`tool-cache-hit:${config.tool}`);
+        return { body: hit.body };
+      }
+    }
 
     const outcome = await this.toolExecutor.execute({
       toolDefinitionId: resolved.definitionId,
@@ -245,10 +504,21 @@ export class IntentHandler {
       contactAddress: turn.phoneNumber,
       turnId: turn.turnId,
     });
+    await this.remember(turn, config.tool!, params, outcome);
 
-    await this.remember(turn, intent.tool!, params, outcome);
-
-    if (outcome.status === 'SUCCESS') return { body: outcome.responseBody };
+    if (outcome.status === 'SUCCESS') {
+      if (cacheKey && config.cache) {
+        if (this.toolCache.size >= TOOL_CACHE_MAX) {
+          const oldest = this.toolCache.keys().next().value;
+          if (oldest !== undefined) this.toolCache.delete(oldest);
+        }
+        this.toolCache.set(cacheKey, {
+          body: outcome.responseBody,
+          expires: Date.now() + config.cache.seconds * 1000,
+        });
+      }
+      return { body: outcome.responseBody };
+    }
 
     if (outcome.status === 'TECHNICAL_ERROR') {
       try {
@@ -256,17 +526,51 @@ export class IntentHandler {
           turn.tenantId,
           turn.botConfigId,
           outcome.status,
-          intent.tool!,
+          config.tool!,
           turn.phoneNumber,
           outcome.errorDetail,
         );
       } catch (error) {
         this.logger.error(
-          `No fue posible avisar del fallo de "${intent.tool}": ${error instanceof Error ? error.message : String(error)}`,
+          `No fue posible avisar del fallo de "${config.tool}": ${error instanceof Error ? error.message : String(error)}`,
         );
       }
     }
     return 'failed';
+  }
+
+  private buildParams(
+    intent: IntentRecord,
+    turn: IntentTurn,
+    entity: string | undefined,
+  ): Record<string, unknown> | null {
+    const params: Record<string, unknown> = {};
+    for (const [name, value] of Object.entries(intent.config.params ?? {})) {
+      if (value === '$entity') {
+        if (!entity) return null;
+        params[name] = entity;
+      } else if (value === '$text') {
+        params[name] = turn.text.slice(0, 300);
+      } else {
+        params[name] = value;
+      }
+    }
+    if (intent.handler === 'HANDOFF') {
+      params.reason = intent.config.reason ?? 'Solicitud de la clienta';
+      params.summary = `Mensaje de la clienta: "${turn.text.slice(0, 300)}"`;
+    }
+    return params;
+  }
+
+  private cacheKey(
+    turn: IntentTurn,
+    intent: IntentRecord,
+    params: Record<string, unknown>,
+  ): string | null {
+    const cache = intent.config.cache;
+    if (!cache) return null;
+    const who = cache.scope === 'contact' ? turn.phoneNumber : '';
+    return `${turn.botConfigId}|${intent.config.tool}|${who}|${JSON.stringify(params)}`;
   }
 
   private async remember(
@@ -305,20 +609,23 @@ export class IntentHandler {
    * Señal de falso positivo: tras una respuesta automática, la clienta repite
    * lo mismo o pide una persona.
    */
-  private trackRepeats(turn: IntentTurn): void {
+  private trackRepeats(turn: IntentTurn, set: BotIntentSet): void {
     const previous = this.lastHandled.get(turn.conversationId);
     if (!previous) return;
     if (Date.now() - previous.at > FALSE_POSITIVE_WINDOW_MS) {
       this.lastHandled.delete(turn.conversationId);
       return;
     }
-    const normalized = normalizeText(turn.text);
-    if (normalized === previous.normalized) {
+    if (normalizeText(turn.text) === previous.normalized) {
       this.metrics.count(`false-positive-signal:${previous.intent}:repeated`);
       return;
     }
-    const asksHuman = this.resolver.classify(turn.text, { openFlow: false });
-    if (asksHuman.decided && asksHuman.intent.id === 'human_request') {
+    const next = this.resolver.classify(
+      turn.text,
+      { openFlow: false, timeZone: this.repository.timeZone() },
+      set.compiled,
+    );
+    if (next.decided && next.intent.handler === 'HANDOFF') {
       this.metrics.count(
         `false-positive-signal:${previous.intent}:asked-human`,
       );

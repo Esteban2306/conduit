@@ -456,6 +456,7 @@ export class BotRouter {
       text: aiData.pending.some((m) => m.hasImage) ? '' : intentText,
       hasImage: aiData.pending.some((m) => m.hasImage),
       turnId: aiData.pending[aiData.pending.length - 1].id,
+      context: aiData.context,
       lastBotMessage: await this.conversationService.lastOutbound(
         botConfig.id,
         phoneNumber,
@@ -473,6 +474,7 @@ export class BotRouter {
       },
     });
     if (intentOutcome.handled) return;
+    const slim = intentOutcome.slim;
 
     if (!botConfig.aiModels || botConfig.aiModels.length === 0) {
       this.logger.error(
@@ -555,26 +557,32 @@ export class BotRouter {
       hasImage,
     );
 
-    const tools = await this.toolDefinitionService.getActiveToolsForBot(
+    const allTools = await this.toolDefinitionService.getActiveToolsForBot(
       botConfig.id,
     );
+    const tools = slim
+      ? allTools.filter((t) => slim.tools.includes(t.spec.name))
+      : allTools;
     const toolByName = new Map(tools.map((t) => [t.spec.name, t]));
     const readOnlyTools = new Set(
       tools.filter((t) => t.readOnly).map((t) => t.spec.name),
     );
 
-    const builtPrompt = await this.promptEngine.buildConversationPrompt(
-      botConfig.id,
-      {
-        userMessage: userMessageForAI,
-        history: aiData.history,
-        context: aiData.context,
-        summary: aiData.summary,
-        leadingBotMessages: aiData.leadingBotMessages,
-        hasImage,
-        hasTools: tools.length > 0,
-      },
-    );
+    const promptInput = {
+      userMessage: userMessageForAI,
+      history: aiData.history,
+      context: aiData.context,
+      summary: aiData.summary,
+      leadingBotMessages: aiData.leadingBotMessages,
+      hasImage,
+      hasTools: tools.length > 0,
+    };
+    const builtPrompt = slim
+      ? await this.promptEngine.buildSlimPrompt(botConfig.id, slim, promptInput)
+      : await this.promptEngine.buildConversationPrompt(
+          botConfig.id,
+          promptInput,
+        );
 
     const toolExecutorFn = tools.length
       ? async (req: { name: string; arguments: Record<string, unknown> }) => {
@@ -823,6 +831,15 @@ export class BotRouter {
     // pendiente (evita contestar dos veces lo mismo).
     await this.sendReply(turn, reply, tokensUsed, imageVerified);
     if (hasImage) this.lastImageMessage.delete(conversationId);
+    if (slim) {
+      await this.intentHandler.afterSlimTurn(
+        conversationId,
+        slim,
+        (aiResult.toolCallsExecuted ?? [])
+          .filter((call) => call.ok)
+          .map((call) => call.name),
+      );
+    }
 
     void this.summarizer.refreshIfNeeded(
       conversationId,

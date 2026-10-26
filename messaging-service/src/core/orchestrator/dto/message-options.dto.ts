@@ -30,4 +30,15 @@ export class MessageOptionsDto {
   @IsUrl({}, { message: 'webhookUrl debe ser una URL válida' })
   @IsOptional()
   webhookUrl?: string;
+
+  @ApiPropertyOptional({
+    enum: ['TRANSACTIONAL', 'MARKETING'],
+    default: 'TRANSACTIONAL',
+    description:
+      'MARKETING no se envía a quien pidió no recibir más mensajes (opt-out). ' +
+      'TRANSACTIONAL (confirmaciones, recordatorios de citas existentes) sí se envía.',
+  })
+  @IsIn(['TRANSACTIONAL', 'MARKETING'])
+  @IsOptional()
+  category?: 'TRANSACTIONAL' | 'MARKETING';
 }
