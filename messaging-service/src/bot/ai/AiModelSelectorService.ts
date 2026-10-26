@@ -2,8 +2,16 @@ import { Injectable, Logger } from '@nestjs/common';
 import { AiProviderType } from './interface/AiProviderType';
 import { PrismaService } from 'src/shared/prisma.service';
 import { AiModelConfig, AiModelRole, AiModelTier } from '@prisma/client';
+import { AiErrorType } from './interface/AiError';
 import { ConfigService } from '@nestjs/config';
 import { SecretEncryptionService } from 'src/shared/security/secret-encryption.service';
+
+export const CIRCUIT_OPEN_AFTER_FAILURES = 2;
+const BACKOFF_MS = [30_000, 60_000, 120_000, 300_000];
+const MAX_RETRY_AFTER_MS = 600_000;
+const PROBE_WINDOW_MS = 30_000;
+const DAY_MS = 86_400_000;
+const MINUTE_MS = 60_000;
 
 @Injectable()
 export class AiModelSelectorService {
@@ -18,18 +26,16 @@ export class AiModelSelectorService {
   async selectModel(
     botConfigId: string,
     role: AiModelRole,
+    exclude: ReadonlySet<string> = new Set(),
   ): Promise<AiModelConfig | null> {
     const candidates = await this.prisma.aiModelConfig.findMany({
-      where: { botConfigId, role, isActive: true },
+      where: { botConfigId, role, isActive: true, credentialInvalidAt: null },
 
       orderBy: { priority: 'asc' },
     });
 
-    if (candidates.length === 0) {
-      return null;
-    }
-
     for (const candidate of candidates) {
+      if (exclude.has(candidate.id)) continue;
       if (await this.isAvailable(candidate)) return candidate;
       this.logger.warn(
         `${candidate.provider}/${candidate.model} no disponible`,
@@ -37,7 +43,7 @@ export class AiModelSelectorService {
     }
 
     if (role !== AiModelRole.FALLBACK) {
-      return this.selectModel(botConfigId, AiModelRole.FALLBACK);
+      return this.selectModel(botConfigId, AiModelRole.FALLBACK, exclude);
     }
 
     return null;
@@ -90,48 +96,28 @@ export class AiModelSelectorService {
     }
   }
 
+  /**
+   * Interruptor de circuito: con `unavailableUntil` en el futuro está abierto;
+   * vencido, está semiabierto y una sola llamada (la que gane el reclamo)
+   * prueba el modelo; sin fecha está cerrado. Aplica a todos los modelos; los
+   * límites de tokens y de minuto solo a los gratuitos.
+   */
   private async isAvailable(model: AiModelConfig): Promise<boolean> {
-    if (model.tier === AiModelTier.PAID) return true;
-
     const now = new Date();
 
-    if (model.unavailableUntil && model.unavailableUntil > now) {
-      return false;
+    if (model.unavailableUntil) {
+      if (model.unavailableUntil > now) {
+        this.logger.warn(
+          `${model.provider}/${model.model}: circuito abierto hasta ${model.unavailableUntil.toISOString()}`,
+        );
+        return false;
+      }
+      if (!(await this.claimProbe(model, now))) return false;
     }
 
-    if (now.getTime() - model.lastResetAt.getTime() >= 86400000) {
-      await this.prisma.aiModelConfig.update({
-        where: { id: model.id },
-        data: { tokensUsedToday: 0, lastResetAt: now },
-      });
-      model.tokensUsedToday = 0;
-    }
+    if (model.tier === AiModelTier.PAID) return true;
 
-    if (now.getTime() - model.lastMinuteResetAt.getTime() >= 60000) {
-      await this.prisma.aiModelConfig.update({
-        where: { id: model.id },
-        data: { requestsThisMinute: 0, lastMinuteResetAt: now },
-      });
-      model.requestsThisMinute = 0;
-    }
-
-    if (model.unavailableUntil && model.unavailableUntil <= now) {
-      await this.prisma.aiModelConfig.update({
-        where: { id: model.id },
-        data: {
-          unavailableUntil: null,
-        },
-      });
-
-      model.unavailableUntil = null;
-    }
-
-    if (model.unavailableUntil && model.unavailableUntil > now) {
-      this.logger.warn(
-        `${model.provider}/${model.model}: en cooldown por rate limit hasta ${model.unavailableUntil.toISOString()}`,
-      );
-      return false;
-    }
+    await this.rollWindows(model, now);
 
     if (
       model.dailyTokenLimit &&
@@ -156,6 +142,44 @@ export class AiModelSelectorService {
     return true;
   }
 
+  private async claimProbe(model: AiModelConfig, now: Date): Promise<boolean> {
+    const claimed = await this.prisma.aiModelConfig.updateMany({
+      where: { id: model.id, unavailableUntil: model.unavailableUntil },
+      data: { unavailableUntil: new Date(now.getTime() + PROBE_WINDOW_MS) },
+    });
+    return claimed.count === 1;
+  }
+
+  private async rollWindows(model: AiModelConfig, now: Date): Promise<void> {
+    const daily = await this.prisma.aiModelConfig.updateMany({
+      where: {
+        id: model.id,
+        lastResetAt: { lte: new Date(now.getTime() - DAY_MS) },
+      },
+      data: { tokensUsedToday: 0, lastResetAt: now },
+    });
+    const minute = await this.prisma.aiModelConfig.updateMany({
+      where: {
+        id: model.id,
+        lastMinuteResetAt: { lte: new Date(now.getTime() - MINUTE_MS) },
+      },
+      data: { requestsThisMinute: 0, lastMinuteResetAt: now },
+    });
+    const stale =
+      now.getTime() - model.lastResetAt.getTime() >= DAY_MS ||
+      now.getTime() - model.lastMinuteResetAt.getTime() >= MINUTE_MS;
+    if (!stale) return;
+    if (daily.count === 1) model.tokensUsedToday = 0;
+    if (minute.count === 1) model.requestsThisMinute = 0;
+    if (daily.count === 0 || minute.count === 0) {
+      const fresh = await this.prisma.aiModelConfig.findUnique({
+        where: { id: model.id },
+        select: { tokensUsedToday: true, requestsThisMinute: true },
+      });
+      if (fresh) Object.assign(model, fresh);
+    }
+  }
+
   async recordUsage(modelId: string, tokensUsed: number): Promise<void> {
     await this.prisma.aiModelConfig.update({
       where: { id: modelId },
@@ -166,23 +190,69 @@ export class AiModelSelectorService {
     });
   }
 
-  async markRateLimited(modelId: string, retryAfterMs = 60_000): Promise<void> {
-    const unavailableUntil = new Date(Date.now() + retryAfterMs);
-
+  async recordSuccess(model: AiModelConfig): Promise<void> {
+    if (model.consecutiveFailures === 0 && !model.unavailableUntil) return;
     await this.prisma.aiModelConfig.update({
-      where: { id: modelId },
+      where: { id: model.id },
       data: {
-        unavailableUntil,
+        consecutiveFailures: 0,
+        unavailableUntil: null,
+        lastErrorType: null,
       },
     });
   }
 
-  async markDisabled(modelId: string): Promise<void> {
+  /**
+   * Cuenta un fallo transitorio. El 429 abre el circuito al primero (y respeta
+   * `retry-after`); 5xx, timeout y red al segundo seguido. El enfriamiento
+   * crece con cada fallo adicional.
+   */
+  async recordFailure(
+    modelId: string,
+    type: AiErrorType,
+    retryAfterMs?: number,
+  ): Promise<{ failures: number; openUntil: Date | null }> {
+    const now = new Date();
+    const { consecutiveFailures: failures } =
+      await this.prisma.aiModelConfig.update({
+        where: { id: modelId },
+        data: {
+          consecutiveFailures: { increment: 1 },
+          lastErrorType: type,
+          lastErrorAt: now,
+        },
+        select: { consecutiveFailures: true },
+      });
+
+    const threshold =
+      type === AiErrorType.RATE_LIMIT ? 1 : CIRCUIT_OPEN_AFTER_FAILURES;
+    if (failures < threshold) return { failures, openUntil: null };
+
+    const step = Math.min(failures - threshold, BACKOFF_MS.length - 1);
+    const cooldown = Math.max(
+      Math.min(retryAfterMs ?? 0, MAX_RETRY_AFTER_MS),
+      BACKOFF_MS[step],
+    );
+    const openUntil = new Date(now.getTime() + cooldown);
     await this.prisma.aiModelConfig.update({
       where: { id: modelId },
+      data: { unavailableUntil: openUntil },
+    });
+    return { failures, openUntil };
+  }
+
+  async markCredentialInvalid(
+    modelId: string,
+    type: AiErrorType,
+  ): Promise<boolean> {
+    const marked = await this.prisma.aiModelConfig.updateMany({
+      where: { id: modelId, credentialInvalidAt: null },
       data: {
-        isActive: false,
+        credentialInvalidAt: new Date(),
+        lastErrorType: type,
+        lastErrorAt: new Date(),
       },
     });
+    return marked.count === 1;
   }
 }

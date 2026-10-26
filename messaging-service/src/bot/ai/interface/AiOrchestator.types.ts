@@ -7,6 +7,7 @@ import {
   ToolExecutor,
   ToolSpec,
 } from './AiProvider';
+import type { TurnBudget } from '../turn-budget';
 
 export interface GenerateResponseInput {
   botConfigId: string;
@@ -21,6 +22,7 @@ export interface GenerateResponseInput {
   temperature?: number;
   tools?: ToolSpec[];
   toolExecutor?: ToolExecutor;
+  budget?: TurnBudget;
 }
 
 export interface AnalyzeImageInput {

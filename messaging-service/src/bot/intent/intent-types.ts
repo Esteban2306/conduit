@@ -77,6 +77,7 @@ export const RULE_KEYS = [
   'rule.spam',
   'rule.handoff',
   'rule.handoff_failed',
+  'rule.ai_unavailable',
 ] as const;
 export type RuleKey = (typeof RULE_KEYS)[number];
 

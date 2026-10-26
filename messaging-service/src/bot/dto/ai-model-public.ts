@@ -14,6 +14,10 @@ export const AI_MODEL_PUBLIC_SELECT = {
   tokensUsedToday: true,
   requestsThisMinute: true,
   unavailableUntil: true,
+  credentialInvalidAt: true,
+  consecutiveFailures: true,
+  lastErrorType: true,
+  lastErrorAt: true,
   apiKeyLast4: true,
   createdAt: true,
 } satisfies Prisma.AiModelConfigSelect;

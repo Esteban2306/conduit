@@ -72,7 +72,7 @@ describe('AnthropicProvider: caché, razonamiento y tiempos', () => {
     expect(params.tools[0].cache_control).toBeUndefined();
     expect(params.tools[1].cache_control).toEqual({ type: 'ephemeral' });
     expect(params.temperature).toBeUndefined();
-    expect(constructed[0]).toMatchObject({ timeout: 30_000, maxRetries: 1 });
+    expect(constructed[0]).toMatchObject({ timeout: 25_000, maxRetries: 0 });
   });
 
   it('sin bloques conserva el system como texto y no agrega caché', async () => {

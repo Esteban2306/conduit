@@ -146,6 +146,29 @@ describe('ToolExecutorService', () => {
     expect(keys[0]).toBe(keys[1]);
   });
 
+  it('una herramienta colgada termina dentro del presupuesto del turno', async () => {
+    global.fetch = jest.fn(
+      (_url: unknown, init?: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () =>
+            reject(Object.assign(new Error('aborted'), { name: 'AbortError' })),
+          );
+        }),
+    ) as never;
+    const started = Date.now();
+    const outcome = await service.execute({
+      toolDefinitionId: 'tool-1',
+      conversationId: 'conv-1',
+      params: { treatmentIds: ['t1'] },
+      turnId: 'turn-1',
+      deadlineAt: Date.now() + 1_200,
+    });
+    expect(Date.now() - started).toBeLessThan(3_000);
+    expect(outcome.status).toBe('TECHNICAL_ERROR');
+    expect(outcome.errorDetail).toMatch(/Timeout/);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
   it('un turno nuevo genera otra clave de idempotencia', async () => {
     const fetchMock = jest.fn().mockResolvedValue(reply(201, {}));
     global.fetch = fetchMock;

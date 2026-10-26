@@ -3,6 +3,7 @@ import { BotConfigModule } from './config/BotConfig.module';
 import { AiModelSelectorService } from './ai/AiModelSelectorService';
 import { AiProviderFactory } from './ai/AiProviderFactory';
 import { AiOrchestrator } from './ai/AiOrchestrator';
+import { AiModelController } from './ai/AiModel.controller';
 import { AnthropicProvider } from './ai/providers/AnthropicProvider';
 import { OpenAIProvider } from './ai/providers/OpenAIProvider';
 import { GeminiProvider } from './ai/providers/GeminiProvider';
@@ -49,6 +50,7 @@ import { ConversationAdminController } from './admin/ConversationAdmin.controlle
     WhatsAppContactModule,
   ],
   controllers: [
+    AiModelController,
     ToolDefinitionController,
     ConversationAdminController,
     IntentController,

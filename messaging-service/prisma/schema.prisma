@@ -297,6 +297,11 @@ model AiModelConfig {
   lastResetAt        DateTime @default(now())
   lastMinuteResetAt  DateTime @default(now())
   unavailableUntil DateTime?
+
+  credentialInvalidAt DateTime?
+  consecutiveFailures Int       @default(0)
+  lastErrorType       String?
+  lastErrorAt         DateTime?
   
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

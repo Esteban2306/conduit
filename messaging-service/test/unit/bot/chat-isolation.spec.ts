@@ -1,3 +1,7 @@
+import {
+  DEFAULT_AI_UNAVAILABLE_AGAIN_TEXT,
+  DEFAULT_AI_UNAVAILABLE_TEXT,
+} from 'src/bot/handoff/handoff-defaults';
 jest.mock('@whiskeysockets/baileys', () => ({
   __esModule: true,
   default: jest.fn(),
@@ -394,7 +398,16 @@ function world(
       },
     } as never,
     { handle: intentHandle, afterSlimTurn } as never,
-    { perform: handoffPerform, afterModelHandoff: handoffAfter } as never,
+    {
+      perform: handoffPerform,
+      afterModelHandoff: handoffAfter,
+      aiUnavailableText: (_botId: string, again: boolean) =>
+        Promise.resolve(
+          again
+            ? DEFAULT_AI_UNAVAILABLE_AGAIN_TEXT
+            : DEFAULT_AI_UNAVAILABLE_TEXT,
+        ),
+    } as never,
   );
   (router as unknown as { logger: object }).logger = {
     debug: jest.fn(),
@@ -693,7 +706,7 @@ describe('Respuestas vacías de la IA (etapa de tokens)', () => {
     await settle(DELAY_MS + 2_000);
 
     expect(w.sends).toHaveLength(1);
-    expect(w.sends[0].content).toMatch(/asistente no está disponible/);
+    expect(w.sends[0].content).toMatch(/no puedo atenderte/);
   });
 
   it('una respuesta vacía no dispara la regeneración por "duplicado" sin historial', async () => {
@@ -840,7 +853,7 @@ describe('IA no disponible: la clienta siempre recibe respuesta y el equipo se e
     w.inbound(A, 'hola');
     await settle(DELAY_MS + 2_000);
     expect(w.sends).toHaveLength(1);
-    expect(w.sends[0].content).toMatch(/asistente no está disponible/);
+    expect(w.sends[0].content).toMatch(/no puedo atenderte/);
     expect(w.notifications).toHaveLength(1);
   });
 
@@ -853,7 +866,7 @@ describe('IA no disponible: la clienta siempre recibe respuesta y el equipo se e
 
     expect(w.sends).toHaveLength(2);
     expect(w.sends[1].content).toMatch(
-      /una persona del equipo ya tiene tu mensaje/,
+      /Sigo sin poder atenderte/,
     );
     expect(w.sends.every((s) => s.content.trim() !== '')).toBe(true);
     expect(w.notifications).toHaveLength(1);
@@ -868,7 +881,7 @@ describe('IA no disponible: la clienta siempre recibe respuesta y el equipo se e
     await settle(DELAY_MS + 2_000);
 
     expect(w.sends).toHaveLength(2);
-    expect(w.sends[1].content).toMatch(/asistente no está disponible/);
+    expect(w.sends[1].content).toMatch(/no puedo atenderte/);
     expect(w.notifications).toHaveLength(2);
   });
 });

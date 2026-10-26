@@ -199,6 +199,7 @@ describe('BotConfigService.toggle: validación al activar', () => {
           .fn()
           .mockResolvedValue(opts.tools.map((name) => ({ name }))),
       },
+      aiModelConfig: { count: jest.fn().mockResolvedValue(2) },
     };
     const svc = new BotConfigService(prisma as never, {} as never, {} as never);
     jest.spyOn(svc, 'findOne').mockResolvedValue({} as never);

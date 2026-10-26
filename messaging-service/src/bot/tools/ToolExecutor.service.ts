@@ -4,6 +4,10 @@ import { createHash } from 'crypto';
 import { PrismaService } from 'src/shared/prisma.service';
 import { SecretEncryptionService } from 'src/shared/security/secret-encryption.service';
 import { canonicalJson, setByPath } from './json-path.util';
+import {
+  TOOL_READ_TIMEOUT_MS,
+  TOOL_WRITE_TIMEOUT_MS,
+} from '../ai/turn-budget';
 
 /**
  * Headers con la identidad verificada del chat. Los pone Conduit (no el
@@ -37,6 +41,8 @@ export interface ToolCallRequest {
    * turno nuevo (p. ej. volver a reservar tras cancelar) genera otra.
    */
   turnId?: string;
+  /** Fin del presupuesto del turno (epoch ms): ningún intento lo excede. */
+  deadlineAt?: number;
 }
 
 export interface ToolCallOutcome {
@@ -53,7 +59,6 @@ const READ_ONLY_METHODS = new Set(['GET', 'HEAD']);
 export class ToolExecutorService {
   private readonly logger = new Logger(ToolExecutorService.name);
 
-  private readonly DEFAULT_TIMEOUT_MS = 10_000;
   private readonly IMAGE_TIMEOUT_MS = 25_000;
 
   constructor(
@@ -127,7 +132,9 @@ export class ToolExecutorService {
 
     const timeoutMs = request.attachedImage
       ? this.IMAGE_TIMEOUT_MS
-      : this.DEFAULT_TIMEOUT_MS;
+      : isReadOnly
+        ? TOOL_READ_TIMEOUT_MS
+        : TOOL_WRITE_TIMEOUT_MS;
 
     try {
       const requestUrl = isReadOnly
@@ -142,6 +149,7 @@ export class ToolExecutorService {
           ...(isReadOnly ? {} : { body: JSON.stringify(finalParams) }),
         },
         timeoutMs,
+        request.deadlineAt,
       );
 
       const status = response.ok
@@ -197,22 +205,31 @@ export class ToolExecutorService {
   }
 
   /**
-   * Hasta 3 intentos con la MISMA clave de idempotencia (seguro: el backend
+   * Hasta 2 intentos con la MISMA clave de idempotencia (seguro: el backend
    * deduplica). Se reintenta ante un timeout/red caída o si el backend
-   * avisa que la misma operación sigue en curso. Así un bache momentáneo
-   * no se convierte en "tuvimos un inconveniente" para el cliente.
+   * avisa que la misma operación sigue en curso. Cada intento y cada espera
+   * están limitados por lo que queda del presupuesto del turno.
    */
   private async callWithRetry(
     url: string,
     init: RequestInit,
     timeoutMs: number,
+    deadlineAt?: number,
   ): Promise<{ response: Response; body: any }> {
-    const MAX_ATTEMPTS = 3;
+    const MAX_ATTEMPTS = 2;
+    const MIN_ATTEMPT_MS = 1_000;
+    const left = () =>
+      deadlineAt === undefined ? Infinity : deadlineAt - Date.now();
     let lastError: unknown;
 
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      const budgetMs = Math.min(timeoutMs, left());
+      if (budgetMs < MIN_ATTEMPT_MS && attempt > 1) break;
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const timer = setTimeout(
+        () => controller.abort(),
+        Math.max(budgetMs, MIN_ATTEMPT_MS),
+      );
       try {
         const response = await fetch(url, {
           ...init,
@@ -223,21 +240,21 @@ export class ToolExecutorService {
         const inProgress =
           response.status === 409 && body?.code === 'IDEMPOTENCY_IN_PROGRESS';
         if (inProgress && attempt < MAX_ATTEMPTS) {
-          await this.sleep(1500 * attempt);
+          await this.sleep(Math.min(1500, Math.max(0, left() - 1_000)));
           continue;
         }
         return { response, body };
       } catch (error) {
         lastError = error;
         if (attempt < MAX_ATTEMPTS) {
-          await this.sleep(1000 * attempt);
+          await this.sleep(Math.min(1000, Math.max(0, left() - 1_000)));
           continue;
         }
       } finally {
         clearTimeout(timer);
       }
     }
-    throw lastError;
+    throw lastError ?? new Error('Timeout al invocar la tool');
   }
 
   private sleep(ms: number): Promise<void> {

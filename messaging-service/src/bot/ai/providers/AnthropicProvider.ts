@@ -8,6 +8,7 @@ import {
   ReasoningLevel,
   TokenUsage,
 } from '../interface/AiProvider';
+import { AI_CALL_TIMEOUT_MS } from '../turn-budget';
 
 const CACHE: Anthropic.CacheControlEphemeral = { type: 'ephemeral' };
 
@@ -37,14 +38,14 @@ export class AnthropicProvider implements AiProvider {
   readonly supportsTools = true;
   private readonly logger = new Logger(AnthropicProvider.name);
   private readonly DEFAULT_MAX_TOOL_ITERATIONS = 3;
-  private readonly REQUEST_TIMEOUT_MS = 30_000;
+  private readonly REQUEST_TIMEOUT_MS = AI_CALL_TIMEOUT_MS;
 
   async generateText(input: GenerateTextInput): Promise<GenerateTextResult> {
     const start = Date.now();
     const client = new Anthropic({
       apiKey: input.apiKey,
       timeout: this.REQUEST_TIMEOUT_MS,
-      maxRetries: 1,
+      maxRetries: 0,
     });
 
     const messages: Anthropic.MessageParam[] = (input.history ?? []).map(
@@ -180,7 +181,7 @@ export class AnthropicProvider implements AiProvider {
     const client = new Anthropic({
       apiKey: input.apiKey,
       timeout: this.REQUEST_TIMEOUT_MS,
-      maxRetries: 1,
+      maxRetries: 0,
     });
 
     const response = await client.messages.create({

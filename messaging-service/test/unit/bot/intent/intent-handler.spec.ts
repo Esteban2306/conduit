@@ -1,5 +1,6 @@
 import { HandoffService } from 'src/bot/handoff/Handoff.service';
 import { IntentHandler } from 'src/bot/intent/IntentHandler';
+import { IntentRepository } from 'src/bot/intent/IntentRepository.service';
 import { IntentResolver } from 'src/bot/intent/IntentResolver';
 import { IntentMetricsService } from 'src/bot/intent/intent-metrics.service';
 import { IntentTurn } from 'src/bot/intent/intent-turn';
@@ -56,6 +57,7 @@ function build(
 
   const set = intentSet(spaRecords(options.mode ?? 'ACTIVE'));
   const repository = {
+    ruleText: IntentRepository.prototype.ruleText,
     forBot: () => Promise.resolve(set),
     timeZone: () => TIME_ZONE,
   };

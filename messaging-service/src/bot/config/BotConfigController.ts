@@ -54,16 +54,6 @@ export class BotConfigController {
     return this.botConfigService.getAiModels(id, user.tenantId);
   }
 
-  @Patch(':id/models/:modelId/reset')
-  @ApiOperation({ summary: 'Resetear contadores de uso de un modelo' })
-  resetModel(
-    @Param('id') id: string,
-    @Param('modelId') modelId: string,
-    @CurrentUser() user: JwtPayload,
-  ) {
-    return this.botConfigService.resetModelCounters(id, modelId, user.tenantId);
-  }
-
   @Delete(':id/models/:modelId')
   @ApiOperation({ summary: 'Eliminar un modelo de IA del bot' })
   removeModel(

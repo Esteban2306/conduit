@@ -15,7 +15,9 @@ import {
   IntentModeValue,
   IntentRecord,
   RULE_KEY_PREFIX,
+  RuleKey,
 } from './intent-types';
+import { fillTemplate } from './render-spec';
 import { IntentSchedule } from './schedule';
 
 export interface BotIntentSet {
@@ -110,6 +112,25 @@ export class IntentRepository {
     };
     this.cache.set(botConfigId, { at: Date.now(), set });
     return set;
+  }
+
+  /** Texto editable de una regla dura (variante `variant`), o el de respaldo si el bot no lo definió. */
+  async ruleText(
+    botConfigId: string,
+    key: RuleKey,
+    fallback: string,
+    variant = 'default',
+  ): Promise<string> {
+    const set = await this.forBot(botConfigId);
+    const variants = set.byKey.get(key)?.variants[variant] ?? [];
+    const pick = variants.length
+      ? variants[Math.floor(Math.random() * variants.length)]
+      : null;
+    return (
+      (pick &&
+        fillTemplate(pick, { agente: set.agent, negocio: set.business })) ||
+      fallback
+    );
   }
 
   invalidate(botConfigId: string): void {

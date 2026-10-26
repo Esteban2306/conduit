@@ -23,6 +23,7 @@ import {
 import { HandoffService } from '../handoff/Handoff.service';
 import { FAILURE_STREAKS_KEY } from '../handoff/handoff-defaults';
 import { promisesHumanContact } from '../handoff/handoff-promise';
+import { TurnBudget } from '../ai/turn-budget';
 import { IntentHandler } from '../intent/IntentHandler';
 import { isTaskDone } from '../intent/intent-turn';
 import { AiOutageDigestService } from '../tools/AiOutageDigest.service';
@@ -64,14 +65,6 @@ export interface IncomingMessageDto {
   hasImage: boolean;
   imageUrl?: string;
 }
-
-const AI_UNAVAILABLE_FIRST =
-  '¡Hola! Recibimos tu mensaje 🙌 En este momento nuestro asistente no está disponible; ' +
-  'una persona del equipo te responderá lo antes posible por este mismo chat.';
-
-const AI_UNAVAILABLE_AGAIN =
-  'Sigo sin poder atenderte yo, pero una persona del equipo ya tiene tu mensaje ' +
-  'y te escribirá por este chat en cuanto pueda. 🙏';
 
 @Injectable()
 export class BotRouter {
@@ -651,8 +644,19 @@ export class BotRouter {
       recorded.push({ tool, readOnly: readOnlyTools.has(tool), outcome });
     };
 
+    const budget = new TurnBudget();
     const toolExecutorFn = tools.length
       ? async (req: { name: string; arguments: Record<string, unknown> }) => {
+          if (budget.expired()) {
+            return {
+              ok: false,
+              content: {
+                error: true,
+                status: 'TURN_TIMEOUT',
+                message: 'Se agotó el tiempo del turno; no se ejecutó la acción.',
+              },
+            };
+          }
           const resolved = toolByName.get(req.name);
           if (!resolved) {
             record(req.name, { kind: 'EXPECTED', httpStatus: null });
@@ -727,6 +731,7 @@ export class BotRouter {
             phoneParamName: resolved.injectPhoneParamName ?? undefined,
             contactAddress: phoneNumber,
             turnId,
+            deadlineAt: budget.deadlineAt,
           });
 
           await this.rememberAction(conversationId, req, outcome);
@@ -808,6 +813,7 @@ export class BotRouter {
         temperature: builtPrompt.temperature,
         tools: tools.length ? tools.map((t) => t.spec) : undefined,
         toolExecutor: toolExecutorFn,
+        budget,
       });
 
     let aiResult: Awaited<ReturnType<AiOrchestrator['generateResponse']>>;
@@ -1000,7 +1006,10 @@ export class BotRouter {
 
     await this.sendReply(
       turn,
-      inWindow ? AI_UNAVAILABLE_AGAIN : AI_UNAVAILABLE_FIRST,
+      await this.handoffService.aiUnavailableText(
+        turn.botConfig.id,
+        inWindow,
+      ),
       0,
     );
 

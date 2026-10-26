@@ -38,6 +38,32 @@ export class BotEscalationService {
     );
   }
 
+  /**
+   * La credencial de un modelo de IA fue rechazada (401/403). Se avisa una
+   * sola vez por modelo hasta que se reactive o se vuelva a marcar.
+   */
+  async notifyAiCredentialInvalid(
+    botConfigId: string,
+    modelLabel: string,
+    detail: string,
+  ): Promise<boolean> {
+    const bot = await this.prisma.botConfig.findUnique({
+      where: { id: botConfigId },
+      select: { tenantId: true },
+    });
+    if (!bot) return false;
+    return this.notifyContacts(
+      bot.tenantId,
+      botConfigId,
+      'TECHNICAL_ERROR',
+      `⚠️ Credencial de IA rechazada\n\n` +
+        `Modelo: ${modelLabel}\n` +
+        `Detalle: ${detail || 'sin detalle'}\n\n` +
+        `El modelo quedó fuera de uso hasta que se corrija la clave y se reactive desde el panel. Si hay un respaldo configurado, el bot sigue respondiendo con él.`,
+      'credencial de IA',
+    );
+  }
+
   async notifyContacts(
     tenantId: string,
     botConfigId: string,

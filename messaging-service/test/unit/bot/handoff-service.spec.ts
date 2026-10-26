@@ -1,4 +1,5 @@
 import { HandoffService } from 'src/bot/handoff/Handoff.service';
+import { IntentRepository } from 'src/bot/intent/IntentRepository.service';
 import {
   DEFAULT_HANDOFF_FAILED_TEXT,
   DEFAULT_HANDOFF_TEXT,
@@ -67,6 +68,7 @@ function build(options: Options = {}) {
       },
     } as never,
     {
+      ruleText: IntentRepository.prototype.ruleText,
       forBot: () =>
         Promise.resolve({
           byKey: new Map(

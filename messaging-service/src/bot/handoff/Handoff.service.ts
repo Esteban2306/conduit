@@ -1,12 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConversationService } from '../conversation/ConversationService';
 import { IntentRepository } from '../intent/IntentRepository.service';
-import { fillTemplate } from '../intent/render-spec';
 import { BotEscalationService } from '../tools/BotEscalation.service';
 import { ResolvedTool } from '../tools/ToolDefinitionService';
 import { ToolExecutorService } from '../tools/ToolExecutor.service';
 import { isLidAddress } from 'src/channels/whatsapp/utils/jid.util';
 import {
+  DEFAULT_AI_UNAVAILABLE_AGAIN_TEXT,
+  DEFAULT_AI_UNAVAILABLE_TEXT,
   DEFAULT_HANDOFF_FAILED_TEXT,
   DEFAULT_HANDOFF_TEXT,
   HANDOFF_AT_KEY,
@@ -197,23 +198,26 @@ export class HandoffService {
     }
   }
 
-  private async textFor(
-    botConfigId: string,
-    notified: boolean,
-  ): Promise<string> {
-    const key = notified ? 'rule.handoff' : 'rule.handoff_failed';
-    const fallback = notified
-      ? DEFAULT_HANDOFF_TEXT
-      : DEFAULT_HANDOFF_FAILED_TEXT;
-    const set = await this.repository.forBot(botConfigId);
-    const variants = set.byKey.get(key)?.variants.default ?? [];
-    const pick = variants.length
-      ? variants[Math.floor(Math.random() * variants.length)]
-      : null;
-    return (
-      (pick &&
-        fillTemplate(pick, { agente: set.agent, negocio: set.business })) ||
-      fallback
+  aiUnavailableText(botConfigId: string, again: boolean): Promise<string> {
+    return this.repository.ruleText(
+      botConfigId,
+      'rule.ai_unavailable',
+      again ? DEFAULT_AI_UNAVAILABLE_AGAIN_TEXT : DEFAULT_AI_UNAVAILABLE_TEXT,
+      again ? 'again' : 'default',
     );
+  }
+
+  private textFor(botConfigId: string, notified: boolean): Promise<string> {
+    return notified
+      ? this.repository.ruleText(
+          botConfigId,
+          'rule.handoff',
+          DEFAULT_HANDOFF_TEXT,
+        )
+      : this.repository.ruleText(
+          botConfigId,
+          'rule.handoff_failed',
+          DEFAULT_HANDOFF_FAILED_TEXT,
+        );
   }
 }

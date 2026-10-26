@@ -8,6 +8,7 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaService } from 'src/shared/prisma.service';
 import { CreateBotConfigDto } from '../dto/create-bot-config.dto';
 import {
+  AiModelRole,
   AiProvider,
   BotStatus,
   Prisma,
@@ -263,6 +264,11 @@ export class BotConfigService {
         requestsThisMinute: 0,
         lastResetAt: new Date(),
         lastMinuteResetAt: new Date(),
+        credentialInvalidAt: null,
+        consecutiveFailures: 0,
+        unavailableUntil: null,
+        lastErrorType: null,
+        lastErrorAt: null,
       },
       select: AI_MODEL_PUBLIC_SELECT,
     });
@@ -293,6 +299,19 @@ export class BotConfigService {
     if (unknown.length > 0) {
       throw new BadRequestException(
         `La plantilla CONVERSATION nombra herramientas que el bot no tiene: ${unknown.join(', ')}.`,
+      );
+    }
+    const usable = await this.prisma.aiModelConfig.count({
+      where: {
+        botConfigId,
+        isActive: true,
+        credentialInvalidAt: null,
+        role: { in: [AiModelRole.CONVERSATION, AiModelRole.FALLBACK] },
+      },
+    });
+    if (usable < 2) {
+      this.logger.warn(
+        `El bot ${botConfigId} se activa con ${usable} modelo(s) de IA utilizable(s): sin respaldo, una caída del proveedor deja a los clientes sin respuesta de la IA.`,
       );
     }
   }
