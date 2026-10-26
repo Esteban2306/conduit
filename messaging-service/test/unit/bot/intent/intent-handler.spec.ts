@@ -1,3 +1,4 @@
+import { HandoffService } from 'src/bot/handoff/Handoff.service';
 import { IntentHandler } from 'src/bot/intent/IntentHandler';
 import { IntentResolver } from 'src/bot/intent/IntentResolver';
 import { IntentMetricsService } from 'src/bot/intent/intent-metrics.service';
@@ -37,6 +38,7 @@ function build(
     responses?: Responses;
     hardRule?: boolean;
     ai?: (text: string) => string | null;
+    contacts?: boolean;
   } = {},
 ) {
   const sent: string[] = [];
@@ -53,12 +55,66 @@ function build(
   (metrics as unknown as { logger: object }).logger = { log: jest.fn() };
 
   const set = intentSet(spaRecords(options.mode ?? 'ACTIVE'));
+  const repository = {
+    forBot: () => Promise.resolve(set),
+    timeZone: () => TIME_ZONE,
+  };
+  const toolExecutor = {
+    execute: jest.fn((req: any) => {
+      const tool = TOOLS.find((t) => t.definitionId === req.toolDefinitionId)!
+        .spec.name;
+      calls.push({ tool, params: req.params, phone: req.injectedPhone });
+      const r = responses[tool] ?? { status: 'SUCCESS', body: {} };
+      return Promise.resolve({
+        status: r.status,
+        responseBody: r.body ?? {},
+        httpStatus: 200,
+        errorDetail: r.status === 'SUCCESS' ? null : 'falló',
+        invocationId: null,
+      });
+    }),
+  };
+  const conversationFake = {
+    pauseBot: (_id: string, minutes: number, reason: string) => {
+      paused.push({ minutes, reason });
+      return Promise.resolve(new Date());
+    },
+    updateContext: (_id: string, patch: any) => {
+      contexts.push(patch.contextPatch);
+      return Promise.resolve();
+    },
+    ignorePending: (ids: string[]) => {
+      ignored.push(...ids);
+      return Promise.resolve();
+    },
+    appendActionMemory: (_id: string, entry: unknown) => {
+      remembered.push(entry);
+      return Promise.resolve();
+    },
+  };
+  const escalation = {
+    notifyToolFailure: (...args: unknown[]) => {
+      notified.push(args);
+      return Promise.resolve(true);
+    },
+    notifyContacts: (...args: unknown[]) => {
+      notified.push(args);
+      return Promise.resolve(options.contacts ?? true);
+    },
+  };
+  const handoffService = new HandoffService(
+    toolExecutor as never,
+    escalation as never,
+    conversationFake as never,
+    repository as never,
+  );
+  (handoffService as unknown as { logger: object }).logger = {
+    error: jest.fn(),
+    warn: jest.fn(),
+  };
   const handler = new IntentHandler(
     new IntentResolver(),
-    {
-      forBot: () => Promise.resolve(set),
-      timeZone: () => TIME_ZONE,
-    } as never,
+    repository as never,
     { apply: () => Promise.resolve(options.hardRule ?? false) } as never,
     {
       classify: (_b: string, _c: string, text: string) => {
@@ -70,49 +126,10 @@ function build(
       },
     } as never,
     metrics,
-    {
-      execute: jest.fn((req: any) => {
-        const tool = TOOLS.find((t) => t.definitionId === req.toolDefinitionId)!
-          .spec.name;
-        calls.push({ tool, params: req.params, phone: req.injectedPhone });
-        const r = responses[tool] ?? { status: 'SUCCESS', body: {} };
-        return Promise.resolve({
-          status: r.status,
-          responseBody: r.body ?? {},
-          httpStatus: 200,
-          errorDetail: r.status === 'SUCCESS' ? null : 'falló',
-          invocationId: null,
-        });
-      }),
-    } as never,
-    {
-      pauseBot: (_id: string, minutes: number, reason: string) => {
-        paused.push({ minutes, reason });
-        return Promise.resolve(new Date());
-      },
-      updateContext: (_id: string, patch: any) => {
-        contexts.push(patch.contextPatch);
-        return Promise.resolve();
-      },
-      ignorePending: (ids: string[]) => {
-        ignored.push(...ids);
-        return Promise.resolve();
-      },
-      appendActionMemory: (_id: string, entry: unknown) => {
-        remembered.push(entry);
-        return Promise.resolve();
-      },
-    } as never,
-    {
-      notifyToolFailure: (...args: unknown[]) => {
-        notified.push(args);
-        return Promise.resolve(true);
-      },
-      notifyContacts: (...args: unknown[]) => {
-        notified.push(args);
-        return Promise.resolve(true);
-      },
-    } as never,
+    toolExecutor as never,
+    conversationFake as never,
+    escalation as never,
+    handoffService,
   );
 
   const turn = (text: string, extra: Partial<IntentTurn> = {}): IntentTurn => ({
@@ -512,19 +529,37 @@ describe('IntentHandler · traspaso', () => {
     expect(w.calls[0].tool).toBe('pasar_a_persona');
     expect(w.calls[0].params.reason).toMatch(/pidió hablar con una persona/);
     expect(w.paused).toEqual([
-      { minutes: 240, reason: 'Traspaso a una persona (human_request)' },
+      {
+        minutes: 240,
+        reason: 'Traspaso: La clienta pidió hablar con una persona',
+      },
     ]);
     expect(w.sent[0]).toMatch(/equipo/);
   });
 
-  it('si el traspaso falla NO se pausa el bot y el turno sigue a la IA', async () => {
+  it('si la herramienta de traspaso falla, el aviso sale por los contactos de escalamiento y el bot se pausa', async () => {
     const w = build({
       responses: { pasar_a_persona: { status: 'TECHNICAL_ERROR' } },
     });
     expect(
       await w.handler.handle(w.turn('quiero hablar con una persona')),
-    ).toEqual({ handled: false });
+    ).toEqual({ handled: true });
+    expect(w.notified).toHaveLength(1);
+    expect(w.paused).toHaveLength(1);
+    expect(w.sent[0]).toMatch(/equipo/);
+  });
+
+  it('si nadie pudo ser avisado NO se pausa el bot y la respuesta no promete una persona', async () => {
+    const w = build({
+      responses: { pasar_a_persona: { status: 'TECHNICAL_ERROR' } },
+      contacts: false,
+    });
+    expect(
+      await w.handler.handle(w.turn('quiero hablar con una persona')),
+    ).toEqual({ handled: true });
     expect(w.paused).toHaveLength(0);
+    expect(w.sent[0]).toMatch(/de nuevo en unos minutos/);
+    expect(w.sent[0]).not.toMatch(/persona te escribirá/);
   });
 });
 

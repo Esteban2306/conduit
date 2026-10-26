@@ -246,6 +246,27 @@ function world(
   const slimPrompts: unknown[] = [];
   const afterSlimTurn = jest.fn(() => Promise.resolve());
   let activeTools: unknown[] = [];
+  let toolResults: Record<
+    string,
+    { status: string; httpStatus?: number; body?: unknown }
+  > = {};
+  let toolScript:
+    | ((
+        exec: (req: {
+          name: string;
+          arguments: Record<string, unknown>;
+        }) => Promise<{ ok: boolean; content: Record<string, unknown> }>,
+        call: number,
+      ) => Promise<void>)
+    | null = null;
+  const handoffPerform = jest.fn((_req?: unknown) =>
+    Promise.resolve({
+      notified: true,
+      alreadyHandedOff: false,
+      text: 'TEXTO FIJO DE TRASPASO',
+    }),
+  );
+  const handoffAfter = jest.fn((..._args: unknown[]) => Promise.resolve(true));
   const intentHandle = jest.fn((_turn?: unknown) =>
     Promise.resolve({ handled: false }),
   );
@@ -311,14 +332,16 @@ function world(
     conversations as never,
     eventBus as never,
     {
-      generateResponse: later(
-        (input: {
+      generateResponse: jest.fn(
+        async (input: {
           userMessage: string;
           reasoningMode?: string;
           maxTokens?: number;
+          toolExecutor?: unknown;
         }) => {
           aiCalls.push(input.userMessage);
           aiInputs.push(input);
+          await toolScript?.(input.toolExecutor as never, aiCalls.length);
           const out = ai(input.userMessage, aiCalls.length);
           return {
             tokensUsed: 10,
@@ -347,7 +370,19 @@ function world(
       }),
     } as never,
     { getActiveToolsForBot: later(() => activeTools) } as never,
-    {} as never,
+    {
+      execute: later((req: { toolDefinitionId: string }) => {
+        const name = req.toolDefinitionId.replace(/^def-/, '');
+        const r = toolResults[name] ?? { status: 'SUCCESS', httpStatus: 200 };
+        return {
+          status: r.status,
+          responseBody: r.body ?? {},
+          httpStatus: r.httpStatus ?? 200,
+          errorDetail: null,
+          invocationId: null,
+        };
+      }),
+    } as never,
     {
       notifyToolFailure: later(() => notifyResult),
     } as never,
@@ -359,6 +394,7 @@ function world(
       },
     } as never,
     { handle: intentHandle, afterSlimTurn } as never,
+    { perform: handoffPerform, afterModelHandoff: handoffAfter } as never,
   );
   (router as unknown as { logger: object }).logger = {
     debug: jest.fn(),
@@ -466,16 +502,24 @@ function world(
     intentHandle,
     slimPrompts,
     afterSlimTurn,
-    setTools: (names: string[]) => {
+    handoffPerform,
+    handoffAfter,
+    setToolResults: (value: typeof toolResults) => {
+      toolResults = value;
+    },
+    setToolScript: (value: NonNullable<typeof toolScript>) => {
+      toolScript = value;
+    },
+    setTools: (names: string[], pausing: string[] = []) => {
       activeTools = names.map((name) => ({
         spec: { name },
         definitionId: `def-${name}`,
-        readOnly: true,
+        readOnly: !['crear_reserva_whatsapp', 'pasar_a_persona'].includes(name),
         requiresImageAttachment: false,
         imageParamName: null,
         maxImageSizeBytes: null,
         injectPhoneParamName: null,
-        pausesBotMinutes: null,
+        pausesBotMinutes: pausing.includes(name) ? 240 : null,
       }));
     },
     setNotifyResult: (value: boolean) => {
@@ -1050,5 +1094,357 @@ describe('Reinicio por inactividad de la clienta', () => {
     w.inbound(A, 'sí, confírmala');
     await settle(DELAY_MS + 2_000);
     expect(w.aiCalls).toHaveLength(1);
+  });
+});
+
+describe('Resultados de herramientas y traspaso (etapa 6)', () => {
+  beforeEach(() => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  const SLOT_409 = {
+    status: 'BUSINESS_ERROR',
+    httpStatus: 409,
+    body: {
+      statusCode: 409,
+      code: 'PLACEMENT_NO_SLOT_THAT_DAY',
+      message: 'No hay horario disponible ese día.',
+      nextStep: 'OFFER_OTHER_SLOT',
+      details: {
+        alternatives: [{ date: '2026-11-03', times: ['9:00', '9:30'] }],
+      },
+    },
+  };
+
+  const callTool = async (
+    exec: Parameters<
+      NonNullable<Parameters<ReturnType<typeof world>['setToolScript']>[0]>
+    >[0],
+    name: string,
+    sink?: Array<Record<string, unknown>>,
+  ) => {
+    const out = await exec({ name, arguments: {} });
+    sink?.push(out.content);
+    return out;
+  };
+
+  const failedCall = (name: string, ok = false) => ({
+    name,
+    arguments: {},
+    ok,
+  });
+
+  it('horario ocupado: el modelo recibe código, siguiente paso y alternativas; se conserva su explicación y nadie del equipo es avisado', async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const w = world(new Store(), () => ({
+      content: 'Ese horario se ocupó. ¿Te sirve el martes 3 a las 9:00?',
+      toolCallsExecuted: [failedCall('crear_reserva_whatsapp')],
+    }));
+    w.setTools(['crear_reserva_whatsapp']);
+    w.setToolResults({ crear_reserva_whatsapp: SLOT_409 });
+    w.setToolScript((exec) =>
+      callTool(exec, 'crear_reserva_whatsapp', seen).then(() => undefined),
+    );
+    w.inbound(A, 'sí, confírmala');
+    await settle(DELAY_MS + 2_000);
+
+    expect(seen[0]).toMatchObject({
+      expected: true,
+      code: 'PLACEMENT_NO_SLOT_THAT_DAY',
+      nextStep: 'OFFER_OTHER_SLOT',
+      alternatives: [{ date: '2026-11-03', times: ['9:00', '9:30'] }],
+    });
+    expect(w.sends.map((s) => s.content)).toEqual([
+      'Ese horario se ocupó. ¿Te sirve el martes 3 a las 9:00?',
+    ]);
+    expect(w.handoffPerform).not.toHaveBeenCalled();
+    expect(w.notifications).toHaveLength(0);
+  });
+
+  it('reserva inexistente (404): mensaje claro del modelo, sin traspaso', async () => {
+    const w = world(new Store(), () => ({
+      content: 'No encuentro esa cita. ¿Quieres que revise tus citas próximas?',
+      toolCallsExecuted: [failedCall('cancelar_reserva_whatsapp')],
+    }));
+    w.setTools(['cancelar_reserva_whatsapp']);
+    w.setToolResults({
+      cancelar_reserva_whatsapp: {
+        status: 'BUSINESS_ERROR',
+        httpStatus: 404,
+        body: { code: 'RESERVATION_NOT_OWNED', nextStep: 'SHOW_UPCOMING' },
+      },
+    });
+    w.setToolScript((exec) =>
+      callTool(exec, 'cancelar_reserva_whatsapp').then(() => undefined),
+    );
+    w.inbound(A, 'cancela la cita del viernes');
+    await settle(DELAY_MS + 2_000);
+    expect(w.sends[0].content).toMatch(/No encuentro esa cita/);
+    expect(w.handoffPerform).not.toHaveBeenCalled();
+  });
+
+  it('backend caído (503): traspaso real hecho por el servidor y texto fijo en lugar del texto del modelo', async () => {
+    const w = world(new Store(), () => ({
+      content: 'Listo, tu cita quedó agendada.',
+      toolCallsExecuted: [failedCall('crear_reserva_whatsapp')],
+    }));
+    w.setTools(['crear_reserva_whatsapp']);
+    w.setToolResults({
+      crear_reserva_whatsapp: { status: 'TECHNICAL_ERROR', httpStatus: 503 },
+    });
+    w.setToolScript((exec) =>
+      callTool(exec, 'crear_reserva_whatsapp').then(() => undefined),
+    );
+    w.inbound(A, 'sí, confírmala');
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.handoffPerform).toHaveBeenCalledTimes(1);
+    expect(w.handoffPerform.mock.calls[0][0]).toMatchObject({
+      reason: expect.stringMatching(/Fallo técnico en crear_reserva_whatsapp/),
+      phoneNumber: A,
+    });
+    expect(w.sends.map((s) => s.content)).toEqual(['TEXTO FIJO DE TRASPASO']);
+    expect(w.metrics.snapshot().handoffForced).toBe(1);
+  });
+
+  it('un error de permiso (403) también va a traspaso', async () => {
+    const w = world(new Store(), () => ({
+      content: 'Revisando…',
+      toolCallsExecuted: [failedCall('reservas_proximas')],
+    }));
+    w.setTools(['reservas_proximas']);
+    w.setToolResults({
+      reservas_proximas: { status: 'BUSINESS_ERROR', httpStatus: 403 },
+    });
+    w.setToolScript((exec) =>
+      callTool(exec, 'reservas_proximas').then(() => undefined),
+    );
+    w.inbound(A, 'mis citas por favor revisa');
+    await settle(DELAY_MS + 2_000);
+    expect(w.handoffPerform).toHaveBeenCalledTimes(1);
+  });
+
+  it('una lectura técnica fallida que otra lectura corrige no escala', async () => {
+    const w = world(new Store(), () => ({
+      content: 'Estos son los horarios: 9:00.',
+      toolCallsExecuted: [],
+    }));
+    w.setTools(['consultar_disponibilidad', 'disponibilidad_combo']);
+    w.setToolResults({
+      consultar_disponibilidad: { status: 'TECHNICAL_ERROR', httpStatus: 500 },
+    });
+    w.setToolScript(async (exec) => {
+      await callTool(exec, 'consultar_disponibilidad');
+      await callTool(exec, 'disponibilidad_combo');
+    });
+    w.inbound(A, 'horarios disponibles para el lunes');
+    await settle(DELAY_MS + 2_000);
+    expect(w.handoffPerform).not.toHaveBeenCalled();
+    expect(w.sends[0].content).toMatch(/horarios/);
+  });
+
+  it('siguiente paso "traspaso" del backend (p. ej. consentimiento de salud): traspaso directo', async () => {
+    const w = world(new Store(), () => ({
+      content: 'Necesito tu consentimiento de salud.',
+      toolCallsExecuted: [failedCall('crear_reserva_whatsapp')],
+    }));
+    w.setTools(['crear_reserva_whatsapp']);
+    w.setToolResults({
+      crear_reserva_whatsapp: {
+        status: 'BUSINESS_ERROR',
+        httpStatus: 400,
+        body: { code: 'CLIENT_HEALTH_CONSENT_REQUIRED', nextStep: 'HANDOFF' },
+      },
+    });
+    w.setToolScript((exec) =>
+      callTool(exec, 'crear_reserva_whatsapp').then(() => undefined),
+    );
+    w.inbound(A, 'sí confirmo la cita');
+    await settle(DELAY_MS + 2_000);
+    expect(w.handoffPerform.mock.calls[0][0]).toMatchObject({
+      reason: expect.stringMatching(
+        /Requiere persona.*CLIENT_HEALTH_CONSENT_REQUIRED/,
+      ),
+    });
+    expect(w.sends[0].content).toBe('TEXTO FIJO DE TRASPASO');
+  });
+
+  it('tras 3 fallos esperados seguidos con el mismo código, el resultado sugiere ofrecer una persona', async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const store = new Store();
+    const w = world(store, () => ({
+      content: 'Ese horario no está disponible, ¿probamos otro?',
+      toolCallsExecuted: [failedCall('crear_reserva_whatsapp')],
+    }));
+    w.setTools(['crear_reserva_whatsapp']);
+    w.setToolResults({ crear_reserva_whatsapp: SLOT_409 });
+    w.setToolScript((exec) =>
+      callTool(exec, 'crear_reserva_whatsapp', seen).then(() => undefined),
+    );
+    for (const text of [
+      'quiero el lunes a las 9',
+      'entonces el martes a las 9',
+      'mejor el miércoles a las 9',
+    ]) {
+      w.inbound(A, text);
+      await settle(DELAY_MS + 2_000);
+    }
+    expect(seen.map((c) => c.nextStep)).toEqual([
+      'OFFER_OTHER_SLOT',
+      'OFFER_OTHER_SLOT',
+      'OFFER_HANDOFF',
+    ]);
+    expect(w.handoffPerform).not.toHaveBeenCalled();
+  });
+
+  it('un éxito reinicia la racha', async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const w = world(new Store(), () => ({
+      content: 'ok',
+      toolCallsExecuted: [],
+    }));
+    w.setTools(['crear_reserva_whatsapp']);
+    let n = 0;
+    w.setToolScript(async (exec) => {
+      n += 1;
+      w.setToolResults({
+        crear_reserva_whatsapp:
+          n === 2 ? { status: 'SUCCESS', httpStatus: 201 } : SLOT_409,
+      });
+      await callTool(exec, 'crear_reserva_whatsapp', seen);
+    });
+    for (const text of [
+      'quiero el lunes a las 9',
+      'entonces el martes a las 9',
+      'mejor el jueves a las 9',
+      'o el viernes a las 9',
+    ]) {
+      w.inbound(A, text);
+      await settle(DELAY_MS + 2_000);
+    }
+    expect(seen.map((c) => c.nextStep)).toEqual([
+      'OFFER_OTHER_SLOT',
+      undefined,
+      'OFFER_OTHER_SLOT',
+      'OFFER_OTHER_SLOT',
+    ]);
+  });
+
+  it('frase de promesa sin traspaso: se bloquea y se hace el traspaso real', async () => {
+    const w = world(
+      new Store(),
+      () =>
+        'Una persona de nuestro equipo se pondrá en contacto contigo en breve.',
+    );
+    w.inbound(A, 'quiero hablar de otro tema con alguien');
+    await settle(DELAY_MS + 2_000);
+    expect(w.handoffPerform.mock.calls[0][0]).toMatchObject({
+      reason: expect.stringMatching(/prometió/),
+    });
+    expect(w.sends.map((s) => s.content)).toEqual(['TEXTO FIJO DE TRASPASO']);
+    expect(w.metrics.snapshot().promiseBlocked).toBe(1);
+  });
+
+  it('una oferta ("puedo pasarte con una persona") no se bloquea', async () => {
+    const w = world(
+      new Store(),
+      () => 'Puedo pasarte con una persona del equipo si lo prefieres.',
+    );
+    w.inbound(A, 'tengo una duda rara sobre mi cabello');
+    await settle(DELAY_MS + 2_000);
+    expect(w.handoffPerform).not.toHaveBeenCalled();
+    expect(w.sends[0].content).toMatch(/Puedo pasarte/);
+  });
+
+  it('si la IA llamó a la herramienta de traspaso y el aviso se verificó, su mensaje sale tal cual', async () => {
+    const w = world(new Store(), () => ({
+      content: 'Listo, una persona del equipo te escribirá por aquí.',
+      toolCallsExecuted: [failedCall('pasar_a_persona', true)],
+    }));
+    w.setTools(['pasar_a_persona'], ['pasar_a_persona']);
+    w.setToolResults({
+      pasar_a_persona: {
+        status: 'SUCCESS',
+        body: { handedOff: true, teamNotified: true },
+      },
+    });
+    w.setToolScript((exec) =>
+      callTool(exec, 'pasar_a_persona').then(() => undefined),
+    );
+    w.inbound(A, 'quiero hablar con alguien por favor ahora');
+    await settle(DELAY_MS + 2_000);
+    expect(w.handoffAfter).toHaveBeenCalledTimes(1);
+    expect(w.handoffPerform).not.toHaveBeenCalled();
+    expect(w.sends[0].content).toMatch(/te escribirá/);
+  });
+
+  it('si la herramienta dijo que nadie recibirá el aviso, la promesa del modelo se bloquea', async () => {
+    const w = world(new Store(), () => ({
+      content: 'Listo, una persona del equipo te escribirá por aquí.',
+      toolCallsExecuted: [failedCall('pasar_a_persona', true)],
+    }));
+    w.handoffAfter.mockImplementation(() => Promise.resolve(false));
+    w.setTools(['pasar_a_persona'], ['pasar_a_persona']);
+    w.setToolResults({
+      pasar_a_persona: {
+        status: 'SUCCESS',
+        body: { handedOff: false, teamNotified: false },
+      },
+    });
+    w.setToolScript((exec) =>
+      callTool(exec, 'pasar_a_persona').then(() => undefined),
+    );
+    w.inbound(A, 'quiero hablar con alguien por favor ahora');
+    await settle(DELAY_MS + 2_000);
+    expect(w.handoffPerform).toHaveBeenCalledTimes(1);
+    expect(w.sends[0].content).toBe('TEXTO FIJO DE TRASPASO');
+  });
+
+  it('una acción de escritura que falló no se presenta como hecha: reintento y, si insiste, mensaje honesto', async () => {
+    let call = 0;
+    const w = world(new Store(), () => {
+      call += 1;
+      return call === 1
+        ? {
+            content: 'Listo, tu cita quedó agendada.',
+            toolCallsExecuted: [failedCall('crear_reserva_whatsapp')],
+          }
+        : {
+            content: 'Ese horario ya no está libre, ¿te sirve el martes?',
+            toolCallsExecuted: [],
+          };
+    });
+    w.setTools(['crear_reserva_whatsapp']);
+    w.setToolResults({ crear_reserva_whatsapp: SLOT_409 });
+    w.setToolScript((exec, n) =>
+      n === 1
+        ? callTool(exec, 'crear_reserva_whatsapp').then(() => undefined)
+        : Promise.resolve(),
+    );
+    w.inbound(A, 'sí, confírmala');
+    await settle(DELAY_MS + 2_000);
+    expect(w.aiCalls).toHaveLength(2);
+    expect(w.sends.map((s) => s.content)).toEqual([
+      'Ese horario ya no está libre, ¿te sirve el martes?',
+    ]);
+    expect(w.metrics.snapshot().successClaimBlocked).toBe(1);
+
+    const stubborn = world(new Store(), () => ({
+      content: 'Listo, tu cita quedó agendada.',
+      toolCallsExecuted: [failedCall('crear_reserva_whatsapp')],
+    }));
+    stubborn.setTools(['crear_reserva_whatsapp']);
+    stubborn.setToolResults({ crear_reserva_whatsapp: SLOT_409 });
+    stubborn.setToolScript((exec) =>
+      callTool(exec, 'crear_reserva_whatsapp').then(() => undefined),
+    );
+    stubborn.inbound(A, 'sí, confírmala');
+    await settle(DELAY_MS + 2_000);
+    expect(stubborn.sends[0].content).toMatch(
+      /^No pude completarlo: No hay horario disponible ese día\./,
+    );
   });
 });

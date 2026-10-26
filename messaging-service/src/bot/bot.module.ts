@@ -22,6 +22,7 @@ import { OpenRouterProvider } from './ai/providers/OpenRouterProvider';
 import { PromptModule } from './prompt/Prompt.module';
 import { ToolDefinitionService } from './tools/ToolDefinitionService';
 import { ToolExecutorService } from './tools/ToolExecutor.service';
+import { HandoffService } from './handoff/Handoff.service';
 import { HardRulesService } from './intent/HardRules.service';
 import { IntentAiClassifier } from './intent/IntentAiClassifier';
 import { IntentRepository } from './intent/IntentRepository.service';
@@ -77,6 +78,7 @@ import { ConversationAdminController } from './admin/ConversationAdmin.controlle
     IntentResolver,
     IntentRepository,
     HardRulesService,
+    HandoffService,
     IntentAiClassifier,
     IntentMetricsService,
     IntentHandler,

@@ -72,3 +72,10 @@ Misma muestra (63 conversaciones, 77 turnos), modelo real, dos modos. `BENCH_INT
 - Resultado en modo ACTIVO: b14 pasó de ~50 % (3/5 con el prompt anterior; 3/5 y 4/5 en sombra) a 10/10 tras el último cambio. La corrida con 6 fallos de 8 fue un choque de horario entre b14 y b64 (misma hora, mismo servicio) cuando corrían juntos; b64 usa ahora otro día y hora.
 - b64: tras crear la reserva, "muchas gracias por todo" y "ok perfecto" quedan sin respuesta (4/4).
 
+### Etapa 6 — el bot no promete lo que no ocurrió (2026-10-26)
+
+- Antes: cualquier fallo de una herramienta de escritura (incluido un horario ocupado) reemplazaba la respuesta por "una persona de nuestro equipo se pondrá en contacto" sin que hubiera traspaso. Era el fallo conocido A2 (b25, b26).
+- Ahora: los resultados esperados (409/404) vuelven al modelo con código, siguiente paso y alternativas, sin avisar al equipo; los técnicos, de permiso o con siguiente paso "traspaso" hacen el traspaso desde el servidor (aviso verificado, bot pausado, texto fijo); una frase de promesa sin traspaso exitoso se sustituye por el traspaso real.
+- Medido: b25, b26, b27, b30 y b31 pasaron 20/20 en modo ACTIVO; A2 dejó de ser un fallo conocido (se quitó la marca `knownFailure`). En b13 un horario rechazado por "al menos 1 día de anticipación" se explicó con una alternativa en vez de prometer una persona.
+- No cubierto por el banco: caída real del backend (no se puede inducir); está en pruebas unitarias del router y del servicio de traspaso con notificador simulado.
+

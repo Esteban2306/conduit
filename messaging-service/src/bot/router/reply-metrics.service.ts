@@ -8,7 +8,10 @@ export type ReplyCounter =
   | 'emptyRecovered'
   | 'emptyFallback'
   | 'blockedEmpty'
-  | 'confirmWithoutAction';
+  | 'confirmWithoutAction'
+  | 'handoffForced'
+  | 'promiseBlocked'
+  | 'successClaimBlocked';
 
 @Injectable()
 export class ReplyMetricsService {
@@ -21,6 +24,9 @@ export class ReplyMetricsService {
     emptyRecovered: 0,
     emptyFallback: 0,
     confirmWithoutAction: 0,
+    handoffForced: 0,
+    promiseBlocked: 0,
+    successClaimBlocked: 0,
     blockedEmpty: 0,
   };
 

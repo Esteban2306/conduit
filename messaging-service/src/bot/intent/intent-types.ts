@@ -75,6 +75,8 @@ export const RULE_KEYS = [
   'rule.opt_in',
   'rule.abuse',
   'rule.spam',
+  'rule.handoff',
+  'rule.handoff_failed',
 ] as const;
 export type RuleKey = (typeof RULE_KEYS)[number];
 

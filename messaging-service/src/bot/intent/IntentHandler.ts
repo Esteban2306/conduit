@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { isLidAddress } from 'src/channels/whatsapp/utils/jid.util';
+import { HandoffService } from '../handoff/Handoff.service';
 import { ConversationService } from '../conversation/ConversationService';
 import { BotEscalationService } from '../tools/BotEscalation.service';
 import { ResolvedTool } from '../tools/ToolDefinitionService';
@@ -63,6 +64,7 @@ export class IntentHandler {
     private readonly toolExecutor: ToolExecutorService,
     private readonly conversationService: ConversationService,
     private readonly botEscalation: BotEscalationService,
+    private readonly handoffService: HandoffService,
   ) {}
 
   async handle(turn: IntentTurn): Promise<IntentOutcome> {
@@ -387,7 +389,20 @@ export class IntentHandler {
       variantKey = rendered.variantKey;
       Object.assign(vars, rendered.vars);
     } else if (intent.handler === 'HANDOFF') {
-      if (!(await this.handoff(turn, intent))) return null;
+      const result = await this.handoffService.perform({
+        tenantId: turn.tenantId,
+        botConfigId: turn.botConfigId,
+        conversationId: turn.conversationId,
+        connectionId: turn.connectionId,
+        phoneNumber: turn.phoneNumber,
+        turnId: turn.turnId,
+        reason: intent.config.reason ?? intent.name,
+        summary: `Mensaje de la clienta: "${turn.text.slice(0, 300)}"`,
+        context: turn.context,
+        loadTools: turn.loadTools,
+        toolName: intent.config.tool,
+      });
+      if (!result.notified) return { text: result.text };
     }
 
     const variants = intent.variants[variantKey] ?? [];
@@ -447,42 +462,6 @@ export class IntentHandler {
       negocio: set.business,
       ...rendered.vars,
     });
-  }
-
-  private async handoff(
-    turn: IntentTurn,
-    intent: IntentRecord,
-  ): Promise<boolean> {
-    const config = intent.config;
-    let pause = config.pauseMinutes;
-    if (config.tool) {
-      const tools = await turn.loadTools();
-      const resolved = tools.find((t) => t.spec.name === config.tool);
-      const called = await this.callTool(turn, intent, undefined);
-      if (called === 'failed' || called === 'skip-identity') return false;
-      pause = pause ?? resolved?.pausesBotMinutes ?? undefined;
-    }
-    await this.conversationService.pauseBot(
-      turn.conversationId,
-      pause ?? 240,
-      `Traspaso a una persona (${intent.key})`,
-    );
-    if (config.notifyTeam ?? !config.tool) {
-      try {
-        await this.botEscalation.notifyContacts(
-          turn.tenantId,
-          turn.botConfigId,
-          'TECHNICAL_ERROR',
-          `⚠️ Traspaso a una persona (${intent.name})\n\nChat: ${turn.phoneNumber}\nMotivo: ${config.reason}\nMensaje: "${turn.text.slice(0, 200)}"`,
-          'traspaso',
-        );
-      } catch (error) {
-        this.logger.error(
-          `No fue posible avisar del traspaso: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    }
-    return true;
   }
 
   private pickVariant(

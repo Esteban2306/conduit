@@ -430,7 +430,12 @@ export class ConversationService {
 
   async resumeBot(conversationId: string): Promise<void> {
     await this.updateContext(conversationId, {
-      contextPatch: { botPausedUntil: null, botPauseReason: null },
+      contextPatch: {
+        botPausedUntil: null,
+        botPauseReason: null,
+        handoffAt: null,
+        handoffReason: null,
+      },
     });
   }
 
@@ -834,6 +839,7 @@ export class ConversationService {
         closedAt: since.toISOString(),
         activeFlow: null,
         taskDoneAt: null,
+        failureStreaks: null,
         memoriaAcciones: [],
       },
     });

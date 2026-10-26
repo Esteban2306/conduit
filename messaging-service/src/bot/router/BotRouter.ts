@@ -12,11 +12,17 @@ import { messageReceiptTracker } from 'src/channels/whatsapp/baileys/MessageRece
 import { MessageDebouncer } from './MessageDebouncer';
 import { BuiltPrompt, PromptEngine } from '../prompt/PromptEngine';
 import type { SystemBlocks } from '../ai/interface/AiProvider';
-import { ToolDefinitionService } from '../tools/ToolDefinitionService';
+import {
+  ResolvedTool,
+  ToolDefinitionService,
+} from '../tools/ToolDefinitionService';
 import {
   ToolExecutorService,
   AttachedImage,
 } from '../tools/ToolExecutor.service';
+import { HandoffService } from '../handoff/Handoff.service';
+import { FAILURE_STREAKS_KEY } from '../handoff/handoff-defaults';
+import { promisesHumanContact } from '../handoff/handoff-promise';
 import { IntentHandler } from '../intent/IntentHandler';
 import { isTaskDone } from '../intent/intent-turn';
 import { AiOutageDigestService } from '../tools/AiOutageDigest.service';
@@ -32,7 +38,14 @@ import {
 import { chatKey } from 'src/channels/whatsapp/utils/chat-key';
 import { maskError, maskSecrets } from 'src/shared/security/mask-secrets';
 import { IGNORED_INBOUND } from '../conversation/ConversationService';
-import { ExecutedToolCall, hasUnrecoveredToolFailure } from './tool-failure';
+import {
+  EXPECTED_FAILURES_BEFORE_OFFER,
+  FailureStreaks,
+  RecordedOutcome,
+  classifyOutcome,
+  nextStreaks,
+  unresolvedFailures,
+} from '../tools/tool-outcome';
 import { cutAtSentence, isBlank } from './reply-guard';
 import { ReplyMetricsService } from './reply-metrics.service';
 
@@ -95,6 +108,7 @@ export class BotRouter {
     private readonly replyMetrics: ReplyMetricsService,
     private readonly aiOutageDigest: AiOutageDigestService,
     private readonly intentHandler: IntentHandler,
+    private readonly handoffService: HandoffService,
   ) {}
 
   async route(
@@ -627,10 +641,21 @@ export class BotRouter {
           promptInput,
         );
 
+    let streaks = (aiData.context[FAILURE_STREAKS_KEY] ?? {}) as FailureStreaks;
+    const recorded: RecordedOutcome[] = [];
+    let modelHandoff = false;
+    const record = (
+      tool: string,
+      outcome: ReturnType<typeof classifyOutcome>,
+    ) => {
+      recorded.push({ tool, readOnly: readOnlyTools.has(tool), outcome });
+    };
+
     const toolExecutorFn = tools.length
       ? async (req: { name: string; arguments: Record<string, unknown> }) => {
           const resolved = toolByName.get(req.name);
           if (!resolved) {
+            record(req.name, { kind: 'EXPECTED', httpStatus: null });
             return {
               ok: false,
               content: { error: true, message: 'Tool desconocida.' },
@@ -641,6 +666,11 @@ export class BotRouter {
 
           if (resolved.requiresImageAttachment) {
             if (!hasImage || !imageMessage) {
+              record(req.name, {
+                kind: 'EXPECTED',
+                httpStatus: null,
+                code: 'MISSING_ATTACHMENT',
+              });
               return {
                 ok: false,
                 content: {
@@ -668,6 +698,7 @@ export class BotRouter {
               this.logger.error(
                 `Error descargando imagen para tool "${req.name}": ${err.message}`,
               );
+              record(req.name, { kind: 'TECHNICAL', httpStatus: null });
               return {
                 ok: false,
                 content: {
@@ -700,27 +731,32 @@ export class BotRouter {
 
           await this.rememberAction(conversationId, req, outcome);
 
+          const classified = classifyOutcome(
+            outcome.status,
+            outcome.httpStatus,
+            outcome.responseBody,
+          );
+          record(req.name, classified);
+          const streak = nextStreaks(streaks, req.name, classified);
+          streaks = streak.streaks;
+
           if (outcome.status === 'SUCCESS' && resolved.pausesBotMinutes) {
             // Traspaso a una persona: el bot deja de responder en este chat
-            // (esta última respuesta sí sale, para avisarle al cliente).
-            const until = await this.conversationService.pauseBot(
-              conversationId,
+            // (esta última respuesta sí sale), pero solo si el aviso al equipo
+            // quedó verificado.
+            modelHandoff = await this.handoffService.afterModelHandoff(
+              {
+                tenantId,
+                botConfigId: botConfig.id,
+                conversationId,
+                connectionId,
+                phoneNumber,
+                turnId,
+                reason: `Traspaso solicitado (${req.name})`,
+                context: aiData.context,
+              },
+              outcome.responseBody,
               resolved.pausesBotMinutes,
-              `Traspaso a una persona (${req.name})`,
-            );
-            this.logger.log(
-              `Bot pausado en ${conversationId} hasta ${until.toISOString()} por "${req.name}".`,
-            );
-          }
-
-          if (outcome.status === 'TECHNICAL_ERROR') {
-            await this.botEscalation.notifyToolFailure(
-              tenantId,
-              botConfig.id,
-              outcome.status,
-              req.name,
-              phoneNumber,
-              outcome.errorDetail,
             );
           }
 
@@ -731,6 +767,15 @@ export class BotRouter {
               data: outcome.responseBody,
               error: outcome.status !== 'SUCCESS',
               errorDetail: outcome.errorDetail,
+              ...(classified.kind === 'EXPECTED' && {
+                expected: true,
+                code: classified.code,
+                nextStep:
+                  streak.count >= EXPECTED_FAILURES_BEFORE_OFFER
+                    ? 'OFFER_HANDOFF'
+                    : classified.nextStep,
+                alternatives: classified.alternatives,
+              }),
             },
           };
         }
@@ -830,12 +875,6 @@ export class BotRouter {
       }
     }
 
-    const finalContent = this.applyToolFailureDiscipline(
-      aiResult,
-      phoneNumber,
-      readOnlyTools,
-    );
-
     if (this.receiptTracker.isChatActive(sessionKey, 30000)) {
       this.logger.log(
         `Dueño activo mientras la IA procesaba. Respuesta descartada; se reintenta después.`,
@@ -844,14 +883,37 @@ export class BotRouter {
       return;
     }
 
+    const guarded = await this.guardReply({
+      turn,
+      content: aiResult.content,
+      recorded,
+      modelHandoff,
+      context: aiData.context,
+      turnId,
+      loadTools: () => Promise.resolve(allTools),
+      retry: (instruction) => generate({ appendInstruction: instruction }),
+    });
+    if (
+      JSON.stringify(streaks) !==
+      JSON.stringify(aiData.context[FAILURE_STREAKS_KEY] ?? {})
+    ) {
+      await this.conversationService.updateContext(conversationId, {
+        contextPatch: { [FAILURE_STREAKS_KEY]: streaks },
+      });
+    }
+
     const lastOutbound = aiData.history
       .filter((h) => h.role === 'assistant')
       .at(-1);
 
-    let reply = finalContent;
+    let reply = guarded.content;
     let tokensUsed = aiResult.tokensUsed;
 
-    if (lastOutbound && this.isTooSimilar(reply, lastOutbound.content)) {
+    if (
+      !guarded.replaced &&
+      lastOutbound &&
+      this.isTooSimilar(reply, lastOutbound.content)
+    ) {
       this.logger.warn(
         `Respuesta duplicada detectada para ${phoneNumber}. Se genera otra.`,
       );
@@ -876,11 +938,7 @@ export class BotRouter {
           return;
         }
 
-        reply = this.applyToolFailureDiscipline(
-          retryResult,
-          phoneNumber,
-          readOnlyTools,
-        );
+        reply = retryResult.content;
         if (isBlank(reply)) {
           await this.handleAiUnavailable(
             turn,
@@ -1125,25 +1183,97 @@ export class BotRouter {
       : undefined;
   }
 
-  private applyToolFailureDiscipline(
-    result: { content: string; toolCallsExecuted?: ExecutedToolCall[] },
-    phoneNumber: string,
-    readOnlyTools: ReadonlySet<string>,
-  ): string {
-    if (!hasUnrecoveredToolFailure(result.toolCallsExecuted, readOnlyTools)) {
-      return result.content;
+  /**
+   * Última red antes de enviar: el bot nunca promete algo que no ocurrió.
+   * - Fallo técnico, de permiso o con siguiente paso "traspaso": traspaso real
+   *   hecho por el servidor y texto fijo.
+   * - Promesa de que una persona escribirá sin traspaso exitoso: traspaso real.
+   * - Un fallo esperado de una acción de escritura no se disfraza de éxito.
+   * Los fallos esperados (horario ocupado, reserva inexistente) NO escalan: el
+   * modelo ofrece alternativas.
+   */
+  private async guardReply(input: {
+    turn: TurnContext;
+    content: string;
+    recorded: RecordedOutcome[];
+    modelHandoff: boolean;
+    context: Record<string, unknown>;
+    turnId: string;
+    loadTools: () => Promise<ResolvedTool[]>;
+    retry: (
+      instruction: string,
+    ) => ReturnType<AiOrchestrator['generateResponse']>;
+  }): Promise<{ content: string; replaced: boolean }> {
+    const { turn, recorded, modelHandoff } = input;
+    const pending = unresolvedFailures(recorded);
+
+    const handoff = async (reason: string) => {
+      const result = await this.handoffService.perform({
+        tenantId: turn.tenantId,
+        botConfigId: turn.botConfig.id,
+        conversationId: turn.conversationId,
+        connectionId: turn.connectionId,
+        phoneNumber: turn.phoneNumber,
+        turnId: input.turnId,
+        reason,
+        context: input.context,
+        loadTools: input.loadTools,
+      });
+      return { content: result.text, replaced: true };
+    };
+
+    const fault = pending.find(
+      (call) =>
+        call.outcome.kind === 'TECHNICAL' ||
+        call.outcome.kind === 'PERMISSION' ||
+        (call.outcome.kind === 'EXPECTED' &&
+          call.outcome.nextStep === 'HANDOFF'),
+    );
+    if (fault && !modelHandoff) {
+      this.replyMetrics.increment('handoffForced');
+      this.logger.warn(
+        `Traspaso desde el servidor por "${fault.tool}" (${fault.outcome.kind}${fault.outcome.code ? ` ${fault.outcome.code}` : ''}) para ${turn.phoneNumber}.`,
+      );
+      return handoff(
+        `${fault.outcome.kind === 'EXPECTED' ? 'Requiere persona' : 'Fallo técnico'} en ${fault.tool}${fault.outcome.code ? ` (${fault.outcome.code})` : ''}`,
+      );
     }
 
-    this.logger.warn(
-      `Tool call fallida detectada en la respuesta para ${phoneNumber} — se ` +
-        `sustituye el mensaje generado por uno honesto, sin importar el ` +
-        `contenido que el modelo haya producido.`,
-    );
+    if (!modelHandoff && promisesHumanContact(input.content)) {
+      this.replyMetrics.increment('promiseBlocked');
+      this.logger.warn(
+        `La IA prometió una persona sin traspaso para ${turn.phoneNumber}; se hace el traspaso real.`,
+      );
+      return handoff(
+        'La IA prometió que una persona escribiría sin haber hecho el traspaso',
+      );
+    }
 
-    return (
-      'Tuvimos un inconveniente al procesar tu solicitud. Una persona de ' +
-      'nuestro equipo se pondrá en contacto contigo en breve para ayudarte. 🙏'
+    const writeFailure = pending.find(
+      (call) => !call.readOnly && call.outcome.kind === 'EXPECTED',
     );
+    if (writeFailure && claimsCompleted(input.content)) {
+      this.replyMetrics.increment('successClaimBlocked');
+      const { code, message, nextStep } = writeFailure.outcome;
+      try {
+        const second = await input.retry(
+          `ATENCIÓN: ${writeFailure.tool} falló (${code ?? 'error'}: ${message ?? 'sin detalle'}) y NO se hizo. No digas que quedó hecho: explícaselo a la clienta en una frase simple${nextStep ? ` y sigue este paso: ${nextStep}` : ' y ofrece una alternativa'}.`,
+        );
+        if (!claimsCompleted(second.content) && !isBlank(second.content)) {
+          return { content: second.content, replaced: false };
+        }
+      } catch (error) {
+        this.logger.error(
+          `Fallo el reintento por éxito falso: ${maskError(error)}`,
+        );
+      }
+      return {
+        content: `No pude completarlo: ${message ?? 'el sistema no lo permitió'}`,
+        replaced: true,
+      };
+    }
+
+    return { content: input.content, replaced: false };
   }
 
   async registerHumanMessage(
@@ -1289,4 +1419,13 @@ export class BotRouter {
       hasImage,
     });
   }
+}
+
+const COMPLETED_CLAIM =
+  /\b(?:qued[oó]|quedaron|ya est[aá]|fue|ha sido|se (?:agend[oó]|reserv[oó]|cancel[oó]|reagend[oó]|registr[oó]|cre[oó]))\s*(?:ya\s*)?(?:agendad[ao]s?|reservad[ao]s?|cancelad[ao]s?|reagendad[ao]s?|confirmad[ao]s?|registrad[ao]s?|cread[ao]s?)?\b/i;
+const COMPLETED_WORD =
+  /\b(?:agendad[ao]|reservad[ao]|cancelad[ao]|reagendad[ao]|confirmad[ao]|registrad[ao]|cread[ao])\b|\bse (?:agend[oó]|reserv[oó]|cancel[oó]|reagend[oó]|registr[oó]|cre[oó])\b/i;
+
+function claimsCompleted(text: string): boolean {
+  return COMPLETED_CLAIM.test(text) && COMPLETED_WORD.test(text);
 }

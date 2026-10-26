@@ -4,6 +4,7 @@ import { WhatsAppContactService } from 'src/channels/whatsapp/contacts/WhatsAppC
 import { AiOrchestrator } from 'src/bot/ai/AiOrchestrator';
 import { BotConfigService } from 'src/bot/config/BotConfigService';
 import { ConversationService } from 'src/bot/conversation/ConversationService';
+import { HandoffService } from 'src/bot/handoff/Handoff.service';
 import { HardRulesService } from 'src/bot/intent/HardRules.service';
 import { IntentAiClassifier } from 'src/bot/intent/IntentAiClassifier';
 import { IntentHandler } from 'src/bot/intent/IntentHandler';
@@ -22,6 +23,7 @@ describe('Despachador de intenciones · cableado de Nest', () => {
         IntentResolver,
         IntentRepository,
         HardRulesService,
+        HandoffService,
         IntentAiClassifier,
         IntentMetricsService,
         IntentHandler,
