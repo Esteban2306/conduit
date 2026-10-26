@@ -12,6 +12,7 @@ describe('promisesHumanContact', () => {
     'Gracias. Alguien te contactará para confirmar.',
     'Perfecto, te llamará una asesora en unos minutos.',
     'UNA PERSONA DEL SPA TE CONTACTARÁ',
+    'Una persona te atenderá por este chat en unos minutos.',
   ])('"%s" es una promesa', (text) => {
     expect(promisesHumanContact(text)).toBe(true);
   });
@@ -26,6 +27,12 @@ describe('promisesHumanContact', () => {
     'Para dudas médicas lo mejor es consultar a una persona profesional.',
     'El equipo del spa atiende de lunes a sábado.',
     'Puedes escribirnos cuando quieras y te atendemos.',
+    'Perfecto, Diana. Tu cita quedó para el martes a las 3 pm. La especialista te atenderá con mucho gusto.',
+    'Un día antes el spa te escribirá para recordarte tu cita.',
+    'Una persona del equipo revisará tu comprobante y continuará con la confirmación de tu cita.',
+    'Cuando envíes el comprobante, el equipo se pondrá en contacto para confirmar tu anticipo.',
+    'Nos pondremos en contacto contigo si hay algún cambio en tu horario.',
+    'El equipo del spa te contactará para confirmar el anticipo.',
     '',
   ])('"%s" NO es una promesa', (text) => {
     expect(promisesHumanContact(text)).toBe(false);
