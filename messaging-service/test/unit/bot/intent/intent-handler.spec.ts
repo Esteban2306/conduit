@@ -44,6 +44,7 @@ function build(
   const paused: Array<{ minutes: number; reason: string }> = [];
   const contexts: any[] = [];
   const remembered: unknown[] = [];
+  const ignored: string[] = [];
   const notified: unknown[][] = [];
   const aiCalls: string[] = [];
   const responses = options.responses ?? {};
@@ -93,6 +94,10 @@ function build(
         contexts.push(patch.contextPatch);
         return Promise.resolve();
       },
+      ignorePending: (ids: string[]) => {
+        ignored.push(...ids);
+        return Promise.resolve();
+      },
       appendActionMemory: (_id: string, entry: unknown) => {
         remembered.push(entry);
         return Promise.resolve();
@@ -140,6 +145,7 @@ function build(
     notified,
     aiCalls,
     metrics,
+    ignored,
   };
 }
 
@@ -667,7 +673,8 @@ describe('IntentHandler · LLM_SLIM, flujo y clasificador de IA', () => {
       10 * 60_000,
     );
     await w.handler.afterSlimTurn('conv-1', plan, ['crear_reserva_whatsapp']);
-    expect(w.contexts[1]).toEqual({ activeFlow: null });
+    expect(w.contexts[1].activeFlow).toBeNull();
+    expect(w.contexts[1].taskDoneAt).toEqual(expect.any(String));
   });
 
   it('cuando las reglas no deciden, el clasificador de IA elige entre las intenciones clasificables', async () => {
@@ -811,5 +818,131 @@ describe('IntentHandler · saludo en el primer contacto', () => {
     const c = build({});
     await c.handler.handle(c.turn('gracias'));
     expect(c.sent[0]).not.toMatch(/^¡Hola/);
+  });
+});
+
+describe('IntentHandler · fin de la tarea', () => {
+  const plan = {
+    intentKey: 'booking',
+    prompt: 'x',
+    tools: [],
+    via: 'rules' as const,
+    endsOnTools: ['crear_reserva_whatsapp'],
+  };
+  const done = { taskDoneAt: new Date(Date.now() - 5 * 60_000).toISOString() };
+
+  it('al terminar la reserva marca la tarea como hecha y al reabrir el flujo la desmarca', async () => {
+    const w = build({});
+    await w.handler.afterSlimTurn('conv-1', plan, ['crear_reserva_whatsapp']);
+    expect(w.contexts[0].taskDoneAt).toEqual(expect.any(String));
+    expect(w.contexts[0].activeFlow).toBeNull();
+    await w.handler.afterSlimTurn('conv-1', plan, ['consultar_cliente']);
+    expect(w.contexts[1].taskDoneAt).toBeNull();
+    expect(w.contexts[1].activeFlow.intent).toBe('booking');
+  });
+
+  it('con la tarea hecha, el relleno se resuelve en silencio y no queda como pendiente', async () => {
+    const w = build({});
+    const out = await w.handler.handle(
+      w.turn('muchas gracias por todo', {
+        context: done,
+        pendingIds: ['m1'],
+        lastBotMessage: { content: '¿Algo más?', at: new Date() },
+      }),
+    );
+    expect(out).toEqual({ handled: true });
+    expect(w.sent).toHaveLength(0);
+    expect(w.ignored).toEqual(['m1']);
+    expect(w.aiCalls).toHaveLength(0);
+  });
+
+  it('con la tarea hecha, una petición nueva sí se atiende', async () => {
+    const w = build({
+      responses: { enlace_cancelacion: { status: 'SUCCESS', body: LINK } },
+    });
+    const out = await w.handler.handle(
+      w.turn('quiero cancelar mi cita', { context: done }),
+    );
+    expect(out).toEqual({ handled: true });
+    expect(w.sent[0]).toContain('https://spa.test/cancelar/');
+  });
+
+  it('pasada la ventana, el agradecimiento vuelve a tener su respuesta normal', async () => {
+    const w = build({});
+    const old = {
+      taskDoneAt: new Date(Date.now() - 31 * 60_000).toISOString(),
+    };
+    await w.handler.handle(w.turn('gracias', { context: old }));
+    expect(w.sent).toHaveLength(1);
+  });
+});
+
+describe('IntentHandler · confirmación de la clienta', () => {
+  const flow = {
+    activeFlow: {
+      intent: 'booking',
+      until: new Date(Date.now() + 60_000).toISOString(),
+    },
+  };
+  const asked = {
+    content: '¿Confirmas la cita del lunes a las 9?',
+    at: new Date(),
+  };
+
+  it.each([
+    'sí',
+    'Sí, confírmala',
+    'dale listo',
+    'ok perfecto',
+    'claro que sí',
+  ])(
+    '"%s" tras una pregunta del bot añade la instrucción de ejecutar lo confirmado',
+    async (text) => {
+      const w = build({});
+      const out = await w.handler.handle(
+        w.turn(text, { context: flow, lastBotMessage: asked }),
+      );
+      expect(!out.handled && out.slim?.hint).toMatch(/No vuelvas a consultar/);
+    },
+  );
+
+  it.each([
+    'sí pero mejor el martes',
+    'no',
+    'mañana a las 3',
+    'sí, ¿y cuánto cuesta?',
+  ])('"%s" no se toma como confirmación', async (text) => {
+    const w = build({});
+    const out = await w.handler.handle(
+      w.turn(text, { context: flow, lastBotMessage: asked }),
+    );
+    expect(!out.handled && out.slim?.hint).toBeUndefined();
+  });
+
+  it('sin pregunta abierta del bot un "sí" no lleva la instrucción', async () => {
+    const w = build({});
+    const out = await w.handler.handle(
+      w.turn('sí', {
+        context: flow,
+        lastBotMessage: { content: 'Listo, quedó agendada.', at: new Date() },
+      }),
+    );
+    expect(!out.handled && out.slim?.hint).toBeUndefined();
+  });
+
+  it('con la tarea hecha, un "ok perfecto" o "listo" también se ignora sin llamar a nada', async () => {
+    const w = build({});
+    const done = {
+      taskDoneAt: new Date(Date.now() - 60_000).toISOString(),
+    };
+    for (const text of ['ok perfecto', 'listo', 'dale']) {
+      const out = await w.handler.handle(
+        w.turn(text, { context: done, pendingIds: ['m1'] }),
+      );
+      expect(out).toEqual({ handled: true });
+    }
+    expect(w.sent).toHaveLength(0);
+    expect(w.calls).toHaveLength(0);
+    expect(w.aiCalls).toHaveLength(0);
   });
 });

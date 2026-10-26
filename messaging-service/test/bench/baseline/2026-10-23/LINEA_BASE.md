@@ -65,3 +65,10 @@ Misma muestra (63 conversaciones, 77 turnos), modelo real, dos modos. `BENCH_INT
 - `expectActive` en `scenarios.json` fija lo esperado cuando una intención responde sin IA (p. ej. cancelar entrega el enlace en vez de cancelar en el chat).
 - Casos negativos (b48, b49, b54, b55, b60, b61): parecen una intención pero deben ir a la IA, y lo hacen.
 - Variación del modelo en turnos que siguen yendo a la IA: b13 (error `DATOS_SALUD` cuando el modelo manda `isPregnant:false`: 2/4 con el prompt reducido comprimido, 4/5 tras devolverle el texto completo de esa regla; 4/4 en SOMBRA), b14 (pide confirmar otra vez tras el "sí": 1/4 en SOMBRA con el prompt actual y 3/5 con el prompt anterior a la etapa, es decir, ya era inestable), b19 y b40.
+
+### Confirmación de la reserva (b14) y silencio al terminar (b64) — 2026-10-26
+
+- Causa de b14: tras el "sí", el modelo volvía a consultar servicios y disponibilidad y pedía otra confirmación (o hablaba de una persona). Correcciones: instrucción de confirmación que se añade al contexto del turno cuando la clienta responde con un sí claro a una pregunta del bot, reintento único si confirmó y la acción no se ejecutó, `treatmentNames` en `crear_reserva_whatsapp` y reglas del prompt.
+- Resultado en modo ACTIVO: b14 pasó de ~50 % (3/5 con el prompt anterior; 3/5 y 4/5 en sombra) a 10/10 tras el último cambio. La corrida con 6 fallos de 8 fue un choque de horario entre b14 y b64 (misma hora, mismo servicio) cuando corrían juntos; b64 usa ahora otro día y hora.
+- b64: tras crear la reserva, "muchas gracias por todo" y "ok perfecto" quedan sin respuesta (4/4).
+

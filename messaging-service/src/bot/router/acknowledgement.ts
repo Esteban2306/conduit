@@ -21,16 +21,20 @@ function botAskedSomething(lastBotMessage: string | null): boolean {
  * @param lastBotMessage último mensaje que el negocio le envió al cliente
  * @param hasPendingBatch el cliente ya tiene mensajes acumulados sin
  *        responder; en ese caso el mensaje corto se suma al lote
+ * @param taskDone el agendamiento acaba de terminar: ninguna pregunta del
+ *        bot sigue abierta, así que el relleno se ignora siempre
  */
 export function isIgnorableAcknowledgement(
   text: string,
   lastBotMessage: string | null,
   hasPendingBatch = false,
+  taskDone = false,
 ): boolean {
   if (hasPendingBatch) return false;
 
   const normalized = text.trim().toLowerCase();
-  if (COURTESIES.test(normalized)) return !botAskedSomething(lastBotMessage);
-  if (SHORT_ANSWERS.test(normalized)) return !botAskedSomething(lastBotMessage);
+  const asked = !taskDone && botAskedSomething(lastBotMessage);
+  if (COURTESIES.test(normalized)) return !asked;
+  if (SHORT_ANSWERS.test(normalized)) return !asked;
   return false;
 }

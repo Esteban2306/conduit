@@ -374,7 +374,10 @@ export class ConversationService {
       )
       .map((m) => ({ id: m.id, content: m.content, hasImage: m.hasImage }));
 
-    const answered = recent.slice(0, lastOutbound + 1).slice(-window);
+    const answered = recent
+      .slice(0, lastOutbound + 1)
+      .filter((m) => !closedAt || m.createdAt > closedAt)
+      .slice(-window);
     const merged = this.mergeConsecutive(
       answered.map((msg) => ({
         role:
@@ -818,6 +821,35 @@ export class ConversationService {
     });
 
     return conversation;
+  }
+
+  /**
+   * Empieza de cero con la clienta sin cerrar la conversación: lo anterior a
+   * `since` (el último mensaje del bot) deja de verse, y se limpian el flujo,
+   * la memoria de acciones y el resumen. Pausas y opt-out se conservan.
+   */
+  async resetConversation(conversationId: string, since: Date): Promise<void> {
+    await this.updateContext(conversationId, {
+      contextPatch: {
+        closedAt: since.toISOString(),
+        activeFlow: null,
+        taskDoneAt: null,
+        memoriaAcciones: [],
+      },
+    });
+    await this.prisma.conversation.update({
+      where: { id: conversationId },
+      data: { summary: null },
+    });
+  }
+
+  /** Marca mensajes entrantes como ignorados: no cuentan como pendientes. */
+  async ignorePending(messageIds: string[]): Promise<void> {
+    if (messageIds.length === 0) return;
+    await this.prisma.botMessage.updateMany({
+      where: { id: { in: messageIds }, direction: MessageDirection.INBOUND },
+      data: { processedBy: IGNORED_INBOUND },
+    });
   }
 
   async updateSummary(conversationId: string, summary: string) {

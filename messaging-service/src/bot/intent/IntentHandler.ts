@@ -15,12 +15,14 @@ import { IntentMetricsService } from './intent-metrics.service';
 import {
   ACTIVE_FLOW_KEY,
   IntentOutcome,
+  TASK_DONE_KEY,
+  isTaskDone,
   IntentTurn,
   SlimPlan,
 } from './intent-turn';
 import { IntentRecord } from './intent-types';
 import { fillTemplate, renderTool } from './render-spec';
-import { normalizeText, tokenCount } from './normalize';
+import { isAffirmation, normalizeText, tokenCount } from './normalize';
 
 const OPEN_QUESTION_TTL_MS = 30 * 60 * 1000;
 const FALSE_POSITIVE_WINDOW_MS = 10 * 60 * 1000;
@@ -108,6 +110,7 @@ export class IntentHandler {
               intent: plan.intentKey,
               until: new Date(Date.now() + ttl).toISOString(),
             },
+        [TASK_DONE_KEY]: ended ? new Date().toISOString() : null,
       },
     });
     this.metrics.count(
@@ -121,10 +124,17 @@ export class IntentHandler {
     this.trackRepeats(turn, set);
 
     if (await this.hardRules.apply(turn)) return { handled: true };
+    if (isTaskDone(turn.context) && isAffirmation(turn.text)) {
+      await this.conversationService.ignorePending(turn.pendingIds ?? []);
+      this.metrics.count('silent-after-task:affirmation');
+      return { handled: true };
+    }
+
     if (set.compiled.length === 0) return { handled: false };
 
     const flowIntent = this.activeFlow(turn, set);
     const openQuestion =
+      !isTaskDone(turn.context) &&
       turn.lastBotMessage !== null &&
       turn.lastBotMessage.content.includes('?') &&
       Date.now() - turn.lastBotMessage.at.getTime() < OPEN_QUESTION_TTL_MS;
@@ -180,6 +190,12 @@ export class IntentHandler {
       await this.clearFlow(turn);
     }
 
+    if (intent.config.silentAfterTask && isTaskDone(turn.context)) {
+      await this.conversationService.ignorePending(turn.pendingIds ?? []);
+      this.metrics.record({ ...base, outcome: 'silent-after-task' });
+      return { handled: true };
+    }
+
     const fireKey = `${turn.conversationId}|${intent.key}`;
     const previousFire = this.lastFired.get(fireKey);
     if (
@@ -195,7 +211,7 @@ export class IntentHandler {
     if (produced === null && intent.config.fallbackTo) {
       const target = set.byKey.get(intent.config.fallbackTo);
       if (target && target.handler === 'LLM_SLIM' && target.mode === 'ACTIVE') {
-        produced = { slim: this.planOf(target, 'fallback') };
+        produced = { slim: this.planOf(target, 'fallback', turn) };
       }
     }
 
@@ -260,7 +276,7 @@ export class IntentHandler {
       mode: intent.mode,
       outcome: 'slim-flow',
     });
-    return { handled: false, slim: this.planOf(intent, 'flow') };
+    return { handled: false, slim: this.planOf(intent, 'flow', turn) };
   }
 
   private async clearFlow(turn: IntentTurn): Promise<void> {
@@ -269,8 +285,22 @@ export class IntentHandler {
     });
   }
 
-  private planOf(intent: IntentRecord, via: SlimPlan['via']): SlimPlan {
-    return { ...intent.config.slim!, intentKey: intent.key, via };
+  private planOf(
+    intent: IntentRecord,
+    via: SlimPlan['via'],
+    turn: IntentTurn,
+  ): SlimPlan {
+    const slim = intent.config.slim!;
+    const confirmed =
+      Boolean(slim.confirmHint) &&
+      turn.lastBotMessage?.content.includes('?') === true &&
+      isAffirmation(turn.text);
+    return {
+      ...slim,
+      intentKey: intent.key,
+      via,
+      ...(confirmed && { hint: slim.confirmHint }),
+    };
   }
 
   private async classifyWithAi(
@@ -331,7 +361,9 @@ export class IntentHandler {
     via: 'rules' | 'ai',
   ): Promise<Produced> {
     if (intent.handler === 'LLM_SLIM') {
-      return intent.config.slim ? { slim: this.planOf(intent, via) } : null;
+      return intent.config.slim
+        ? { slim: this.planOf(intent, via, turn) }
+        : null;
     }
 
     const vars: Record<string, string> = {

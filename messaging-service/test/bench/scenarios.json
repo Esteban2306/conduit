@@ -272,6 +272,7 @@
       "turns": [{ "actor": "A", "messages": [{ "text": "necesito arreglarme las uñas para una boda" }] }],
       "expect": { "toolsForbidden": ["cancelar_reserva_whatsapp"] },
       "expectActive": { "route": "IA", "toolsForbidden": ["cancelar_reserva_whatsapp"] } },
+    {"id": "b64", "category": "cierre", "title": "Tras agendar, el relleno no recibe respuesta", "prior": {"client": {"name": "Catalina Vega", "birthDate": "1992-02-12"}}, "turns": [{"actor": "A", "messages": [{"text": "Hola! quiero separar uñas acrílicas para el próximo miércoles a las 9am"}]}, {"actor": "A", "messages": [{"text": "sí, confírmala"}]}, {"actor": "A", "messages": [{"text": "muchas gracias por todo, que tengas buen día"}], "expectActive": {"route": "ignorado"}}, {"actor": "A", "messages": [{"text": "ok perfecto"}], "expectActive": {"route": "ignorado"}}], "expect": {"toolsAny": ["crear_reserva_whatsapp"]}, "expectActive": {"toolsAll": ["crear_reserva_whatsapp"], "finalState": {"reservationCountAtLeast": 1}}},
     { "id": "b44", "category": "fecha", "title": "Qué día es hoy",
       "turns": [{ "actor": "A", "messages": [{ "text": "¿Qué día es hoy?" }] }],
       "expect": { "replyShowsToday": true, "toolsForbidden": ["crear_reserva_whatsapp", "cancelar_reserva_whatsapp"] } }

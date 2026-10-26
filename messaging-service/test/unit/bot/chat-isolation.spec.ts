@@ -40,6 +40,8 @@ interface StoredMessage {
 }
 
 class Store {
+  lastOutboundValue: { content: string; at: Date } | null = null;
+  resets: Array<{ id: string; since: Date }> = [];
   conversations = new Map<
     string,
     {
@@ -169,7 +171,13 @@ class Store {
       isBotPaused: jest.fn(() => false),
       countBotRepliesSince: later(() => 0),
       lastOutboundContent: later(() => null),
-      lastOutbound: later(() => null),
+      lastOutbound: later(() => this.lastOutboundValue),
+      resetConversation: later((id: string, since: Date) => {
+        this.resets.push({ id, since });
+        const conv = this.conversations.get(id);
+        if (conv)
+          conv.context = { ...conv.context, closedAt: since.toISOString() };
+      }),
       findLastHumanMessage: later(
         (_bot: string, phone: string, cutoff: Date) => {
           const conv = this.conversationOf(phone);
@@ -930,5 +938,117 @@ describe('LLM_SLIM en el router (etapa 5)', () => {
       w.aiInputs[0] as unknown as { tools: Array<{ name: string }> }
     ).tools;
     expect(tools).toHaveLength(2);
+  });
+});
+
+describe('Reinicio por inactividad de la clienta', () => {
+  beforeEach(() => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000);
+
+  it('si la clienta tardó más del tiempo del bot en contestar, se empieza de cero desde el último mensaje del bot', async () => {
+    const store = new Store();
+    const last = minutesAgo(90);
+    store.lastOutboundValue = { content: '¿Confirmas?', at: last };
+    const w = world(store, () => 'ok');
+    w.inbound(A, 'quiero información de los servicios');
+    await settle(DELAY_MS + 2_000);
+    expect(store.resets).toHaveLength(1);
+    expect(store.resets[0].since).toEqual(last);
+    const turn = w.intentHandle.mock.calls[0][0] as { lastBotMessage: unknown };
+    expect(turn.lastBotMessage).toBeNull();
+  });
+
+  it('dentro del tiempo no se reinicia', async () => {
+    const store = new Store();
+    store.lastOutboundValue = { content: '¿Confirmas?', at: minutesAgo(10) };
+    const w = world(store, () => 'ok');
+    w.inbound(A, 'quiero información de los servicios');
+    await settle(DELAY_MS + 2_000);
+    expect(store.resets).toHaveLength(0);
+    const turn = w.intentHandle.mock.calls[0][0] as { lastBotMessage: unknown };
+    expect(turn.lastBotMessage).not.toBeNull();
+  });
+
+  it('no se reinicia dos veces por el mismo mensaje del bot', async () => {
+    const store = new Store();
+    store.lastOutboundValue = { content: 'Hola', at: minutesAgo(120) };
+    const w = world(store, () => '');
+    w.inbound(A, 'quiero información uno');
+    await settle(DELAY_MS + 2_000);
+    w.inbound(A, 'quiero información dos');
+    await settle(DELAY_MS + 2_000);
+    expect(store.resets).toHaveLength(1);
+  });
+
+  it('los mensajes pendientes llegan al despachador con sus ids', async () => {
+    const w = world(new Store(), () => 'ok');
+    w.inbound(A, 'quiero información de los servicios');
+    await settle(DELAY_MS + 2_000);
+    const turn = w.intentHandle.mock.calls[0][0] as { pendingIds: string[] };
+    expect(turn.pendingIds).toHaveLength(1);
+  });
+
+  const plan = {
+    intentKey: 'booking',
+    prompt: 'x',
+    tools: [],
+    via: 'flow',
+    endsOnTools: ['crear_reserva_whatsapp'],
+  };
+
+  it('si la clienta confirmó y la IA no ejecutó la acción, reintenta una vez con la instrucción de ejecutarla', async () => {
+    let call = 0;
+    const w = world(new Store(), () => {
+      call += 1;
+      return call === 1
+        ? { content: 'Listo, ya quedó agendada.', toolCallsExecuted: [] }
+        : {
+            content: 'Quedó creada tu cita.',
+            toolCallsExecuted: [
+              { name: 'crear_reserva_whatsapp', arguments: {}, ok: true },
+            ],
+          };
+    });
+    w.intentHandle.mockImplementationOnce(() =>
+      Promise.resolve({
+        handled: false,
+        slim: { ...plan, hint: 'La clienta confirmó.' },
+      } as never),
+    );
+    w.inbound(A, 'sí, confírmala');
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.aiCalls).toHaveLength(2);
+    expect(w.sends.map((s) => s.content)).toEqual(['Quedó creada tu cita.']);
+    expect(w.metrics.snapshot().confirmWithoutAction).toBe(1);
+    expect(w.afterSlimTurn).toHaveBeenCalledWith(
+      'conv-' + A,
+      expect.anything(),
+      ['crear_reserva_whatsapp'],
+    );
+  });
+
+  it('si ya la ejecutó, no reintenta', async () => {
+    const w = world(new Store(), () => ({
+      content: 'Quedó creada tu cita.',
+      toolCallsExecuted: [
+        { name: 'crear_reserva_whatsapp', arguments: {}, ok: true },
+      ],
+    }));
+    w.intentHandle.mockImplementationOnce(() =>
+      Promise.resolve({
+        handled: false,
+        slim: { ...plan, hint: 'La clienta confirmó.' },
+      } as never),
+    );
+    w.inbound(A, 'sí, confírmala');
+    await settle(DELAY_MS + 2_000);
+    expect(w.aiCalls).toHaveLength(1);
   });
 });

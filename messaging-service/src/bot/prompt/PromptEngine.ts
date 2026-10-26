@@ -26,6 +26,8 @@ export interface SlimPromptPlan {
   prompt: string;
   maxTokens?: number;
   includeKnowledge?: boolean;
+  /** Se añade al bloque dinámico del turno (p. ej. "la clienta acaba de confirmar"). */
+  hint?: string;
 }
 
 export interface PromptBuildInput {
@@ -167,6 +169,7 @@ export class PromptEngine {
     if (input.hasTools) cacheable.push(TOOL_RESULT_DISCIPLINE);
 
     const dynamic: string[] = [promptDateLine(timeZone)];
+    if (plan.hint) dynamic.push(plan.hint);
     const { block } = this.contextBuilder.build(input.context, input.summary);
     if (block) dynamic.push(block);
     if (input.leadingBotMessages?.length) {

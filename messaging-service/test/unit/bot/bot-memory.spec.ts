@@ -31,6 +31,18 @@ describe('isIgnorableAcknowledgement', () => {
     ).toBe(true);
   });
 
+  it('con la tarea terminada ignora el relleno aunque el bot haya cerrado con una pregunta', () => {
+    expect(isIgnorableAcknowledgement('ok', '¿Algo más?', false, true)).toBe(
+      true,
+    );
+    expect(
+      isIgnorableAcknowledgement('gracias', '¿Algo más?', false, true),
+    ).toBe(true);
+    expect(isIgnorableAcknowledgement('ok', '¿Algo más?', false, false)).toBe(
+      false,
+    );
+  });
+
   it('ignora "gracias" al cierre', () => {
     expect(isIgnorableAcknowledgement('Gracias!', 'Te esperamos 😊')).toBe(
       true,
@@ -106,6 +118,22 @@ describe('ConversationService.getConversationForAI', () => {
     expect(data.pending.some((p) => p.hasImage)).toBe(true);
     expect(data.history.map((h) => h.role)).toEqual(['user', 'assistant']);
     expect(data.summary).toBe('Quiere reservar spa capilar.');
+  });
+
+  it('tras un reinicio no muestra al modelo nada anterior al corte', async () => {
+    const cut = Date.UTC(2026, 9, 10, 12, 1, 30);
+    const service = serviceWith(
+      [
+        ['INBOUND', 'quiero reservar'],
+        ['OUTBOUND', '¿Para qué día?'],
+        ['INBOUND', 'hola de nuevo'],
+      ],
+      { closedAt: new Date(Date.UTC(2026, 9, 10, 12, 1)).toISOString() },
+    );
+    const data = await service.getConversationForAI('c1', 6);
+    void cut;
+    expect(data.history).toEqual([]);
+    expect(data.pending.map((p) => p.content)).toEqual(['hola de nuevo']);
   });
 
   it('pasa aparte el recordatorio previo para que el historial empiece por el cliente', async () => {

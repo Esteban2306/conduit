@@ -15,6 +15,12 @@ export interface SlimConfig {
   flowTtlMinutes?: number;
   /** Si alguna de estas herramientas tiene éxito, el flujo termina. */
   endsOnTools?: string[];
+  /**
+   * Instrucción que se añade al contexto del turno cuando la clienta responde
+   * con un sí claro a una pregunta del bot: evita que el modelo vuelva a
+   * consultar y a pedir la misma confirmación.
+   */
+  confirmHint?: string;
 }
 
 export interface IntentConfig {
@@ -34,6 +40,8 @@ export interface IntentConfig {
   greetingSource?: boolean;
   /** En el primer mensaje del bot a la clienta, la respuesta lleva antes el saludo de la intención greetingSource. */
   greetFirstContact?: boolean;
+  /** Si el agendamiento acaba de terminar, esta intención (relleno) se resuelve en silencio. */
+  silentAfterTask?: boolean;
 }
 
 export interface IntentRecord {

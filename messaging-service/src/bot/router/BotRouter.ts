@@ -18,6 +18,7 @@ import {
   AttachedImage,
 } from '../tools/ToolExecutor.service';
 import { IntentHandler } from '../intent/IntentHandler';
+import { isTaskDone } from '../intent/intent-turn';
 import { AiOutageDigestService } from '../tools/AiOutageDigest.service';
 import { BotEscalationService } from '../tools/BotEscalation.service';
 import { ConversationSummarizer } from '../conversation/ConversationSummarizer';
@@ -216,6 +217,7 @@ export class BotRouter {
         text,
         lastBotMessage,
         this.debouncer.hasPending(sessionKey),
+        isTaskDone(conversation.context as Record<string, unknown>),
       );
     }
 
@@ -390,6 +392,25 @@ export class BotRouter {
    * espera, ese lote disparará la respuesta y no hace falta programar nada
    * (reemplazar su callback perdería los textos acumulados).
    */
+  /**
+   * La clienta tardó más de `minutes` en contestar el último mensaje del bot
+   * y esa conversación todavía no se reinició después de él.
+   */
+  private isIdleSince(
+    last: { at: Date } | null,
+    minutes: number,
+    context: Record<string, unknown>,
+  ): boolean {
+    if (!last || Date.now() - last.at.getTime() <= minutes * 60_000) {
+      return false;
+    }
+    const closed = context.closedAt;
+    return !(
+      typeof closed === 'string' &&
+      new Date(closed).getTime() >= last.at.getTime()
+    );
+  }
+
   private scheduleRetry(turn: TurnContext, delayMs: number): void {
     if (this.debouncer.hasPending(turn.sessionKey)) return;
     this.debouncer.schedule(turn.sessionKey, delayMs, () => this.respond(turn));
@@ -428,11 +449,35 @@ export class BotRouter {
       return;
     }
 
-    const aiData = await this.conversationService.getConversationForAI(
+    let aiData = await this.conversationService.getConversationForAI(
       conversationId,
       botConfig.maxHistoryMessages,
     );
     if (aiData.pending.length === 0) return;
+
+    const lastBotMessage = await this.conversationService.lastOutbound(
+      botConfig.id,
+      phoneNumber,
+    );
+    const freshStart = this.isIdleSince(
+      lastBotMessage,
+      botConfig.conversationTimeoutMinutes ?? 60,
+      aiData.context,
+    );
+    if (freshStart && lastBotMessage) {
+      this.logger.log(
+        `Conversación ${conversationId} sin respuesta de la clienta por más de ${botConfig.conversationTimeoutMinutes ?? 60} min: se empieza de cero.`,
+      );
+      await this.conversationService.resetConversation(
+        conversationId,
+        lastBotMessage.at,
+      );
+      aiData = await this.conversationService.getConversationForAI(
+        conversationId,
+        botConfig.maxHistoryMessages,
+      );
+      if (aiData.pending.length === 0) return;
+    }
 
     if (this.conversationService.isBotPaused(aiData.context)) {
       this.logger.debug(
@@ -457,10 +502,8 @@ export class BotRouter {
       hasImage: aiData.pending.some((m) => m.hasImage),
       turnId: aiData.pending[aiData.pending.length - 1].id,
       context: aiData.context,
-      lastBotMessage: await this.conversationService.lastOutbound(
-        botConfig.id,
-        phoneNumber,
-      ),
+      pendingIds: aiData.pending.map((m) => m.id),
+      lastBotMessage: freshStart ? null : lastBotMessage,
       loadTools: () =>
         this.toolDefinitionService.getActiveToolsForBot(botConfig.id),
       send: async (reply) => {
@@ -697,12 +740,20 @@ export class BotRouter {
       overrides: {
         reasoningMode?: typeof builtPrompt.reasoningMode;
         maxTokens?: number;
+        appendInstruction?: string;
       } = {},
     ) =>
       this.aiOrchestrator.generateResponse({
         botConfigId: botConfig.id,
-        systemPrompt: builtPrompt.systemPrompt,
-        systemBlocks: this.systemBlocksOf(builtPrompt),
+        systemPrompt: overrides.appendInstruction
+          ? `${builtPrompt.systemPrompt}\n\n${overrides.appendInstruction}`
+          : builtPrompt.systemPrompt,
+        systemBlocks: overrides.appendInstruction
+          ? this.systemBlocksOf({
+              ...builtPrompt,
+              dynamicPrompt: `${builtPrompt.dynamicPrompt ?? ''}\n\n${overrides.appendInstruction}`,
+            })
+          : this.systemBlocksOf(builtPrompt),
         reasoningMode: overrides.reasoningMode ?? builtPrompt.reasoningMode,
         userMessage: userMessageForAI,
         history: aiData.history,
@@ -756,6 +807,27 @@ export class BotRouter {
         phoneNumber,
         generate,
       );
+    }
+
+    if (slim?.hint && (slim.endsOnTools?.length ?? 0) > 0) {
+      const ran = (aiResult.toolCallsExecuted ?? []).some(
+        (call) => call.ok && slim.endsOnTools!.includes(call.name),
+      );
+      if (!ran) {
+        this.replyMetrics.increment('confirmWithoutAction');
+        this.logger.warn(
+          `La clienta confirmó pero la IA no ejecutó la acción (${slim.endsOnTools!.join(', ')}); se reintenta una vez.`,
+        );
+        try {
+          aiResult = await generate({
+            appendInstruction: `ATENCIÓN: la clienta ya confirmó y en tu intento anterior no ejecutaste la acción (${slim.endsOnTools!.join(' o ')}). Ejecútala ahora con las herramientas. No digas que quedó hecha si la herramienta no lo confirma, y no pases a una persona por esto.`,
+          });
+        } catch (error) {
+          this.logger.error(
+            `Fallo el reintento de la acción confirmada: ${maskError(error)}`,
+          );
+        }
+      }
     }
 
     const finalContent = this.applyToolFailureDiscipline(
