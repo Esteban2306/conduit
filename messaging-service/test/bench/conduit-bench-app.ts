@@ -248,6 +248,10 @@ export async function startConduit(
           tokensUsedToday: 0,
           requestsThisMinute: 0,
           unavailableUntil: null,
+          credentialInvalidAt: null,
+          consecutiveFailures: 0,
+          lastErrorType: null,
+          lastErrorAt: null,
           lastResetAt: new Date().toISOString(),
           lastMinuteResetAt: new Date().toISOString(),
         });
