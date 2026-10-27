@@ -14,7 +14,8 @@ import { PrismaService } from 'src/shared/prisma.service';
 import { BotRouter } from 'src/bot/router/BotRouter';
 import { WhatsAppConnectionService } from '../WhatsAppConnection.service';
 import { BaileysRateLimiter, WarmupLevel } from './BaileysRateLimiter';
-import { usePrismaAuthState } from './BaileysAuthState';
+import { SessionDecryptError, usePrismaAuthState } from './BaileysAuthState';
+import { SecretEncryptionService } from 'src/shared/security/secret-encryption.service';
 import { messageReceiptTracker } from './MessageReceiptTracker';
 import { BaileysRateLimiterRegistry } from './BaileysRateLimiterRegistry';
 import { BotSentMessageRegistry } from 'src/channels/whatsapp/baileys/BotSentMessageRegistry';
@@ -109,6 +110,7 @@ export class BaileysSessionManager implements OnApplicationShutdown {
     private readonly contacts: WhatsAppContactService,
     private readonly sentMessages: SentMessageStore,
     private readonly alerts: OpsAlertService,
+    private readonly encryption: SecretEncryptionService,
   ) {
     this.leaseTimer = setInterval(() => {
       void this.renewLeases();
@@ -244,10 +246,41 @@ export class BaileysSessionManager implements OnApplicationShutdown {
       );
     });
 
-    const { state: authState, saveCreds } = await usePrismaAuthState(
-      this.prisma,
-      connectionId,
-    );
+    let session: Awaited<ReturnType<typeof usePrismaAuthState>>;
+    try {
+      session = await usePrismaAuthState(this.prisma, connectionId, {
+        seal: (plain) => this.encryption.seal(plain),
+        open: (stored) => this.encryption.open(stored),
+      });
+    } catch (error) {
+      if (error instanceof SessionDecryptError) {
+        this.logger.error(error.message);
+        await this.connections
+          .updateStatus(connectionId, 'ERROR')
+          .catch(() => {});
+        await this.connections
+          .releaseSessionLease(connectionId, this.instanceId)
+          .catch(() => {});
+        this.alerts.report(
+          connection.tenantId,
+          'connection',
+          `${connection.name}: no se puede leer la sesión guardada porque INTEGRATION_ENCRYPTION_KEY cambió; no se creó una sesión nueva. Restaura la clave original`,
+          { immediate: true, dedupeKey: `${connectionId}:decrypt` },
+        );
+      }
+      throw error;
+    }
+    const { state: authState, saveCreds } = session;
+    if (session.restoredFromBackup() || session.identityLost) {
+      this.alerts.report(
+        connection.tenantId,
+        'connection',
+        session.identityLost
+          ? `${connection.name}: las credenciales guardadas estaban dañadas y no había copia; habrá que escanear un QR nuevo`
+          : `${connection.name}: las credenciales principales estaban dañadas y se restauró la copia de seguridad`,
+        { immediate: true, dedupeKey: `${connectionId}:creds-recovery` },
+      );
+    }
 
     let version: [number, number, number] | undefined;
 

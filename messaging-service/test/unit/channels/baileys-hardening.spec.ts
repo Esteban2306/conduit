@@ -212,6 +212,7 @@ describe('BaileysSessionManager — cierres de conexión y lease', () => {
       { recordInbound: jest.fn(), findAddressByLid: jest.fn() } as any,
       { find: jest.fn() } as any,
       alerts as any,
+      { seal: (v: string) => v, open: (v: string) => v } as any,
     );
   });
 

@@ -1,3 +1,5 @@
+import { WhatsAppSessionEncryptionMigration } from './whatsapp/baileys/WhatsAppSessionEncryptionMigration';
+import { SecurityModule } from 'src/shared/security/security.module';
 import { OutboundReplyService } from './whatsapp/outbox/OutboundReply.service';
 import { OutboundReplyDispatcher } from './whatsapp/outbox/OutboundReplyDispatcher';
 import { OpsAlertService } from './whatsapp/alerts/OpsAlert.service';
@@ -32,6 +34,7 @@ import { SentMessageStore } from './whatsapp/baileys/SentMessageStore';
     WhatsAppContactModule,
     WebhookModule,
     OrchestratorModule,
+    SecurityModule,
   ],
   controllers: [ConnectionController],
   providers: [
@@ -50,6 +53,7 @@ import { SentMessageStore } from './whatsapp/baileys/SentMessageStore';
     SentMessageStore,
     OutboundReplyService,
     OutboundReplyDispatcher,
+    WhatsAppSessionEncryptionMigration,
     OpsAlertService,
   ],
   exports: [
