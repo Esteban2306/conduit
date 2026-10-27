@@ -90,4 +90,40 @@ describe('Capacidad real del limitador (saturado y con 3 s de "escribiendo" por 
       }
     });
   });
+
+  describe.each([1, 5, 10])(
+    '%s clientes escribiendo a la vez (NORMAL)',
+    (clients) => {
+      it('cada cliente recibe sus 2 burbujas en un tiempo razonable', async () => {
+        jest.useFakeTimers({ now: START });
+        const rl = new BaileysRateLimiter('lat', WarmupLevel.NORMAL);
+        const finished: number[] = [];
+        const started = Date.now();
+        for (let c = 0; c < clients; c++) {
+          for (let bubble = 0; bubble < 2; bubble++) {
+            void rl
+              .enqueue(
+                async () => {
+                  await new Promise((r) => setTimeout(r, TYPING_MS));
+                  return { success: true };
+                },
+                { priority: JobPriority.CONVERSATION, maxAttempts: 1 },
+              )
+              .then(() => {
+                if (bubble === 1) finished.push(Date.now() - started);
+              });
+          }
+        }
+        await jest.advanceTimersByTimeAsync(30 * 60_000);
+        finished.sort((a, b) => a - b);
+        const p50 = finished[Math.floor(finished.length / 2)];
+        const last = finished[finished.length - 1];
+        console.log(
+          `[latencia] ${clients} cliente(s) simultáneos: la mitad responde completa en ${Math.round(p50 / 1000)}s, el último en ${Math.round(last / 1000)}s`,
+        );
+        expect(finished).toHaveLength(clients);
+        expect(last).toBeLessThan(clients * 25_000);
+      });
+    },
+  );
 });
