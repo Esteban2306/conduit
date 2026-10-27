@@ -2,6 +2,7 @@ export const OUTBOX_TTL_MS = 30 * 60_000;
 export const OUTBOX_MAX_ATTEMPTS = 6;
 export const OUTBOX_BACKOFF_MS = [5_000, 15_000, 45_000, 120_000, 300_000];
 export const NOT_CONNECTED_RETRY_MS = 5_000;
+export const OVERLIMIT_RETRY_MS = 120_000;
 export const STALE_SENDING_MS = 2 * 60_000;
 
 export interface SendOutcome {
@@ -36,7 +37,14 @@ export function verdictFor(
     return { action: 'wait', delayMs: NOT_CONNECTED_RETRY_MS };
   }
   if (outcome.retryable && attemptsMade < OUTBOX_MAX_ATTEMPTS) {
-    return { action: 'retry', delayMs: backoffMs(attemptsMade) };
+    const delayMs = backoffMs(attemptsMade);
+    return {
+      action: 'retry',
+      delayMs:
+        outcome.errorCode === 'RATE_OVERLIMIT'
+          ? Math.max(delayMs, OVERLIMIT_RETRY_MS)
+          : delayMs,
+    };
   }
   return { action: 'fail' };
 }

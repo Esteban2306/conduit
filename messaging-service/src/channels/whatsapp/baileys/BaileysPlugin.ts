@@ -168,13 +168,18 @@ export class BaileysPlugin implements IChannelPlugin {
       const isConnectionError = /connection|closed|timed out|socket/i.test(
         message,
       );
+      const isOverlimit = /rate-overlimit|too many requests/i.test(message);
       this.logger.error(`Send error: ${message}`);
 
       return {
         success: false,
         provider: this.providerName,
-        retryable: isConnectionError,
-        errorCode: isConnectionError ? 'CONNECTION_ERROR' : 'SEND_FAILED',
+        retryable: isConnectionError || isOverlimit,
+        errorCode: isOverlimit
+          ? 'RATE_OVERLIMIT'
+          : isConnectionError
+            ? 'CONNECTION_ERROR'
+            : 'SEND_FAILED',
         error: message,
         raw: error,
       };

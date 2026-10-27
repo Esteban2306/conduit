@@ -18,6 +18,14 @@ import { usePrismaAuthState } from './BaileysAuthState';
 import { messageReceiptTracker } from './MessageReceiptTracker';
 import { BaileysRateLimiterRegistry } from './BaileysRateLimiterRegistry';
 import { BotSentMessageRegistry } from 'src/channels/whatsapp/baileys/BotSentMessageRegistry';
+import {
+  classifyDisconnect,
+  countsAsFlap,
+  DisconnectInfo,
+  FlapDetector,
+  FLAP_THRESHOLD,
+  FORBIDDEN_CONFIRM_WINDOW_MS,
+} from './disconnect-classifier';
 import { OpsAlertService } from '../alerts/OpsAlert.service';
 import { WhatsAppContactService } from '../contacts/WhatsAppContactService';
 import { SentMessageStore } from './SentMessageStore';
@@ -57,7 +65,6 @@ export class BaileysSessionManager implements OnApplicationShutdown {
    * tratan aparte deteniendo la conexión; 515 (reinicio requerido) es
    * normal tras emparejar y no es señal de riesgo.
    */
-  private readonly BAN_WARNING_CODES = [405, 408, 500];
   private readonly INVALID_SESSION_CODES = [DisconnectReason.loggedOut, 401];
 
   /** Identidad de esta instancia para el lease de sesión. */
@@ -83,6 +90,11 @@ export class BaileysSessionManager implements OnApplicationShutdown {
 
   private readonly MAX_CONSECUTIVE_FAILURES = 6;
   private readonly STORM_WINDOW_MS = 5 * 60 * 1000;
+
+  private readonly flaps = new FlapDetector();
+  private readonly forbiddenSeenAt = new Map<string, number>();
+  private readonly outdatedStreak = new Map<string, number>();
+  private readonly FORBIDDEN_RECHECK_MS = 120_000;
 
   private readonly lastRiskReportAt = new Map<string, number>();
   private readonly RISK_REPORT_COOLDOWN_MS = 5 * 60 * 1000;
@@ -160,6 +172,9 @@ export class BaileysSessionManager implements OnApplicationShutdown {
 
     this.clearRetryState(connectionId);
     this.clearDownAlert(connectionId);
+    this.flaps.clear(connectionId);
+    this.forbiddenSeenAt.delete(connectionId);
+    this.outdatedStreak.delete(connectionId);
     const retry = this.leaseRetryTimers.get(connectionId);
     if (retry) clearTimeout(retry);
     this.leaseRetryTimers.delete(connectionId);
@@ -435,6 +450,7 @@ export class BaileysSessionManager implements OnApplicationShutdown {
           state.lastReconnectAt = Date.now();
           state.connected = true;
           this.clearDownAlert(connectionId);
+          this.outdatedStreak.delete(connectionId);
           this.limiter.enterReconnectThrottle(connectionId);
 
           const phoneNumber =
@@ -475,6 +491,7 @@ export class BaileysSessionManager implements OnApplicationShutdown {
             ?.statusCode;
           const reason = (lastDisconnect?.error as Boom | undefined)?.output
             ?.payload?.error;
+          const info = classifyDisconnect(lastDisconnect?.error);
           state.connected = false;
           this.sockets.delete(connectionId);
 
@@ -529,17 +546,39 @@ export class BaileysSessionManager implements OnApplicationShutdown {
             return;
           }
 
-          if (code === DisconnectReason.forbidden) {
-            this.logger.error(
-              `Conexión ${connectionId}: WhatsApp rechazó la cuenta (403). Posible bloqueo del número. ` +
-                `Se detiene toda actividad de esta conexión.`,
+          if (info.kind === 'FORBIDDEN') {
+            const previous = this.forbiddenSeenAt.get(connectionId);
+            const confirmed =
+              previous !== undefined &&
+              Date.now() - previous < FORBIDDEN_CONFIRM_WINDOW_MS;
+            if (confirmed) {
+              this.logger.error(
+                `Conexión ${connectionId}: WhatsApp rechazó la cuenta (403) dos veces seguidas. Posible bloqueo del número. ` +
+                  `Se detiene toda actividad de esta conexión.`,
+              );
+              this.alertTeam(
+                connectionId,
+                state,
+                'WhatsApp rechazó la cuenta (403) en dos intentos seguidos: posible bloqueo del número. Se detuvo toda la actividad',
+              );
+              await this.haltConnection(connectionId, state, 'BANNED');
+              return;
+            }
+            this.forbiddenSeenAt.set(connectionId, Date.now());
+            this.logger.warn(
+              `Conexión ${connectionId}: WhatsApp respondió 403. Un solo 403 puede ser pasajero: se confirma con un segundo intento antes de darla por bloqueada.`,
             );
-            this.alertTeam(
-              connectionId,
-              state,
-              'WhatsApp rechazó la cuenta (403): posible bloqueo del número. Se detuvo toda la actividad',
+            await this.sleep(
+              Math.round(
+                this.FORBIDDEN_RECHECK_MS * (0.8 + Math.random() * 0.4),
+              ),
             );
-            await this.haltConnection(connectionId, state, 'BANNED');
+            if (state.stopped) return;
+            await this.start(connectionId).catch((error: unknown) => {
+              this.logger.error(
+                `Error reconectando ${connectionId}: ${this.errorMessage(error)}`,
+              );
+            });
             return;
           }
 
@@ -615,7 +654,7 @@ export class BaileysSessionManager implements OnApplicationShutdown {
             return;
           }
 
-          this.reportDisconnect(connectionId, code);
+          this.noteDisconnect(connectionId, state, info);
 
           const backoff = Math.round(
             Math.min(
@@ -754,7 +793,7 @@ export class BaileysSessionManager implements OnApplicationShutdown {
     await this.connections
       .releaseSessionLease(connectionId, this.instanceId)
       .catch(() => {});
-    this.reportRiskOncePerCooldown(connectionId, undefined);
+    if (status === 'BANNED') this.reportRiskOncePerCooldown(connectionId, 403);
   }
 
   private retryCacheFor(connectionId: string): TtlCacheStore {
@@ -828,17 +867,43 @@ export class BaileysSessionManager implements OnApplicationShutdown {
     return this.sockets.get(connectionId) === socket;
   }
 
-  private reportDisconnect(
+  /**
+   * Un cierre de red o de protocolo no es una señal de bloqueo y no frena las
+   * respuestas. Solo una conexión que no se sostiene (varios cierres en pocos
+   * minutos) sube el riesgo, y un 405 repetido avisa de que la versión del
+   * protocolo quedó vieja.
+   */
+  private noteDisconnect(
     connectionId: string,
-    code: number | undefined,
+    state: SocketState,
+    info: DisconnectInfo,
   ): void {
-    if (!code || !this.BAN_WARNING_CODES.includes(code)) {
+    if (info.kind === 'OUTDATED_VERSION') {
+      const streak = (this.outdatedStreak.get(connectionId) ?? 0) + 1;
+      this.outdatedStreak.set(connectionId, streak);
+      if (streak === 3) {
+        this.alertTeam(
+          connectionId,
+          state,
+          'WhatsApp rechaza la versión del protocolo (405) en 3 intentos: hay que actualizar Baileys. No es un bloqueo del número',
+        );
+      }
+    }
+
+    if (!countsAsFlap(info.kind)) return;
+    const closes = this.flaps.record(connectionId);
+    if (closes < FLAP_THRESHOLD) {
       this.logger.debug(
-        `Código ${code ?? 'desconocido'} no clasificado como riesgo para ${connectionId} — reconexión benigna`,
+        `Cierre ${info.kind} (${info.code ?? 'sin código'}) en ${connectionId}: protocolo normal, ${closes} en la ventana`,
       );
       return;
     }
-    this.reportRiskOncePerCooldown(connectionId, code);
+    this.alertTeam(
+      connectionId,
+      state,
+      `la conexión se cayó ${closes} veces en 10 minutos (${info.kind}); está inestable, pero no es una señal de bloqueo`,
+    );
+    this.reportRiskOncePerCooldown(connectionId, info.code);
   }
 
   private reportRiskOncePerCooldown(

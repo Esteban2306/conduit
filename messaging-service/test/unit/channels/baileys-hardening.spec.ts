@@ -171,6 +171,7 @@ describe('BaileysSessionManager — cierres de conexión y lease', () => {
   let connections: Record<string, jest.Mock>;
   let manager: BaileysSessionManager;
   let alerts: { report: jest.Mock };
+  let limiter: { reportDisconnect: jest.Mock };
 
   beforeEach(() => {
     fakeSockets.length = 0;
@@ -195,6 +196,7 @@ describe('BaileysSessionManager — cierres de conexión y lease', () => {
       },
     };
     alerts = { report: jest.fn() };
+    limiter = { reportDisconnect: jest.fn() };
     manager = new BaileysSessionManager(
       {} as any,
       prisma as any,
@@ -203,7 +205,7 @@ describe('BaileysSessionManager — cierres de conexión y lease', () => {
         getOrCreate: jest.fn(),
         hydrate: jest.fn().mockResolvedValue(undefined),
         enterReconnectThrottle: jest.fn(),
-        reportDisconnect: jest.fn(),
+        reportDisconnect: limiter.reportDisconnect,
       } as any,
       { markChatActive: jest.fn() } as any,
       { consume: jest.fn() } as any,
@@ -244,14 +246,85 @@ describe('BaileysSessionManager — cierres de conexión y lease', () => {
     expect(fakeSockets).toHaveLength(1);
   });
 
-  it('403 (prohibido): marca BANNED y no reconecta', async () => {
-    await manager.start('c1');
-    close(403);
-    await flush();
-    await flush();
+  it('un solo 403 no se da por bloqueo: espera y reintenta; el segundo seguido sí marca BANNED y avisa', async () => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+    try {
+      await manager.start('c1');
+      close(403);
+      await flush();
+      expect(connections.updateStatus).not.toHaveBeenCalledWith('c1', 'BANNED');
+      expect(alerts.report).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(3 * 60_000);
+      expect(fakeSockets).toHaveLength(2);
 
-    expect(connections.updateStatus).toHaveBeenCalledWith('c1', 'BANNED');
-    expect(fakeSockets).toHaveLength(1);
+      fakeSockets[1].ev.emit('connection.update', {
+        connection: 'close',
+        lastDisconnect: { error: { output: { statusCode: 403, payload: {} } } },
+      });
+      await flush();
+      await flush();
+      expect(connections.updateStatus).toHaveBeenCalledWith('c1', 'BANNED');
+      expect(alerts.report).toHaveBeenCalledWith(
+        't1',
+        'connection',
+        expect.stringContaining('posible bloqueo'),
+        expect.objectContaining({ immediate: true }),
+      );
+      expect(fakeSockets).toHaveLength(2);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('cierres de protocolo y de red (500, 408, 428, 503) no suben el riesgo ni avisan', async () => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+    try {
+      await manager.start('c1');
+      for (const code of [500, 408, 428]) {
+        const index = fakeSockets.length - 1;
+        fakeSockets[index].ev.emit('connection.update', { connection: 'open' });
+        await flush();
+        fakeSockets[index].ev.emit('connection.update', {
+          connection: 'close',
+          lastDisconnect: {
+            error: { output: { statusCode: code, payload: {} } },
+          },
+        });
+        await jest.advanceTimersByTimeAsync(60_000);
+      }
+      expect(limiter.reportDisconnect).not.toHaveBeenCalled();
+      expect(alerts.report).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('una conexión que se cae 4 veces en 10 minutos avisa como inestable (no como bloqueo) y sube el riesgo una vez', async () => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+    try {
+      await manager.start('c1');
+      for (let i = 0; i < 4; i++) {
+        const index = fakeSockets.length - 1;
+        fakeSockets[index].ev.emit('connection.update', { connection: 'open' });
+        await flush();
+        fakeSockets[index].ev.emit('connection.update', {
+          connection: 'close',
+          lastDisconnect: {
+            error: { output: { statusCode: 500, payload: {} } },
+          },
+        });
+        await jest.advanceTimersByTimeAsync(60_000);
+      }
+      expect(limiter.reportDisconnect).toHaveBeenCalledTimes(1);
+      expect(alerts.report).toHaveBeenCalledWith(
+        't1',
+        'connection',
+        expect.stringContaining('inestable, pero no es una señal de bloqueo'),
+        expect.anything(),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('515 (reinicio requerido): reconecta de inmediato', async () => {
@@ -262,11 +335,10 @@ describe('BaileysSessionManager — cierres de conexión y lease', () => {
     expect(fakeSockets).toHaveLength(2);
   });
 
-  it('401, 440 y 403 avisan al equipo de inmediato por un canal que no es WhatsApp', async () => {
+  it('401 y 440 avisan al equipo de inmediato por un canal que no es WhatsApp', async () => {
     for (const [code, fragment] of [
       [401, 'QR nuevo'],
       [440, 'misma sesión'],
-      [403, 'bloqueo'],
     ] as const) {
       fakeSockets.length = 0;
       alerts.report.mockClear();
