@@ -237,6 +237,7 @@ export class AiOrchestrator {
       attempted.add(currentModel.id);
 
       let retried = false;
+      let prefetched: AiModelConfig | null = null;
       for (;;) {
         try {
           if (budget.expired()) throw new BudgetExceededError();
@@ -295,6 +296,22 @@ export class AiOrchestrator {
             continue;
           }
 
+          if (
+            classified.type === AiErrorType.TIMEOUT &&
+            !retried &&
+            budget.remaining() >= MIN_RETRY_MS
+          ) {
+            prefetched = await this.selector.selectModel(
+              botConfigId,
+              role,
+              attempted,
+            );
+            if (!prefetched) {
+              retried = true;
+              continue;
+            }
+          }
+
           await this.registerFailure(currentModel, botConfigId, classified);
           break;
         }
@@ -302,11 +319,9 @@ export class AiOrchestrator {
 
       if (budget.expired()) break;
 
-      const next = await this.selector.selectModel(
-        botConfigId,
-        role,
-        attempted,
-      );
+      const next =
+        prefetched ??
+        (await this.selector.selectModel(botConfigId, role, attempted));
       if (!next || attempted.has(next.id)) break;
 
       this.logger.warn(

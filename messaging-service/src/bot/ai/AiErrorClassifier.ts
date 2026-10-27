@@ -192,8 +192,9 @@ export class AiErrorClassifier {
       candidate.code === 'ETIMEDOUT' ||
       candidate.code === 'ECONNABORTED' ||
       candidate.name === 'TimeoutError' ||
+      candidate.name === 'APIConnectionTimeoutError' ||
       (typeof candidate.message === 'string' &&
-        candidate.message.toLowerCase().includes('timeout'))
+        /time[d ]?-?\s?out/i.test(candidate.message))
     );
   }
 

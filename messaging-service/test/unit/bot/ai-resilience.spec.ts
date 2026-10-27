@@ -200,7 +200,7 @@ describe('Etapa 7: errores del proveedor', () => {
     expect(w.calls.filter((m) => m === 'm-a')).toHaveLength(4);
   });
 
-  it('un timeout no se reintenta en el mismo modelo y pasa al respaldo', async () => {
+  it('con respaldo disponible, un timeout pasa directo al respaldo sin gastar otra espera', async () => {
     const timeout = () => {
       throw Object.assign(new Error('timeout'), { name: 'TimeoutError' });
     };
@@ -211,6 +211,29 @@ describe('Etapa 7: errores del proveedor', () => {
     const r = await w.generate();
     expect(r.modelUsed).toBe('m-b');
     expect(w.calls).toEqual(['m-a', 'm-b']);
+  });
+
+  it('con un solo modelo, un "Request timed out." se reintenta una vez y responde', async () => {
+    const slow = () => {
+      throw Object.assign(new Error('Request timed out.'), {
+        name: 'APIConnectionTimeoutError',
+      });
+    };
+    const w = world([row('a', 1)], { 'm-a': [slow, ok] });
+    const r = await w.generate();
+    expect(r.modelUsed).toBe('m-a');
+    expect(w.calls).toEqual(['m-a', 'm-a']);
+    expect(w.prisma.rows[0].consecutiveFailures).toBe(0);
+  });
+
+  it('el texto "timed out" del SDK se clasifica como timeout, no como desconocido', () => {
+    const c = new AiErrorClassifier();
+    expect(c.classify(new Error('Request timed out.')).type).toBe(
+      AiErrorType.TIMEOUT,
+    );
+    expect(c.classify(new Error('connect ETIMEDOUT')).type).not.toBe(
+      AiErrorType.UNKNOWN,
+    );
   });
 
   it('un éxito cierra el circuito y borra los fallos', async () => {
