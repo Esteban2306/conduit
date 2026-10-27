@@ -27,8 +27,11 @@ export class HealthController {
     ]);
     const whatsapp =
       dbStatus.status === 'ok' ? await this.checkWhatsApp() : null;
+    const pending =
+      dbStatus.status === 'ok' ? await this.prisma.pendingMigrations() : [];
     const allHealthy =
       dbStatus.status === 'ok' &&
+      pending.length === 0 &&
       redisStatus.status === 'ok' &&
       whatsapp?.status === 'ok';
 
@@ -38,7 +41,7 @@ export class HealthController {
       environment: this.configService.get('app.nodeEnv', { infer: true }),
       version: process.env.npm_package_version ?? '1.0.0',
       service: {
-        database: dbStatus,
+        database: { ...dbStatus, pendingMigrations: pending },
         redis: redisStatus,
         whatsapp,
       },

@@ -394,4 +394,48 @@ describe('OutboundReplyDispatcher', () => {
     await Promise.all([w.dispatcher.tick(), w.dispatcher.tick()]);
     expect(w.sends).toHaveLength(1);
   });
+
+  it('un error repetido del ciclo se registra una sola vez en vez de inundar el log', async () => {
+    const w = setup();
+    const logged = jest.fn();
+    (w.dispatcher as unknown as { logger: object }).logger = {
+      error: logged,
+      warn: jest.fn(),
+    };
+    (w.outbox as unknown as { resetStale: () => Promise<void> }).resetStale =
+      () =>
+        Promise.reject(
+          new Error('The table `public.OutboundReply` does not exist'),
+        );
+    for (let i = 0; i < 20; i++) await w.dispatcher.tick();
+    expect(logged).toHaveBeenCalledTimes(1);
+  });
+
+  it('dos conexiones del mismo tenant son independientes: una caída no frena a la otra', async () => {
+    const w = setup();
+    const sessionConnected = new Map([
+      ['c1', false],
+      ['c2', true],
+    ]);
+    (w.dispatcher as unknown as { session: object }).session = {
+      isConnected: (id: string) => sessionConnected.get(id) ?? false,
+      get: () => ({ user: { id: '57300@s.whatsapp.net' } }),
+    };
+    w.outbox.add('conv-1', '573001', ['Para la línea 1.'], {
+      connectionId: 'c1',
+    });
+    w.outbox.add('conv-2', '573002', ['Para la línea 2.'], {
+      connectionId: 'c2',
+    });
+    await w.dispatcher.tick();
+    expect(w.sends.map((s) => s.content)).toEqual(['Para la línea 2.']);
+    expect(w.outbox.rows[0].status).toBe(OutboundReplyStatus.PENDING);
+
+    sessionConnected.set('c1', true);
+    await w.dispatcher.tick();
+    expect(w.sends.map((s) => s.content)).toEqual([
+      'Para la línea 2.',
+      'Para la línea 1.',
+    ]);
+  });
 });

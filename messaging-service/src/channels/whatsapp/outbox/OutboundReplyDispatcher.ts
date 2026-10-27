@@ -16,6 +16,7 @@ import { OutboundReplyService } from './OutboundReply.service';
 import { verdictFor } from './outbox-policy';
 
 const TICK_MS = 2_000;
+const CYCLE_ERROR_REPEAT_MS = 5 * 60_000;
 
 type RowResult = 'ok' | 'blocked' | 'stop';
 
@@ -31,6 +32,8 @@ export class OutboundReplyDispatcher implements OnModuleInit, OnModuleDestroy {
   private timer: NodeJS.Timeout | null = null;
   private running = false;
   private again = false;
+  private lastCycleError = '';
+  private lastCycleErrorAt = 0;
 
   constructor(
     private readonly outbox: OutboundReplyService,
@@ -66,12 +69,25 @@ export class OutboundReplyDispatcher implements OnModuleInit, OnModuleDestroy {
         await this.cycle();
       } while (this.again);
     } catch (error) {
-      this.logger.error(
-        `Ciclo de la bandeja de salida: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      this.reportCycleFailure(error);
     } finally {
       this.running = false;
     }
+  }
+
+  private reportCycleFailure(error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    const signature = message.split('\n').slice(-1)[0].slice(0, 160);
+    const now = Date.now();
+    if (
+      signature === this.lastCycleError &&
+      now - this.lastCycleErrorAt < CYCLE_ERROR_REPEAT_MS
+    ) {
+      return;
+    }
+    this.lastCycleError = signature;
+    this.lastCycleErrorAt = now;
+    this.logger.error(`Ciclo de la bandeja de salida: ${message}`);
   }
 
   private async cycle(): Promise<void> {
