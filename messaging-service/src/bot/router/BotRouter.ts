@@ -24,6 +24,8 @@ import { HandoffService } from '../handoff/Handoff.service';
 import { FAILURE_STREAKS_KEY } from '../handoff/handoff-defaults';
 import { promisesHumanContact } from '../handoff/handoff-promise';
 import { TurnBudget } from '../ai/turn-budget';
+import { limitToolData } from '../tools/tool-result-limit';
+import { formatTurnLine, maskChat, ToolTrace } from './turn-trace';
 import {
   jittered,
   readDelayMs,
@@ -647,6 +649,8 @@ export class BotRouter {
 
     let streaks = (aiData.context[FAILURE_STREAKS_KEY] ?? {}) as FailureStreaks;
     const recorded: RecordedOutcome[] = [];
+    const toolTraces: ToolTrace[] = [];
+    const turnStartedAt = Date.now();
     let modelHandoff = false;
     const record = (
       tool: string,
@@ -727,6 +731,7 @@ export class BotRouter {
             }
           }
 
+          const toolStartedAt = Date.now();
           const outcome = await this.toolExecutorService.execute({
             toolDefinitionId: resolved.definitionId,
             conversationId,
@@ -744,6 +749,15 @@ export class BotRouter {
             contactAddress: phoneNumber,
             turnId,
             deadlineAt: budget.deadlineAt,
+          });
+
+          const limited = limitToolData(outcome.responseBody);
+          toolTraces.push({
+            name: req.name,
+            ok: outcome.status === 'SUCCESS',
+            ms: Date.now() - toolStartedAt,
+            bytes: limited.chars,
+            truncated: limited.truncated,
           });
 
           await this.rememberAction(conversationId, req, outcome);
@@ -781,7 +795,7 @@ export class BotRouter {
             ok: outcome.status === 'SUCCESS',
             content: {
               status: outcome.status,
-              data: outcome.responseBody,
+              data: limited.data,
               error: outcome.status !== 'SUCCESS',
               errorDetail: outcome.errorDetail,
               ...(classified.kind === 'EXPECTED' && {
@@ -978,6 +992,33 @@ export class BotRouter {
     // de la siguiente pasada, así lo ya respondido no vuelve a verse como
     // pendiente (evita contestar dos veces lo mismo).
     await this.sendReply(turn, reply, tokensUsed, imageVerified);
+    this.logger.log(
+      formatTurnLine({
+        correlationId: turnId,
+        chat: maskChat(phoneNumber),
+        route: slim ? `ia-reducida:${slim.intentKey}` : 'ia-completa',
+        model: aiResult.modelUsed,
+        llmCalls: aiResult.llmCalls,
+        input: aiResult.usage
+          ? aiResult.usage.input +
+            aiResult.usage.cacheRead +
+            aiResult.usage.cacheWrite
+          : undefined,
+        cacheRead: aiResult.usage?.cacheRead,
+        cacheWrite: aiResult.usage?.cacheWrite,
+        output: aiResult.usage?.output,
+        ms: Date.now() - turnStartedAt,
+        tools: toolTraces,
+        flags: [
+          ...(guarded.replaced ? ['respuesta-reemplazada'] : []),
+          ...(modelHandoff ? ['traspaso'] : []),
+          ...(aiResult.stopReason === 'max_tokens' ? ['cortada'] : []),
+          ...(toolTraces.some((t) => t.truncated)
+            ? ['resultado-recortado']
+            : []),
+        ],
+      }),
+    );
     if (hasImage) this.lastImageMessage.delete(conversationId);
     if (slim) {
       await this.intentHandler.afterSlimTurn(

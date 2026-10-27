@@ -146,6 +146,22 @@ describe('ToolExecutorService', () => {
     expect(keys[0]).toBe(keys[1]);
   });
 
+  it('envía el id del turno como correlation id para seguir el mensaje hasta el backend', async () => {
+    global.fetch = jest
+      .fn()
+      .mockResolvedValue(reply(200, { ok: true })) as never;
+    await service.execute({
+      toolDefinitionId: 'tool-1',
+      conversationId: 'conv-1',
+      params: { treatmentIds: ['t1'] },
+      turnId: '0b9f6c1e-5a1d-4d7e-9b53-3a1c2f7d8e90',
+    });
+    const headers = (global.fetch as jest.Mock).mock.calls[0][1].headers;
+    expect(headers['X-Correlation-Id']).toBe(
+      '0b9f6c1e-5a1d-4d7e-9b53-3a1c2f7d8e90',
+    );
+  });
+
   it('una herramienta colgada termina dentro del presupuesto del turno', async () => {
     global.fetch = jest.fn(
       (_url: unknown, init?: RequestInit) =>

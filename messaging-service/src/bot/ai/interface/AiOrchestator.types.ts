@@ -41,6 +41,7 @@ export interface OrchestratorResult {
   modelUsed: string;
   providerUsed: string;
   latencyMs: number;
+  llmCalls?: number;
   modelConfigId: string;
   toolCallsExecuted?: Array<{
     name: string;

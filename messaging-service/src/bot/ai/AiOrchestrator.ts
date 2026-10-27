@@ -269,6 +269,7 @@ export class AiOrchestrator {
             modelUsed: result.model,
             providerUsed: result.provider,
             latencyMs: result.latencyMs,
+            llmCalls: result.llmCalls,
             modelConfigId: config.id,
             toolCallsExecuted: result.toolCallsExecuted,
           };

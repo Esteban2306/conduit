@@ -79,6 +79,7 @@ export interface GenerateTextResult {
   model: string;
   provider: string;
   latencyMs: number;
+  llmCalls?: number;
   toolCallsExecuted?: Array<{
     name: string;
     arguments: Record<string, unknown>;

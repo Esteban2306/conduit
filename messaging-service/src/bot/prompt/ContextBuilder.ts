@@ -19,7 +19,20 @@ const EXCLUDED = new Set([
   'botPauseReason',
   'aiFallbackAt',
   'abuseNoticeAt',
+  'abuseAt',
+  'spamNotifiedAt',
+  'activeFlow',
+  'taskDoneAt',
+  'optedOutAt',
+  'handoffAt',
+  'handoffReason',
+  'failureStreaks',
+  'closedAt',
+  'aiFallbackNotified',
 ]);
+
+export const MAX_SUMMARY_CHARS = 1500;
+export const MAX_ACTION_MEMORY_CHARS = 2400;
 
 const PRIORITY_KEYS = [
   'currentStep',
@@ -39,7 +52,7 @@ export class ContextBuilder {
 
     if (summary?.trim()) {
       parts.push(
-        `Resumen de la conversación anterior (objetivo y acuerdos):\n${summary.trim()}`,
+        `Resumen de la conversación anterior (objetivo y acuerdos):\n${this.limitSummary(summary.trim())}`,
       );
     }
 
@@ -69,11 +82,25 @@ export class ContextBuilder {
       : [];
     if (entries.length === 0) return null;
 
-    const lines = entries.map(
+    const all = entries.map(
       (e) =>
         `- [${e.en}] ${e.herramienta}(${e.parametros}) → ${e.estado}: ${e.resultado}`,
     );
+    const lines: string[] = [];
+    let used = 0;
+    for (const line of [...all].reverse()) {
+      if (lines.length > 0 && used + line.length > MAX_ACTION_MEMORY_CHARS)
+        break;
+      lines.unshift(line);
+      used += line.length + 1;
+    }
     return `Acciones ya realizadas en esta conversación (resultados reales, del más antiguo al más reciente):\n${lines.join('\n')}`;
+  }
+
+  private limitSummary(summary: string): string {
+    return summary.length > MAX_SUMMARY_CHARS
+      ? `…${summary.slice(-MAX_SUMMARY_CHARS)}`
+      : summary;
   }
 
   private buildContextLine(context: ConversationContext): string | null {

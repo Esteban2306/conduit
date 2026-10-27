@@ -91,6 +91,10 @@ export class AnthropicProvider implements AiProvider {
     const maxIterations =
       input.maxToolIterations ?? this.DEFAULT_MAX_TOOL_ITERATIONS;
 
+    this.logger.debug(
+      `Solicitud | system ${JSON.stringify(system).length}c | ${tools?.length ?? 0} herramientas ${JSON.stringify(tools ?? []).length}c | historial ${messages.length} mensajes ${JSON.stringify(messages).length}c`,
+    );
+
     for (let iteration = 0; iteration <= maxIterations; iteration++) {
       const response = await client.messages.create({
         model: input.model,
@@ -127,6 +131,7 @@ export class AnthropicProvider implements AiProvider {
           model: response.model,
           provider: this.providerName,
           latencyMs: Date.now() - start,
+          llmCalls: iteration + 1,
           toolCallsExecuted,
         };
       }

@@ -17,6 +17,7 @@ import {
 export const CONTACT_PHONE_HEADER = 'X-Conduit-Contact-Phone';
 export const CONTACT_LID_HEADER = 'X-Conduit-Contact-Lid';
 export const CONVERSATION_HEADER = 'X-Conduit-Conversation-Id';
+export const CORRELATION_HEADER = 'X-Correlation-Id';
 
 export interface AttachedImage {
   dataUri: string;
@@ -112,6 +113,7 @@ export class ToolExecutorService {
     if (!isReadOnly) headers['Content-Type'] = 'application/json';
 
     headers[CONVERSATION_HEADER] = request.conversationId;
+    if (request.turnId) headers[CORRELATION_HEADER] = request.turnId;
     if (request.contactAddress?.endsWith('@lid')) {
       headers[CONTACT_LID_HEADER] = request.contactAddress.replace('@lid', '');
     } else if (request.contactAddress) {
