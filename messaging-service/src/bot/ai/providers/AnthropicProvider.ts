@@ -10,7 +10,37 @@ import {
 } from '../interface/AiProvider';
 import { AI_CALL_TIMEOUT_MS } from '../turn-budget';
 
-const CACHE: Anthropic.CacheControlEphemeral = { type: 'ephemeral' };
+const SHORT_CACHE: Anthropic.CacheControlEphemeral = { type: 'ephemeral' };
+
+export function stableCache(
+  ttl: string | undefined = process.env.ANTHROPIC_CACHE_TTL,
+): Anthropic.CacheControlEphemeral {
+  return ttl === '1h' ? { type: 'ephemeral', ttl: '1h' } : SHORT_CACHE;
+}
+
+/**
+ * Marca el final de la conversación para que, dentro del mismo turno, cada
+ * vuelta del ciclo de herramientas lea de caché lo ya enviado en la anterior
+ * (lo estable va con su propio punto de caché, de más larga duración). Devuelve
+ * una copia: los mensajes originales no cambian, así los puntos no se acumulan.
+ */
+export function withTailCache(
+  messages: Anthropic.MessageParam[],
+): Anthropic.MessageParam[] {
+  if (messages.length === 0) return messages;
+  const last = messages[messages.length - 1];
+  const blocks: Anthropic.ContentBlockParam[] =
+    typeof last.content === 'string'
+      ? [{ type: 'text', text: last.content }]
+      : [...last.content];
+  if (blocks.length === 0) return messages;
+  const tail = blocks[blocks.length - 1];
+  blocks[blocks.length - 1] = {
+    ...tail,
+    cache_control: SHORT_CACHE,
+  } as Anthropic.ContentBlockParam;
+  return [...messages.slice(0, -1), { ...last, content: blocks }];
+}
 
 export function billableTokens(usage: TokenUsage): number {
   return (
@@ -61,7 +91,7 @@ export class AnthropicProvider implements AiProvider {
           {
             type: 'text',
             text: input.systemBlocks.cacheable,
-            cache_control: CACHE,
+            cache_control: stableCache(),
           },
           ...(input.systemBlocks.dynamic
             ? [{ type: 'text' as const, text: input.systemBlocks.dynamic }]
@@ -75,7 +105,7 @@ export class AnthropicProvider implements AiProvider {
         description: t.description,
         input_schema: t.parametersSchema as Anthropic.Tool.InputSchema,
         ...(input.systemBlocks && index === all.length - 1
-          ? { cache_control: CACHE }
+          ? { cache_control: stableCache() }
           : {}),
       }),
     );
@@ -100,7 +130,7 @@ export class AnthropicProvider implements AiProvider {
         model: input.model,
         max_tokens: input.maxTokens ?? 1024,
         system,
-        messages,
+        messages: input.systemBlocks ? withTailCache(messages) : messages,
         ...(tools && tools.length > 0 ? { tools } : {}),
         ...reasoningParams(input.reasoningMode),
       });

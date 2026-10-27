@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { MessageOrchestrator } from 'src/core/orchestrator/MessageOrchestrator';
 import { WebhookDispatcher } from 'src/webhooks/WebhookDispatcher';
 
-export type OpsAlertKind = 'connection' | 'undelivered';
+export type OpsAlertKind = 'connection' | 'undelivered' | 'capacity';
 
 interface Batch {
   tenantId: string;
@@ -17,6 +17,7 @@ const DEDUPE_MS = 10 * 60_000;
 const TITLES: Record<OpsAlertKind, string> = {
   connection: 'WhatsApp: problema con la conexión',
   undelivered: 'WhatsApp: mensajes sin responder o respuestas sin entregar',
+  capacity: 'Conduit: capacidad y salud del servicio',
 };
 
 /**
@@ -41,11 +42,19 @@ export class OpsAlertService implements OnModuleDestroy {
     tenantId: string,
     kind: OpsAlertKind,
     line: string,
-    options: { immediate?: boolean; dedupeKey?: string } = {},
+    options: {
+      immediate?: boolean;
+      dedupeKey?: string;
+      dedupeMs?: number;
+    } = {},
   ): void {
     const key = options.dedupeKey ?? `${kind}:${line}`;
     const last = this.lastSent.get(`${tenantId}:${key}`) ?? 0;
-    if (options.immediate && Date.now() - last < DEDUPE_MS) return;
+    if (
+      options.immediate &&
+      Date.now() - last < (options.dedupeMs ?? DEDUPE_MS)
+    )
+      return;
     if (options.immediate) this.lastSent.set(`${tenantId}:${key}`, Date.now());
 
     const batchKey = `${tenantId}:${kind}`;

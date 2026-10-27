@@ -2,6 +2,8 @@ import { WhatsAppSessionEncryptionMigration } from './whatsapp/baileys/WhatsAppS
 import { SecurityModule } from 'src/shared/security/security.module';
 import { OutboundReplyService } from './whatsapp/outbox/OutboundReply.service';
 import { OutboundReplyDispatcher } from './whatsapp/outbox/OutboundReplyDispatcher';
+import { OpsWatchdogService } from './whatsapp/alerts/OpsWatchdog.service';
+import { registerMessageQueues } from 'src/queue/message-queues.registration';
 import { OpsAlertService } from './whatsapp/alerts/OpsAlert.service';
 import { WebhookModule } from 'src/webhooks/webhook.module';
 import { OrchestratorModule } from 'src/core/orchestrator/orchestrator.module';
@@ -35,6 +37,7 @@ import { SentMessageStore } from './whatsapp/baileys/SentMessageStore';
     WebhookModule,
     OrchestratorModule,
     SecurityModule,
+    registerMessageQueues(),
   ],
   controllers: [ConnectionController],
   providers: [
@@ -55,6 +58,7 @@ import { SentMessageStore } from './whatsapp/baileys/SentMessageStore';
     OutboundReplyDispatcher,
     WhatsAppSessionEncryptionMigration,
     OpsAlertService,
+    OpsWatchdogService,
   ],
   exports: [
     ChannelPluginFactory,
