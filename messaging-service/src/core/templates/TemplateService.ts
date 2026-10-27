@@ -4,7 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from 'src/shared/prisma.service';
-import { TemplateEngine } from './TemplateEngine';
+import { MAX_BODY_VARIANTS, TemplateEngine } from './TemplateEngine';
 import { CreateTemplateDto } from './dto/create-template.dto';
 import { UpdateTemplateDto } from './dto/update-template.dto';
 import { ConfigService } from '@nestjs/config';
@@ -25,6 +25,10 @@ export class TemplateService {
     this.validateHandlebarsSyntax(dto.bodyHandlebars);
 
     if (dto.subject) this.validateHandlebarsSyntax(dto.subject);
+    const bodyVariants = this.validateVariants(
+      dto.bodyHandlebars,
+      dto.bodyVariants,
+    );
 
     return this.prisma.template.create({
       data: {
@@ -34,6 +38,7 @@ export class TemplateService {
         channel: dto.channel,
         subject: dto.subject,
         bodyHandlebars: dto.bodyHandlebars,
+        bodyVariants,
         variablesSchema: dto.variadblesSchema
           ? JSON.stringify(dto.variadblesSchema)
           : JSON.stringify({}),
@@ -118,7 +123,7 @@ export class TemplateService {
   }
 
   async update(id: string, dto: UpdateTemplateDto, tenantId: string) {
-    await this.findOne(id, tenantId);
+    const current = await this.findOne(id, tenantId);
 
     if (dto.bodyHandlebars) {
       this.validateHandlebarsSyntax(dto.bodyHandlebars);
@@ -128,9 +133,19 @@ export class TemplateService {
       this.validateHandlebarsSyntax(dto.subject);
     }
 
+    const touchesBody =
+      dto.bodyHandlebars !== undefined || dto.bodyVariants !== undefined;
+    const bodyVariants = touchesBody
+      ? this.validateVariants(
+          dto.bodyHandlebars ?? current.bodyHandlebars,
+          dto.bodyVariants ??
+            this.engine.normalizeVariants(current.bodyVariants),
+        )
+      : undefined;
+
     return this.prisma.template.update({
       where: { id },
-      data: { ...dto },
+      data: { ...dto, ...(bodyVariants && { bodyVariants }) },
       include: {
         tags: { include: { tag: true } },
       },
@@ -204,6 +219,37 @@ export class TemplateService {
         whatsappPreview: this.formatWhatsappPreview(rendered.body),
       },
     };
+  }
+
+  private validateVariants(
+    main: string,
+    variants: string[] | undefined,
+  ): string[] {
+    const list = this.engine.normalizeVariants(variants ?? []);
+    if (list.length > MAX_BODY_VARIANTS) {
+      throw new BadRequestException(
+        `Máximo ${MAX_BODY_VARIANTS} variantes por plantilla.`,
+      );
+    }
+    const required = this.engine.extractVariables(main);
+    const seen = new Set<string>([main.trim()]);
+    for (const variant of list) {
+      this.validateHandlebarsSyntax(variant);
+      const present = new Set(this.engine.extractVariables(variant));
+      const missing = required.filter((name) => !present.has(name));
+      if (missing.length > 0) {
+        throw new BadRequestException(
+          `Una variante no incluye las variables del mensaje principal: ${missing.join(', ')}.`,
+        );
+      }
+      if (seen.has(variant.trim())) {
+        throw new BadRequestException(
+          'Las variantes deben ser distintas entre sí y del mensaje principal.',
+        );
+      }
+      seen.add(variant.trim());
+    }
+    return list;
   }
 
   private validateHandlebarsSyntax(template: string) {

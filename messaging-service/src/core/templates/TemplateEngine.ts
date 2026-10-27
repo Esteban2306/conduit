@@ -1,6 +1,9 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { MessageChannel } from '@prisma/client';
 import * as Handlebars from 'handlebars';
+import { createHash } from 'node:crypto';
+
+export const MAX_BODY_VARIANTS = 3;
 
 export interface RenderResult {
   subject?: string;
@@ -64,6 +67,26 @@ export class TemplateEngine {
           subject: base.subject,
         };
     }
+  }
+
+  /**
+   * Elige una de las redacciones (la principal o una variante) de forma
+   * estable según `seed`: el mismo mensaje usa siempre el mismo texto aunque
+   * se reintente, y los distintos destinatarios se reparten entre ellas.
+   */
+  pickBody(main: string, variants: unknown, seed: string): string {
+    const alternatives = this.normalizeVariants(variants);
+    if (alternatives.length === 0) return main;
+    const bodies = [main, ...alternatives];
+    const index = createHash('sha256').update(seed).digest().readUInt32BE(0);
+    return bodies[index % bodies.length];
+  }
+
+  normalizeVariants(variants: unknown): string[] {
+    if (!Array.isArray(variants)) return [];
+    return variants.filter(
+      (v): v is string => typeof v === 'string' && v.trim() !== '',
+    );
   }
 
   extractVariables(templateBody: string): string[] {

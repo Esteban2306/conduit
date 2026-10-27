@@ -183,6 +183,8 @@ model Template {
   channel         MessageChannel   
   subject         String?  
   bodyHandlebars  String
+  // Hasta 3 redacciones alternativas del mismo mensaje (mismas variables).
+  bodyVariants    Json     @default("[]")
   variablesSchema Json     @default("{}")
   isActive        Boolean  @default(true)
   createdAt       DateTime @default(now())
