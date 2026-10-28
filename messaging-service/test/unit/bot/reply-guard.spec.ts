@@ -75,6 +75,35 @@ describe('splitBubbles', () => {
     ]);
   });
 
+  it('una lista con bloques separados por línea en blanco viaja en una sola burbuja', () => {
+    const intro = 'Estos son nuestros tratamientos';
+    const list = [
+      '✨ *Keratina*\n⏱ 90 min · 💰 $250.000',
+      '✨ *Alisado*\n⏱ 120 min · 💰 $300.000',
+      '✨ *Botox capilar*\n⏱ 60 min · 💰 $180.000',
+    ].join('\n\n');
+    const closing = '¿Te cuento más de alguno?';
+    expect(splitBubbles(`${intro}\n\n${list}\n\n${closing}`)).toEqual([
+      intro,
+      list,
+      closing,
+    ]);
+  });
+
+  it('los títulos de categoría en negrita también se mantienen con su lista', () => {
+    const list =
+      '*Capilar*\n✨ *Keratina* · $250.000\n\n*Uñas*\n✨ *Semipermanente* · $60.000';
+    expect(splitBubbles(`Mira:\n\n${list}\n\n¿Cuál te gusta?`)).toEqual([
+      'Mira:',
+      list,
+      '¿Cuál te gusta?',
+    ]);
+  });
+
+  it('párrafos normales siguen separándose', () => {
+    expect(splitBubbles('Hola.\n\nTe cuento.\n\n¿Listo?')).toHaveLength(3);
+  });
+
   it('nunca pasa del máximo: el resto se une en la última burbuja', () => {
     const text = ['a', 'b', 'c', 'd', 'e'].join('\n\n');
     const bubbles = splitBubbles(text);

@@ -23,14 +23,33 @@ export function cutAtSentence(text: string): string {
   return cut === -1 ? trimmed : trimmed.slice(0, cut).trimEnd();
 }
 
+const LIST_BLOCK_START = /^(?:\p{Extended_Pictographic}|\*|•)/u;
+
+function joinListBlocks(paragraphs: string[]): string[] {
+  const joined: string[] = [];
+  let previousWasList = false;
+  for (const paragraph of paragraphs) {
+    const isList = LIST_BLOCK_START.test(paragraph);
+    if (isList && previousWasList) {
+      joined[joined.length - 1] += `\n\n${paragraph}`;
+    } else {
+      joined.push(paragraph);
+    }
+    previousWasList = isList;
+  }
+  return joined;
+}
+
 export function splitBubbles(
   text: string,
   maxBubbles: number = MAX_BUBBLES,
 ): string[] {
-  const paragraphs = text
-    .split(/\n\s*\n/)
-    .map((p) => p.trim())
-    .filter((p) => !isBlank(p));
+  const paragraphs = joinListBlocks(
+    text
+      .split(/\n\s*\n/)
+      .map((p) => p.trim())
+      .filter((p) => !isBlank(p)),
+  );
   if (paragraphs.length <= maxBubbles) return paragraphs;
   return [
     ...paragraphs.slice(0, maxBubbles - 1),

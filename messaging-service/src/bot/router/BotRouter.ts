@@ -58,6 +58,7 @@ import {
 } from '../tools/tool-outcome';
 import { cutAtSentence, isBlank } from './reply-guard';
 import { ReplyMetricsService } from './reply-metrics.service';
+import { RetainedImages } from './retained-images';
 
 interface TurnContext {
   tenantId: string;
@@ -83,7 +84,7 @@ export class BotRouter {
   /** Conversaciones que recibieron mensajes mientras se procesaban. */
   private readonly rerunRequested = new Set<string>();
   /** Último mensaje con imagen por conversación, para analizarla o adjuntarla. */
-  private readonly lastImageMessage = new Map<string, WAMessage>();
+  private readonly retainedImages = new RetainedImages<WAMessage>();
   private readonly TYPING_RETRY_MS = 6000;
   private readonly AI_FALLBACK_COOLDOWN_MS = 30 * 60 * 1000;
   private readonly MAX_REPLIES_PER_CONTACT_HOUR = 30;
@@ -263,7 +264,7 @@ export class BotRouter {
       return;
     }
 
-    if (hasImage) this.lastImageMessage.set(conversation.id, message);
+    if (hasImage) this.retainedImages.keep(conversation.id, message);
 
     const turn: TurnContext = {
       tenantId,
@@ -560,9 +561,13 @@ export class BotRouter {
       .filter((c) => c !== '[imagen]')
       .join('\n');
     const hasImage = aiData.pending.some((m) => m.hasImage);
-    const imageMessage = this.lastImageMessage.get(conversationId);
+    const imageMessage = this.retainedImages.get(conversationId);
+    const imageAvailable = hasImage || !!imageMessage;
 
     let userMessageForAI = combinedText || '[imagen recibida]';
+    if (!hasImage && imageMessage) {
+      userMessageForAI = `[la clienta ya envió una imagen en esta conversación y sigue disponible para registrarla]\n${userMessageForAI}`;
+    }
     let imageVerified: boolean | undefined;
 
     if (hasImage && imageMessage && botConfig.imageAnalysisEnabled) {
@@ -652,6 +657,7 @@ export class BotRouter {
     const toolTraces: ToolTrace[] = [];
     const turnStartedAt = Date.now();
     let modelHandoff = false;
+    let imageConsumed = false;
     const record = (
       tool: string,
       outcome: ReturnType<typeof classifyOutcome>,
@@ -685,7 +691,7 @@ export class BotRouter {
           let attachedImage: AttachedImage | undefined;
 
           if (resolved.requiresImageAttachment) {
-            if (!hasImage || !imageMessage) {
+            if (!imageAvailable || !imageMessage) {
               record(req.name, {
                 kind: 'EXPECTED',
                 httpStatus: null,
@@ -697,7 +703,7 @@ export class BotRouter {
                   error: true,
                   status: 'MISSING_ATTACHMENT',
                   message:
-                    'El cliente no ha enviado ninguna imagen en este mensaje.',
+                    'La clienta no ha enviado ninguna imagen reciente en esta conversación. Pídele que la envíe por este chat.',
                 },
               };
             }
@@ -751,6 +757,8 @@ export class BotRouter {
             deadlineAt: budget.deadlineAt,
           });
 
+          if (resolved.requiresImageAttachment && outcome.status === 'SUCCESS')
+            imageConsumed = true;
           const limited = limitToolData(outcome.responseBody);
           toolTraces.push({
             name: req.name,
@@ -1019,7 +1027,7 @@ export class BotRouter {
         ],
       }),
     );
-    if (hasImage) this.lastImageMessage.delete(conversationId);
+    if (imageConsumed) this.retainedImages.consume(conversationId);
     if (slim) {
       await this.intentHandler.afterSlimTurn(
         conversationId,
