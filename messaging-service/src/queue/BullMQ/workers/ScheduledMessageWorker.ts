@@ -23,6 +23,7 @@ export class ScheduledMessageWorker implements OnModuleInit, OnModuleDestroy {
         connection: {
           host: this.config.get<string>('redis.host'),
           port: this.config.get<number>('redis.port'),
+          password: this.config.get<string>('redis.password'),
         },
         concurrency: 2,
       },

@@ -20,6 +20,7 @@ export const configValidationSchema = Joi.object({
 
   REDIS_HOST: Joi.string().default('localhost'),
   REDIS_PORT: Joi.number().default(6379),
+  REDIS_PASSWORD: Joi.string().optional(),
 
   DEFAULT_TENANT_ID: Joi.string().default('default'),
 
@@ -81,6 +82,7 @@ export interface AppConfig {
   redis: {
     host: string;
     port: number;
+    password?: string;
   };
   tenant: {
     defaultId: string;
@@ -142,6 +144,7 @@ export const configFactory = (): AppConfig => ({
   redis: {
     host: process.env.REDIS_HOST ?? '',
     port: parseInt(process.env.REDIS_PORT ?? '6379', 10),
+    password: process.env.REDIS_PASSWORD || undefined,
   },
   tenant: {
     defaultId: process.env.DEFAULT_TENANT_ID ?? '',
