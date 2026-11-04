@@ -1,36 +1,76 @@
-import { NestFactory } from '@nestjs/core';
+import { NestFactory, Reflector } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { ConfigService } from '@nestjs/config';
 import { ValidationPipe } from '@nestjs/common';
-import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger' 
+import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import cookieParser from 'cookie-parser';
+import { GlobalExceptionFilter } from './shared/filters/global-exception.filter';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, {
+    rawBody: true,
+    logger:
+      process.env.NODE_ENV === 'production'
+        ? ['error', 'warn', 'log']
+        : ['error', 'warn', 'log', 'debug', 'verbose'],
+  });
+  const config = app.get(ConfigService);
+  const port = config.get<number>('app.port');
+  const nodeEnv = config.get<string>('app.nodeEnv');
 
-  const config = app.get(ConfigService)
-  const port = config.get<number>('app.port')
-  const nodeEnv = config.get<string>('app.nodeEnv')
-
+  app.use(cookieParser());
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
       forbidNonWhitelisted: true,
-      transform: true
-    })
-  )
+      transform: true,
+    }),
+  );
 
-  app.setGlobalPrefix("api/v1")
+  app.enableCors({
+    origin: config.get<string>('app.frontendUrl'),
+    credentials: true,
+  });
+
+  app.useGlobalFilters(new GlobalExceptionFilter());
+
+  app.use((req: Request, res: any, next: any) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    if (nodeEnv === 'production') {
+      res.setHeader(
+        'Strict-Transport-Security',
+        'max-age=31536000; includeSubDomains',
+      );
+    }
+    res.removeHeader('X-Powered-By');
+    next();
+  });
+
+  app.setGlobalPrefix('api/v1');
+
+  // Sin esto, SIGTERM (deploy, docker stop) mata el proceso sin ejecutar
+  // onModuleDestroy: los workers no sueltan sus jobs y Baileys no cierra
+  // el socket, lo que WhatsApp ve como una desconexión abrupta.
+  app.enableShutdownHooks();
 
   if (nodeEnv === 'development') {
     const swaggerConfig = new DocumentBuilder()
       .setTitle('Conduit Messaging Service')
-      .setDescription('Microservicio de mensajeria personalizada multi-canal')
+      .setDescription('Microservicio de mensajería personalizada multi-canal')
       .setVersion('1.0')
-      .addApiKey({type: 'apiKey', name: 'x-api-key', in: 'header'}, 'api-key')
-      .build()
+      .addApiKey({ type: 'apiKey', name: 'x-api-key', in: 'header' }, 'api-key')
+      .build();
+
+    const document = SwaggerModule.createDocument(app, swaggerConfig);
+    SwaggerModule.setup('docs', app, document, {
+      swaggerOptions: {
+        persistAuthorization: true,
+      },
+    });
+
+    console.log(`Swagger: http://localhost:${port}/docs`);
   }
-
-
 
   await app.listen(process.env.PORT ?? 4123);
 }

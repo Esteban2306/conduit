@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger'
-import { IsString, IsEnum, IsOptional, IsBoolean, IsObject } from 'class-validator'
+import { ArrayMaxSize, IsArray, IsString, IsEnum, IsOptional, IsBoolean, IsObject } from 'class-validator'
 import { MessageChannel } from '@prisma/client';
 
 export class CreateTemplateDto {
@@ -26,6 +26,16 @@ export class CreateTemplateDto {
     })
     @IsString()
     bodyHandlebars: string
+
+    @ApiPropertyOptional({
+        example: ['Hola {{nombreCliente}}, tu pedido #{{numeroPedido}} está listo.'],
+        description: 'Hasta 3 redacciones alternativas con las mismas variables; cada mensaje usa una de forma estable.',
+    })
+    @IsArray()
+    @ArrayMaxSize(3)
+    @IsString({ each: true })
+    @IsOptional()
+    bodyVariants?: string[]
 
     @ApiPropertyOptional ({
         example: {nombreCliente: 'strign', numeroPedido: 'string', total: 'number'},

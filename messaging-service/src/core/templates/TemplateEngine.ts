@@ -1,5 +1,9 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
+import { MessageChannel } from '@prisma/client';
 import * as Handlebars from 'handlebars';
+import { createHash } from 'node:crypto';
+
+export const MAX_BODY_VARIANTS = 3;
 
 export interface RenderResult {
   subject?: string;
@@ -28,6 +32,61 @@ export class TemplateEngine {
         `Error al renderizar la plantilla: ${error instanceof Error ? error.message : 'Error desconocido'}`,
       );
     }
+  }
+
+  renderByChannel(
+    channel: MessageChannel,
+
+    bodyHandlebars: string,
+
+    variables: Record<string, unknown>,
+
+    subjectHandlebars?: string,
+  ): RenderResult {
+    const base = this.render(bodyHandlebars, variables, subjectHandlebars);
+
+    switch (channel) {
+      case MessageChannel.WHATSAPP:
+        return {
+          body: this.formatWhatsappText(base.body),
+        };
+
+      case MessageChannel.SMTP:
+        return {
+          body: this.stripHtml(base.body),
+
+          subject: base.subject,
+        };
+
+      case MessageChannel.EMAIL:
+
+      default:
+        return {
+          body: base.body,
+
+          subject: base.subject,
+        };
+    }
+  }
+
+  /**
+   * Elige una de las redacciones (la principal o una variante) de forma
+   * estable según `seed`: el mismo mensaje usa siempre el mismo texto aunque
+   * se reintente, y los distintos destinatarios se reparten entre ellas.
+   */
+  pickBody(main: string, variants: unknown, seed: string): string {
+    const alternatives = this.normalizeVariants(variants);
+    if (alternatives.length === 0) return main;
+    const bodies = [main, ...alternatives];
+    const index = createHash('sha256').update(seed).digest().readUInt32BE(0);
+    return bodies[index % bodies.length];
+  }
+
+  normalizeVariants(variants: unknown): string[] {
+    if (!Array.isArray(variants)) return [];
+    return variants.filter(
+      (v): v is string => typeof v === 'string' && v.trim() !== '',
+    );
   }
 
   extractVariables(templateBody: string): string[] {
@@ -68,6 +127,36 @@ export class TemplateEngine {
     }
   }
 
+  private stripHtml(html: string): string {
+    return html
+
+      .replace(/<br\s*\/?>/gi, '\n')
+
+      .replace(/<\/p>/gi, '\n\n')
+
+      .replace(/<[^>]+>/g, '')
+
+      .replace(/&nbsp;/g, ' ')
+
+      .replace(/&amp;/g, '&')
+
+      .replace(/&lt;/g, '<')
+
+      .replace(/&gt;/g, '>')
+
+      .trim();
+  }
+
+  private formatWhatsappText(text: string): string {
+    const plain = this.stripHtml(text);
+
+    if (plain.length > 1024) {
+      return plain.slice(0, 1021) + '...';
+    }
+
+    return plain;
+  }
+
   private registerHelpers(): void {
     Handlebars.registerHelper('formatDate', (date: string) => {
       if (!date) return '';
@@ -88,6 +177,17 @@ export class TemplateEngine {
 
     Handlebars.registerHelper('uppercase', (str: string) => {
       return str ? str.toUpperCase() : '';
+    });
+
+    Handlebars.registerHelper('lowercase', (str: string) => {
+      if (typeof str !== 'string') return '';
+      return str.toLowerCase();
+    });
+
+    Handlebars.registerHelper('truncate', (str: string, length: number) => {
+      if (typeof str !== 'string') return '';
+
+      return str.length > length ? str.slice(0, length) + '...' : str;
     });
 
     Handlebars.registerHelper('ifEq', function (a, b, options) {

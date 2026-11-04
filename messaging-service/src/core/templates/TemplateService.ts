@@ -4,11 +4,14 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from 'src/shared/prisma.service';
-import { TemplateEngine } from './TemplateEngine';
+import { MAX_BODY_VARIANTS, TemplateEngine } from './TemplateEngine';
 import { CreateTemplateDto } from './dto/create-template.dto';
 import { UpdateTemplateDto } from './dto/update-template.dto';
 import { ConfigService } from '@nestjs/config';
 import { AppConfig } from 'src/config';
+import { Prisma } from '@prisma/client';
+import { FilterTemplateDto } from './dto/filter-template.dto';
+import { PreviewTemplateDto } from './dto/preview-template.dto';
 
 @Injectable()
 export class TemplateService {
@@ -18,16 +21,14 @@ export class TemplateService {
     private readonly config: ConfigService<AppConfig>,
   ) {}
 
-  async create(dto: CreateTemplateDto) {
-    try {
-      this.engine.render(dto.bodyHandlebars, {});
-    } catch {
-      throw new BadRequestException(
-        'El bodyHandlebars contiene sintaxis invalida',
-      );
-    }
+  async create(tenantId: string, dto: CreateTemplateDto) {
+    this.validateHandlebarsSyntax(dto.bodyHandlebars);
 
-    const tenantId = this.config.get('tenant.defaultId', { infer: true });
+    if (dto.subject) this.validateHandlebarsSyntax(dto.subject);
+    const bodyVariants = this.validateVariants(
+      dto.bodyHandlebars,
+      dto.bodyVariants,
+    );
 
     return this.prisma.template.create({
       data: {
@@ -37,47 +38,122 @@ export class TemplateService {
         channel: dto.channel,
         subject: dto.subject,
         bodyHandlebars: dto.bodyHandlebars,
+        bodyVariants,
         variablesSchema: dto.variadblesSchema
           ? JSON.stringify(dto.variadblesSchema)
           : JSON.stringify({}),
       },
+      include: {
+        tags: { include: { tag: true } },
+      },
     });
   }
 
-  async findAll() {
-    return this.prisma.template.findMany({
-      where: { isActive: true },
-      orderBy: { createdAt: 'desc' },
-    });
+  async findAll(tenantId: string, filter: FilterTemplateDto) {
+    const where: Prisma.TemplateWhereInput = { tenantId, isActive: true };
+
+    if (filter.channel) {
+      where.channel = filter.channel;
+    }
+
+    if (filter.tagId) {
+      where.tags = {
+        some: {
+          tagId: filter.tagId,
+        },
+      };
+    }
+
+    if (filter.search) {
+      const search = filter.search.trim();
+
+      where.OR = [
+        { name: { contains: search, mode: 'insensitive' } },
+
+        { description: { contains: search, mode: 'insensitive' } },
+      ];
+    }
+
+    const skip = ((filter.page ?? 1) - 1) * (filter.limit ?? 20);
+
+    const take = filter.limit ?? 20;
+
+    const [templates, total] = await Promise.all([
+      this.prisma.template.findMany({
+        where,
+        skip,
+        take,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          tags: { include: { tag: true } },
+        },
+      }),
+
+      this.prisma.template.count({ where }),
+    ]);
+
+    return {
+      data: templates.map((t) => ({
+        ...t,
+        tags: t.tags.map((tt) => tt.tag),
+      })),
+
+      meta: {
+        total,
+        page: filter.page ?? 1,
+        limit: filter.limit ?? 20,
+        totalPages: Math.ceil(total / take),
+      },
+    };
   }
 
-  async findOne(id: string) {
-    const template = await this.prisma.template.findUnique({ where: { id } });
+  async findOne(id: string, tenantId: string) {
+    const template = await this.prisma.template.findUnique({
+      where: { id: id, tenantId },
+      include: {
+        tags: { include: { tag: true } },
+      },
+    });
     if (!template) throw new NotFoundException(`Template ${id} no encontrado`);
-    return template;
+    return {
+      ...template,
+
+      tags: template.tags.map((tt) => tt.tag),
+    };
   }
 
-  async update(id: string, dto: UpdateTemplateDto) {
-    await this.findOne(id);
+  async update(id: string, dto: UpdateTemplateDto, tenantId: string) {
+    const current = await this.findOne(id, tenantId);
 
     if (dto.bodyHandlebars) {
-      try {
-        this.engine.render(dto.bodyHandlebars, {});
-      } catch {
-        throw new BadRequestException(
-          'El bodyHandlebars contiene sintaxis invalida',
-        );
-      }
+      this.validateHandlebarsSyntax(dto.bodyHandlebars);
     }
+
+    if (dto.subject) {
+      this.validateHandlebarsSyntax(dto.subject);
+    }
+
+    const touchesBody =
+      dto.bodyHandlebars !== undefined || dto.bodyVariants !== undefined;
+    const bodyVariants = touchesBody
+      ? this.validateVariants(
+          dto.bodyHandlebars ?? current.bodyHandlebars,
+          dto.bodyVariants ??
+            this.engine.normalizeVariants(current.bodyVariants),
+        )
+      : undefined;
 
     return this.prisma.template.update({
       where: { id },
-      data: { ...dto },
+      data: { ...dto, ...(bodyVariants && { bodyVariants }) },
+      include: {
+        tags: { include: { tag: true } },
+      },
     });
   }
 
-  async remove(id: string) {
-    await this.findOne(id);
+  async remove(id: string, tenantId: string) {
+    await this.findOne(id, tenantId);
 
     return this.prisma.template.update({
       where: { id },
@@ -85,38 +161,135 @@ export class TemplateService {
     });
   }
 
-  async preview(
-    id: string,
-    variables: Record<string, unknown>,
-    subjectOverride?: string,
-  ) {
-    const template = await this.findOne(id);
+  async preview(id: string, dto: PreviewTemplateDto, tenantId: string) {
+    const template = await this.findOne(id, tenantId);
+
+    const detectedVariables = this.engine.extractVariables(
+      template.bodyHandlebars,
+    );
 
     const validation = this.engine.validateVariables(
       template.bodyHandlebars,
-      variables,
+
+      dto.variables,
     );
+
     if (!validation.valid) {
       throw new BadRequestException(
-        `Variables faltantes en la plantilla: ${validation.missing.join(', ')}`,
+        `Variables faltantes: ${validation.missing.join(', ')}`,
       );
     }
 
-    const rendered = this.engine.render(
+    const rendered = this.engine.renderByChannel(
+      template.channel,
+
       template.bodyHandlebars,
-      variables,
-      subjectOverride ?? template.subject ?? undefined,
+
+      dto.variables,
+
+      dto.subject ?? template.subject ?? undefined,
+    );
+
+    const usedVariables = this.getUsedVariables(
+      dto.variables,
+
+      detectedVariables,
     );
 
     return {
       templateId: template.id,
+
       templateName: template.name,
+
       channel: template.channel,
-      variables: this.engine.extractVariables(template.bodyHandlebars),
-      rendered: {
+
+      detectedVariables,
+
+      providedVariables: usedVariables,
+
+      rendered,
+
+      preview: {
+        html: rendered.body,
+
+        plainText: this.stripHtml(rendered.body),
+
         subject: rendered.subject,
-        body: rendered.body,
+
+        whatsappPreview: this.formatWhatsappPreview(rendered.body),
       },
     };
+  }
+
+  private validateVariants(
+    main: string,
+    variants: string[] | undefined,
+  ): string[] {
+    const list = this.engine.normalizeVariants(variants ?? []);
+    if (list.length > MAX_BODY_VARIANTS) {
+      throw new BadRequestException(
+        `Máximo ${MAX_BODY_VARIANTS} variantes por plantilla.`,
+      );
+    }
+    const required = this.engine.extractVariables(main);
+    const seen = new Set<string>([main.trim()]);
+    for (const variant of list) {
+      this.validateHandlebarsSyntax(variant);
+      const present = new Set(this.engine.extractVariables(variant));
+      const missing = required.filter((name) => !present.has(name));
+      if (missing.length > 0) {
+        throw new BadRequestException(
+          `Una variante no incluye las variables del mensaje principal: ${missing.join(', ')}.`,
+        );
+      }
+      if (seen.has(variant.trim())) {
+        throw new BadRequestException(
+          'Las variantes deben ser distintas entre sí y del mensaje principal.',
+        );
+      }
+      seen.add(variant.trim());
+    }
+    return list;
+  }
+
+  private validateHandlebarsSyntax(template: string) {
+    try {
+      this.engine.render(template, {});
+    } catch {
+      throw new BadRequestException(
+        'El bodyHandlebars contiene sintaxis invalida',
+      );
+    }
+  }
+
+  private getUsedVariables(
+    provided: Record<string, unknown>,
+
+    detected: string[],
+  ): Record<string, unknown> {
+    return Object.fromEntries(
+      Object.entries(provided).filter(([key]) => detected.includes(key)),
+    );
+  }
+
+  private stripHtml(html: string): string {
+    return html
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/p>/gi, '\n\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .trim();
+  }
+
+  private formatWhatsappPreview(text: string): string {
+    const plain = this.stripHtml(text);
+
+    const truncated =
+      plain.length > 1024 ? plain.slice(0, 1021) + '...' : plain;
+
+    return truncated;
   }
 }

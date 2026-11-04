@@ -1,0 +1,1 @@
+ALTER TABLE "Template" ADD COLUMN "bodyVariants" JSONB NOT NULL DEFAULT '[]';

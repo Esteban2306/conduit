@@ -1,3 +1,63 @@
-# TODO: Docker Compose de producción - Etapa 5
-# Incluye: postgres + redis + la app NestJS como contenedor
-# Variables sensibles van en .env.prod, nunca hardcodeadas aquí
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: conduit_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - conduit_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - conduit_internal
+
+  redis:
+    image: redis:7-alpine
+    container_name: conduit_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - conduit_redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - conduit_internal
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: conduit_app
+    restart: unless-stopped
+    env_file:
+      - .env.prod
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    ports:
+      - '4123:4123'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - conduit_internal
+
+volumes:
+  conduit_postgres_data:
+  conduit_redis_data:
+
+networks:
+  conduit_internal:
+    driver: bridge

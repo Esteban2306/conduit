@@ -7,6 +7,25 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum UserRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+enum WhatsAppCampaignPolicy {
+  INBOUND_ONLY
+  ANY
+}
+
+enum WhatsAppConnectionStatus {
+  DISCONNECTED
+  CONNECTING
+  CONNECTED
+  BANNED
+  ERROR
+}
+
 enum MessageStatus {
   PENDING
   QUEUED
@@ -29,16 +48,131 @@ enum ErrorType {
   PERMANENT
 }
 
+enum BotStatus {
+  ACTIVE
+  INACTIVE
+  PAUSED
+}
+
+enum SourceVariable {
+  MANUAL
+  WEBHOOK
+  POLLING
+}
+
+enum AiProvider {
+  ANTHROPIC
+  OPENAI
+  GEMINI
+  OPENROUTER
+  DEEPSEEK
+  GROQ 
+  MISTRAL
+  CUSTOM
+}
+
+enum ConversationStatus {
+  ACTIVE
+  WAITING_PAYMENT
+  COMPLETED
+  ABANDONED
+}
+
+enum WhatsAppWarmupLevel {
+  FRESH
+  NORMAL
+  TRUSTED
+}
+
+enum AiModelTier {
+  FREE        
+  PAID        
+}
+
+enum AiModelRole {
+  CONVERSATION     
+  IMAGE_ANALYSIS 
+  FALLBACK         
+  CLASSIFIER
+}
+
+enum PromptTemplateType {
+  CONVERSATION
+  IMAGE_ANALYSIS
+  SUMMARY
+  SALES
+  APPOINTMENT
+  SUPPORT
+  FALLBACK
+}
+
+enum ResponseLength {
+  SHORT    
+  MEDIUM  
+  LONG
+}
+
+enum EmojiLevel {
+  NONE
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum ToolInvocationStatus {
+  SUCCESS
+  BUSINESS_ERROR 
+  TECHNICAL_ERROR 
+}
+
 model Tenant {
   id        String   @id @default(uuid())
   name      String
+  apiKeys   ApiKey[]
   slug      String   @unique
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
 
   templates        Template[]
+  users            User[]
   messages         Message[]
   webhookEndpoints WebhookEndpoint[]
+  tags             Tag[]
+  botContig        BotConfig[]
+  whatsappConnections WhatsAppConnection[]
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model User {
+  id        String   @id @default(uuid())
+  tenantId  String
+  email     String
+  password  String
+  name      String
+  role      UserRole @default(MEMBER)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  refreshTokens RefreshToken[]
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, email])
+  @@index([tenantId])
 }
 
 model Template {
@@ -49,6 +183,8 @@ model Template {
   channel         MessageChannel   
   subject         String?  
   bodyHandlebars  String
+  // Hasta 3 redacciones alternativas del mismo mensaje (mismas variables).
+  bodyVariants    Json     @default("[]")
   variablesSchema Json     @default("{}")
   isActive        Boolean  @default(true)
   createdAt       DateTime @default(now())
@@ -56,12 +192,50 @@ model Template {
 
   tenant   Tenant    @relation(fields: [tenantId], references: [id])
   messages Message[]
+
+  tags TemplateTag[]
+
+  @@index([tenantId])
+  @@index([tenantId, isActive])
+}
+
+model TemplateTag {
+  templateId String
+  tagId      String
+
+  assignedAt DateTime @default(now())
+
+  template Template @relation(fields: [templateId], references: [id])
+  tag      Tag      @relation(fields: [tagId], references: [id])
+
+  @@id([templateId, tagId])
+}
+
+model Tag {
+  id        String   @id @default(uuid())
+  tenantId  String   @default("default")
+
+  name      String
+  slug      String
+
+  color     String?
+  createdAt DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  templates TemplateTag[]
+
+  @@unique([tenantId, slug])
+  @@index([tenantId])
+  @@index([slug])
 }
 
 model Message {
   id          String    @id @default(uuid())
   tenantId    String    @default("default")
   templateId  String?
+  connectionId String?
+  botConfigId String?
   channel     MessageChannel    
   recipient   String
   variables   Json      @default("{}")
@@ -80,8 +254,10 @@ model Message {
 
   nextRetryAt DateTime?
   scheduledAt DateTime  @default(now())
+  resolvedAt DateTime?
   sentAt      DateTime?
   meta        Json?
+  idempotencyKey String?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
@@ -91,6 +267,209 @@ model Message {
   webhookDeliveries WebhookDelivery[]
 
   deadLetter        DeadLetterMessage?
+
+  @@unique([tenantId, idempotencyKey])
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([status, scheduledAt])
+  @@index([status, updatedAt])
+}
+model AiModelConfig {
+  id          String @id @default(uuid())
+  botConfigId String
+  
+  provider  AiProvider
+  model     String   
+  apiKey    String       
+  apiKeyLast4 String?
+  baseUrl   String?      
+  
+  role      AiModelRole  
+  tier      AiModelTier  
+  priority  Int          
+  
+  isActive  Boolean @default(true)
+  
+
+  dailyTokenLimit    Int?   
+  minuteRequestLimit Int?   
+  
+  tokensUsedToday    Int @default(0)
+  requestsThisMinute Int @default(0)
+  lastResetAt        DateTime @default(now())
+  lastMinuteResetAt  DateTime @default(now())
+  unavailableUntil DateTime?
+
+  credentialInvalidAt DateTime?
+  consecutiveFailures Int       @default(0)
+  lastErrorType       String?
+  lastErrorAt         DateTime?
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  botConfig BotConfig @relation(fields: [botConfigId], references: [id])
+  
+  @@index([botConfigId, role, priority])
+  @@index([botConfigId, isActive])
+}
+model BotConfig {
+  id          String    @id @default(uuid())
+  tenantId    String    @default("default")
+  name        String
+  status      BotStatus @default(INACTIVE)
+  
+  systemPrompt String @db.Text
+  
+  imageAnalysisEnabled Boolean @default(false)
+  
+  clientApiBaseUrl   String?
+  clientApiHeaders   Json @default("{}")
+  intentEndpoints    Json @default("{}")
+  
+  maxHistoryMessages         Int @default(6)
+  maxMessageAgeMinutes Int @default(60)
+  humanTakeoverMinutes Int @default(10)
+  botResponseDelaySeconds Int @default(8)
+  conversationTimeoutMinutes Int @default(60)
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  tenant        Tenant          @relation(fields: [tenantId], references: [id])
+  conversations Conversation[]
+  externalVariables ExternalVariable[]
+  webhookMappings   WebhookMapping[]
+  aiModels      AiModelConfig[] 
+  aiSettings      BotAiSettings?
+  promptTemplates BotPromptTemplate[]
+  whatsappConnection WhatsAppConnection[]
+  externalIntegrations ExternalIntegration[]
+  toolDefinitions ToolDefinition[]
+  escalationContacts BotEscalationContact[]
+  intents BotIntent[]
+}
+
+model BotAiSettings {
+  id              String @id @default(uuid())
+  botConfigId     String @unique
+
+  agentName       String @default("Asistente")
+  language        String @default("es")
+  tone            String @default("Profesional y Amable")
+  personality     String? @db.Text
+
+  goals            String? @db.Text  
+  verbosity        String  @default("MEDIUM")   
+  responseFormat   String  @default("PROSE")    
+  creativity       Float   @default(0.7)        
+  confidence       String  @default("ASSERTIVE") 
+  persuasion       String  @default("LOW")       
+  fallbackBehavior String?
+
+  responseLength  ResponseLength @default(MEDIUM)
+  emojiLevel      EmojiLevel    @default(LOW)
+  allowMarkdown   Boolean       @default(false)
+
+  companyName       String?
+  companyServices   String? @db.Text
+  businessHours     String?
+  greeting          String?
+  farewell          String?
+
+  restrictions      String? @db.Text
+
+  temperature       Float   @default(0.7)
+  maxTokensConversation Int @default(800)
+  maxTokensImage        Int   @default(200)
+  maxTokensSummary      Int   @default(300)
+  reasoningMode         ReasoningMode @default(AUTO)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  botConfig BotConfig @relation(fields: [botConfigId], references: [id])
+}
+
+enum ReasoningMode {
+  AUTO
+  LOW
+  OFF
+}
+
+model BotPromptTemplate {
+  id              String @id  @default(uuid())
+  botConfigId     String
+
+  type            PromptTemplateType
+  content         String  @db.Text
+
+  isActive        Boolean @default(true)
+  version  Int     @default(1)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  botConfig BotConfig @relation(fields: [botConfigId], references: [id])
+
+  @@unique([botConfigId, type, isActive])
+  @@index([botConfigId, type])
+}
+
+
+model Conversation {
+  id               String  @id @default(uuid())
+  tenantId         String  @default("default")
+  botConfigId      String
+  lastConnectionId String?
+  phoneNumber      String
+  status           ConversationStatus  @default(ACTIVE)
+
+  context     Json    @default("{}")
+  summary String? @db.Text
+
+  lastMessageAt DateTime @default(now())
+  lastIntent    String?
+  currentStep   String?
+  processing    Boolean @default(false)
+
+  lockedUntil DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  botConfig BotConfig    @relation(fields: [botConfigId], references: [id])
+  messages  BotMessage[]
+  toolInvocations ToolInvocation[]
+
+  @@unique([botConfigId, phoneNumber])
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([processing, lockedUntil])
+  @@index([phoneNumber])
+  @@index([botConfigId, status])
+  @@index([lastConnectionId])
+}
+
+model BotMessage{
+  id             String  @id @default(uuid())
+  conversationId String
+  connectionId   String?
+  direction      String
+  content        String @db.Text
+  hasImage       Boolean @default(false)
+  imageVerfied   Boolean?
+  processedBy    String  @default("bot")
+  intent         String?
+  tokenUsed      Int?
+  waMessageId    String?
+  createdAt      DateTime @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id])
+
+  @@unique([conversationId, waMessageId])
+  @@index([conversationId])
+  @@index([conversationId, createdAt])
+  @@index([connectionId])
 }
 
 model MessageAttempt {
@@ -119,34 +498,345 @@ model WebhookEndpoint {
 
   tenant     Tenant            @relation(fields: [tenantId], references: [id])
   deliveries WebhookDelivery[]
+
+  @@index([tenantId])
+  @@index([tenantId, isActive])
 }
 
 model WebhookDelivery {
   id           String    @id @default(uuid())
   webhookId    String
-  messageId    String
+  messageId    String?
   eventType    String
+  payload      Json?
   httpStatus   Int?
   responseBody String?
   attempts     Int       @default(0)
   deliveredAt  DateTime?
+  failedAt     DateTime?
   createdAt    DateTime  @default(now())
 
   webhook WebhookEndpoint @relation(fields: [webhookId], references: [id])
-  message Message         @relation(fields: [messageId], references: [id])
+  message Message?        @relation(fields: [messageId], references: [id])
 }
 
 model DeadLetterMessage {
-  id          String
-  messageId   String @unique
-  reason      String
-  lastErrorCode String?
+  id              String    @id @default(uuid())
+  messageId       String    @unique
+  reason          String
+  lastErrorCode   String?
   lastErrorDetail String?
-  totalAttempts Int
-  reviewBy    String?
-  reviewedAt     DateTime?
-  requeued       Boolean  @default(false)
-  createdAt      DateTime @default(now())
+  totalAttempts   Int
+  reviewedBy      String?
+  reviewedAt      DateTime?
+  requeued        Boolean   @default(false)
+  createdAt       DateTime  @default(now())
 
   message Message @relation(fields: [messageId], references: [id])
+}
+
+model WhatsAppSession {
+  id           String   @id @default(uuid())
+  connectionId String
+  type         String   
+  key          String   
+  data         Json
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  connection WhatsAppConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@unique([connectionId, type, key])
+  @@index([connectionId])
+  @@index([connectionId, type])
+}
+
+model ExternalVariable {
+  id                  String   @id @default(uuid())
+  botConfigId         String
+  namespace           String    @default("vars")
+  key                 String
+  value               String    @db.Text
+  source              SourceVariable    @default(MANUAL)
+  expiresAt           DateTime? 
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  botConfig BotConfig @relation(fields: [botConfigId], references: [id])
+
+  @@unique([botConfigId, namespace, key])
+  @@index([botConfigId, namespace])
+  @@index([expiresAt])
+}
+
+model WebhookMapping {
+  id          String   @id @default(uuid())
+  botConfigId String
+  eventType   String   
+  
+  rules       Json
+  action      Json?
+  
+  isActive    Boolean  @default(true)
+  description String?  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  botConfig BotConfig @relation(fields: [botConfigId], references: [id])
+
+  @@unique([botConfigId, eventType])
+  @@index([botConfigId, isActive])
+}
+
+model ExternalDataEvent {
+  id          String   @id @default(uuid())
+  botConfigId String
+  eventType   String 
+  idempotencyKey String  
+  payload     Json
+  mappedCount    Int?
+  source      String   
+  processedAt DateTime?
+  failedAt    DateTime?
+  error       String?
+  createdAt   DateTime @default(now())
+
+  @@unique([botConfigId, idempotencyKey])
+  @@index([botConfigId, processedAt])
+  @@index([processedAt, createdAt]) 
+}
+
+model WhatsAppConnection {
+  id              String      @id @default(uuid())
+  tenantId        String      
+  botConfigId     String?
+  name            String
+  phoneNumber     String?
+  status          WhatsAppConnectionStatus  @default(DISCONNECTED)
+  warmupLevel     WhatsAppWarmupLevel @default(NORMAL)
+  lastQr          String?
+  connectedAt     DateTime?
+  disconnectedAt  DateTime?
+  // Mensajes que inicia el negocio (no respuestas del bot): a quién se permiten.
+  campaignPolicy       WhatsAppCampaignPolicy @default(INBOUND_ONLY)
+  inboundLookbackDays  Int      @default(180)
+  // Lease de la sesión: una sola instancia de Conduit puede tener el socket.
+  sessionOwner      String?
+  sessionLeaseUntil DateTime?
+  // Nivel de riesgo anti-ban del limitador, para que sobreviva a los reinicios.
+  riskLevel         Int       @default(1)
+  riskUpdatedAt     DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenant          Tenant   @relation(fields: [tenantId], references: [id])
+  botConfig       BotConfig?  @relation(fields: [botConfigId], references: [id])
+  sessions        WhatsAppSession[] 
+  contacts        WhatsAppContact[]
+
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([botConfigId])
+}
+
+/// Contactos vistos por una conexión de WhatsApp: quién escribió y si el
+/// número tiene WhatsApp (caché para no consultar a WhatsApp en cada envío).
+model WhatsAppContact {
+  id            String    @id @default(uuid())
+  connectionId  String
+  address       String
+  lid           String?
+  lastInboundAt DateTime?
+  onWhatsApp    Boolean?
+  checkedAt     DateTime?
+  optedOutAt    DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  connection WhatsAppConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@unique([connectionId, address])
+  @@index([connectionId, lid])
+}
+
+model ExternalIntegration {
+  id              String    @id @default(uuid())
+  tenantId        String
+  botConfigId     String
+  name            String
+  secretEncrypted String    @db.Text
+  isActive        Boolean   @default(true)
+  lastUsedAt      DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  botConfig BotConfig @relation(fields: [botConfigId], references: [id])
+
+  @@index([botConfigId])
+  @@index([tenantId])
+}
+
+model ApiKey {
+  id          String    @id @default(uuid())
+  tenantId    String
+  name        String
+  keyPrefix   String
+  keyHash     String
+  isActive    Boolean   @default(true)
+  lastUsedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@index([keyPrefix])
+}
+
+model ToolDefinition {
+  id            String   @id @default(uuid())
+  botConfigId   String
+  name          String                       
+  description   String   @db.Text            
+  parametersSchema Json                       
+  endpointUrl   String
+  httpMethod    String   @default("POST")
+  authHeaderName   String?                    
+  authSecretEncrypted String? @db.Text        
+  isActive      Boolean  @default(true)
+
+  requiresImageAttachment Boolean @default(false)
+  imageParamName          String? @default("imageBase64")
+  maxImageSizeBytes       Int?    @default(8388608)
+
+  injectPhoneParamName    String?
+  /// Si la llamada sale bien, el bot se pausa en esa conversación durante
+  /// estos minutos (p. ej. herramienta de "pasar a una persona").
+  pausesBotMinutes        Int?
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  botConfig BotConfig @relation(fields: [botConfigId], references: [id])
+  invocations ToolInvocation[]
+
+  @@unique([botConfigId, name])
+  @@index([botConfigId, isActive])
+}
+
+model ToolInvocation {
+  id             String   @id @default(uuid())
+  toolDefinitionId String
+  conversationId String
+  idempotencyKey String   @unique             
+  requestParams  Json                         
+  status         ToolInvocationStatus
+  responseBody   Json?
+  httpStatus     Int?
+  errorDetail    String?  @db.Text
+  attempts       Int      @default(1)
+  createdAt      DateTime @default(now())
+
+  toolDefinition ToolDefinition @relation(fields: [toolDefinitionId], references: [id])
+  conversation   Conversation   @relation(fields: [conversationId], references: [id])
+
+  @@index([conversationId])
+  @@index([toolDefinitionId, status])
+}
+
+model BotEscalationContact {
+  id          String   @id @default(uuid())
+  botConfigId String
+  label       String                          
+  phoneNumber String
+  connectionId String?                         
+  notifyOn    Json     @default("[\"TECHNICAL_ERROR\"]") 
+
+  botConfig BotConfig @relation(fields: [botConfigId], references: [id])
+
+  @@index([botConfigId])
+}
+
+enum IntentMode {
+  OFF
+  SHADOW
+  ACTIVE
+}
+
+enum IntentHandlerKind {
+  TEMPLATE
+  TOOL_DIRECT
+  HANDOFF
+  LLM_SLIM
+}
+
+model BotIntent {
+  id               String            @id @default(uuid())
+  botConfigId      String
+  key              String
+  name             String
+  description      String            @default("")
+  handler          IntentHandlerKind
+  mode             IntentMode        @default(SHADOW)
+  priority         Int               @default(100)
+  patterns         Json              @default("[]")
+  denyPatterns     Json              @default("[]")
+  maxTokens        Int               @default(12)
+  respectsOpenFlow Boolean           @default(false)
+  allowsQuestion   Boolean           @default(true)
+  negationOk       Boolean           @default(false)
+  fixedConfidence  Float?
+  aiClassifiable   Boolean           @default(false)
+  config           Json              @default("{}")
+  variants         Json              @default("{}")
+  cooldownSeconds  Int               @default(0)
+  schedule         Json?
+  notes            String?           @db.Text
+  version          Int               @default(1)
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  botConfig BotConfig @relation(fields: [botConfigId], references: [id], onDelete: Cascade)
+
+  @@unique([botConfigId, key])
+}
+
+enum OutboundReplyStatus {
+  PENDING
+  SENDING
+  SENT
+  FAILED
+  EXPIRED
+}
+
+/// Bandeja de salida de las respuestas del bot: cada burbuja se guarda antes
+/// de enviarse y un despachador la entrega en orden, con reintentos.
+model OutboundReply {
+  id             String              @id @default(uuid())
+  tenantId       String
+  connectionId   String
+  conversationId String?
+  phoneNumber    String
+  groupId        String
+  seq            Int
+  bubbleCount    Int
+  content        String              @db.Text
+  tokensUsed     Int                 @default(0)
+  imageVerified  Boolean?
+  waMessageId    String?
+  idempotencyKey String              @unique
+  status         OutboundReplyStatus @default(PENDING)
+  attempts       Int                 @default(0)
+  nextAttemptAt  DateTime            @default(now())
+  expiresAt      DateTime
+  lastError      String?
+  sentAt         DateTime?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  @@index([connectionId, status, nextAttemptAt])
+  @@index([conversationId, status])
+  @@index([groupId])
+  @@index([status, expiresAt])
 }
