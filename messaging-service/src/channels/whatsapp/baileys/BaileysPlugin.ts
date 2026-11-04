@@ -4,8 +4,16 @@ import {
   ChannelSendResult,
   IChannelPlugin,
 } from 'src/channels/types/IChannelPlugin';
-import { BaileysRateLimiter } from './BaileysRateLimiter';
+import { BaileysRateLimiterRegistry } from './BaileysRateLimiterRegistry';
+import { JobPriority, WarmupLevel } from './BaileysRateLimiter';
 import { BaileysSessionManager } from './BaileysSessionManager';
+import { WASocket } from '@whiskeysockets/baileys';
+import { BotSentMessageRegistry } from 'src/channels/whatsapp/baileys/BotSentMessageRegistry';
+import { normalizeWhatsAppAddress } from '../utils/whatsapp-address.util';
+import { isLidAddress, phoneToJid } from '../utils/jid.util';
+import { WhatsAppContactService } from '../contacts/WhatsAppContactService';
+import { SentMessageStore } from './SentMessageStore';
+import { typingMs } from './human-timing';
 
 @Injectable()
 export class BaileysPlugin implements IChannelPlugin {
@@ -15,48 +23,139 @@ export class BaileysPlugin implements IChannelPlugin {
   private readonly logger = new Logger(BaileysPlugin.name);
 
   constructor(
-    private readonly limiter: BaileysRateLimiter,
+    private readonly limiters: BaileysRateLimiterRegistry,
     private readonly session: BaileysSessionManager,
+    private readonly botSentRegistry: BotSentMessageRegistry,
+    private readonly contacts: WhatsAppContactService,
+    private readonly sentMessages: SentMessageStore,
   ) {}
 
   validateRecipient(address: string): boolean {
-    return /^\d{10,15}$/.test(address.replace(/\D/g, ''));
+    return normalizeWhatsAppAddress(address) !== null;
   }
 
   async send(payload: ChannelSendPayload): Promise<ChannelSendResult> {
-    if (!this.session.getIsConnected() || !this.session.getSocket()) {
-      return {
-        success: false,
-        provider: this.providerName,
-        retryable: true,
-        errorCode: 'WHATSAPP_NOT_CONNECTED',
-        error: 'WhatsApp no está conectado. Escanea el QR para reconectar.',
-        raw: null,
-      };
+    const { connectionId } = payload;
+    const isConversation = payload.priority === 'conversation';
+
+    if (!connectionId) {
+      return this.fail(
+        'MISSING_CONNECTION_ID',
+        'No se especificó connectionId para el envío por WhatsApp.',
+        false,
+      );
     }
 
-    if (!this.validateRecipient(payload.to)) {
-      return {
-        success: false,
-        provider: this.providerName,
-        retryable: false,
-        errorCode: 'INVALID_RECIPIENT',
-        error: `Número inválido: ${payload.to}`,
-        raw: null,
-      };
+    if (!this.session.isConnected(connectionId)) {
+      return this.notConnected();
     }
 
-    return this.limiter.enqueue(() => this.sendMessage(payload));
+    // Una dirección LID (cliente cuyo teléfono WhatsApp no reveló) solo es
+    // válida para responderle: el negocio no puede iniciar con un LID.
+    const to =
+      isConversation && isLidAddress(payload.to)
+        ? payload.to
+        : normalizeWhatsAppAddress(payload.to);
+    if (!to) {
+      return this.fail(
+        'INVALID_RECIPIENT',
+        `Número inválido: ${payload.to}`,
+        false,
+      );
+    }
+
+    if (!isConversation) {
+      const gate = await this.contacts.campaignGate(connectionId, to);
+      if (!gate.allowed) {
+        return this.fail(
+          'RECIPIENT_NOT_OPTED_IN',
+          `${gate.reason}. Por política anti-bloqueo, el negocio solo inicia mensajes con quien le escribió antes.`,
+          false,
+        );
+      }
+    }
+
+    let limiter = this.limiters.get(connectionId);
+    if (!limiter) {
+      this.logger.warn(
+        `Rate limiter ausente para conexión conectada ${connectionId}. Creando con nivel NORMAL por defecto.`,
+      );
+      limiter = this.limiters.getOrCreate(connectionId, WarmupLevel.NORMAL);
+    }
+
+    return limiter.enqueue(
+      () => this.sendFlow(connectionId, { ...payload, to }, isConversation),
+      {
+        priority: isConversation
+          ? JobPriority.CONVERSATION
+          : JobPriority.CAMPAIGN,
+        maxAttempts: 1,
+      },
+    );
+  }
+
+  /**
+   * Se ejecuta cuando el rate limiter le da turno, que puede ser minutos u
+   * horas después de encolar: el socket se obtiene aquí, no al encolar, para
+   * no escribir sobre uno que ya se cerró por una reconexión.
+   */
+  private async sendFlow(
+    connectionId: string,
+    payload: ChannelSendPayload,
+    isConversation: boolean,
+  ): Promise<ChannelSendResult> {
+    const sock = this.session.get(connectionId);
+    if (!sock || !this.session.isConnected(connectionId)) {
+      return this.notConnected();
+    }
+
+    // Quien escribió ya existe en WhatsApp: no hace falta consultar.
+    if (!isConversation && !isLidAddress(payload.to)) {
+      const hasWhatsApp = await this.checkWhatsAppAccount(
+        sock,
+        connectionId,
+        payload.to,
+      );
+      if (!hasWhatsApp) {
+        return this.fail(
+          'NO_WHATSAPP_ACCOUNT',
+          `El número ${payload.to} no tiene una cuenta de WhatsApp asociada.`,
+          false,
+        );
+      }
+    }
+
+    return this.sendMessage(sock, payload, isConversation);
   }
 
   private async sendMessage(
+    sock: WASocket,
     payload: ChannelSendPayload,
+    isConversation: boolean,
   ): Promise<ChannelSendResult> {
     try {
-      const sock = this.session.getSocket()!;
-      const jid = this.formatJid(payload.to);
-      const text = this.stripHtml(payload.content);
-      const response = await sock.sendMessage(jid, { text });
+      const jid = isLidAddress(payload.to)
+        ? payload.to
+        : phoneToJid(payload.to);
+      const clean = this.stripHtml(payload.content);
+      const text = isConversation ? clean : this.addInvisibleVariation(clean);
+
+      await sock.sendPresenceUpdate('composing', jid);
+      await this.sleep(typingMs(clean.length));
+      await sock.sendPresenceUpdate('paused', jid);
+
+      const response = payload.messageId
+        ? await sock.sendMessage(
+            jid,
+            { text },
+            { messageId: payload.messageId },
+          )
+        : await sock.sendMessage(jid, { text });
+
+      if (response?.key?.id) {
+        this.botSentRegistry.register(response.key.id);
+        this.sentMessages.remember(response.key.id, response.message);
+      }
 
       return {
         success: true,
@@ -65,22 +164,82 @@ export class BaileysPlugin implements IChannelPlugin {
         raw: response,
       };
     } catch (error) {
-      const isConnectionError = error?.message?.includes('Connection');
-      this.logger.error(`Send error: ${error?.message}`);
+      const message = error instanceof Error ? error.message : String(error);
+      const isConnectionError = /connection|closed|timed out|socket/i.test(
+        message,
+      );
+      const isOverlimit = /rate-overlimit|too many requests/i.test(message);
+      this.logger.error(`Send error: ${message}`);
 
       return {
         success: false,
         provider: this.providerName,
-        retryable: isConnectionError,
-        errorCode: isConnectionError ? 'CONNECTION_ERROR' : 'SEND_FAILED',
-        error: error instanceof Error ? error.message : 'Unknown error',
+        retryable: isConnectionError || isOverlimit,
+        errorCode: isOverlimit
+          ? 'RATE_OVERLIMIT'
+          : isConnectionError
+            ? 'CONNECTION_ERROR'
+            : 'SEND_FAILED',
+        error: message,
         raw: error,
       };
     }
   }
 
-  private formatJid(phone: string): string {
-    return `${phone.replace(/\D/g, '')}@s.whatsapp.net`;
+  /**
+   * Consultar `onWhatsApp` antes de cada envío es un patrón de enumeración
+   * de contactos que WhatsApp vigila: el resultado se cachea por número.
+   * Si la consulta falla se asume que existe (el envío dirá si no).
+   */
+  private async checkWhatsAppAccount(
+    sock: WASocket,
+    connectionId: string,
+    phone: string,
+  ): Promise<boolean> {
+    const cached = await this.contacts
+      .cachedExistence(connectionId, phone)
+      .catch(() => null);
+    if (cached !== null) return cached;
+
+    try {
+      const waResult = await sock.onWhatsApp(phone);
+      const exists = waResult?.[0]?.exists ?? false;
+      await this.contacts
+        .saveExistence(connectionId, phone, exists)
+        .catch(() => {});
+      return exists;
+    } catch {
+      return true;
+    }
+  }
+
+  private notConnected(): ChannelSendResult {
+    return this.fail(
+      'WHATSAPP_NOT_CONNECTED',
+      'WhatsApp no está conectado. Escanea el QR para reconectar.',
+      true,
+    );
+  }
+
+  private randomInt(min: number, max: number): number {
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private addInvisibleVariation(text: string): string {
+    const invisibleChars = ['​', '‌', '‍', '﻿'];
+    const lastChar = text.at(-1) ?? '';
+    if (invisibleChars.includes(lastChar)) return text;
+
+    const count = this.randomInt(1, 3);
+    let suffix = '';
+    for (let i = 0; i < count; i++) {
+      suffix += invisibleChars[this.randomInt(0, invisibleChars.length - 1)];
+    }
+    return text + suffix;
   }
 
   private stripHtml(html: string): string {
@@ -93,5 +252,20 @@ export class BaileysPlugin implements IChannelPlugin {
       .replace(/&lt;/g, '<')
       .replace(/&gt;/g, '>')
       .trim();
+  }
+
+  private fail(
+    errorCode: string,
+    error: string,
+    retryable: boolean,
+  ): ChannelSendResult {
+    return {
+      success: false,
+      provider: this.providerName,
+      retryable,
+      errorCode,
+      error,
+      raw: null,
+    };
   }
 }

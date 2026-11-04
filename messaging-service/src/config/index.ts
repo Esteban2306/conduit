@@ -1,4 +1,5 @@
 import * as Joi from 'joi';
+import { ZonedClock } from '../channels/whatsapp/utils/zoned-clock';
 
 export const configValidationSchema = Joi.object({
   NODE_ENV: Joi.string()
@@ -6,11 +7,20 @@ export const configValidationSchema = Joi.object({
     .default('development'),
   PORT: Joi.number().default(3001),
   API_SECRET_KEY: Joi.string().required(),
+  FRONTEND_URL: Joi.string().uri().default('http://localhost:3000'),
+
+  JWT_SECRET: Joi.string().min(32).required(),
+
+  // Registro de tenants: cerrado por defecto. Para crear el primero, usar
+  // REGISTRATION_TOKEN en el header x-registration-token.
+  ALLOW_PUBLIC_REGISTRATION: Joi.boolean().default(false),
+  REGISTRATION_TOKEN: Joi.string().min(24).optional(),
 
   DATABASE_URL: Joi.string().required(),
 
   REDIS_HOST: Joi.string().default('localhost'),
   REDIS_PORT: Joi.number().default(6379),
+  REDIS_PASSWORD: Joi.string().optional(),
 
   DEFAULT_TENANT_ID: Joi.string().default('default'),
 
@@ -19,10 +29,11 @@ export const configValidationSchema = Joi.object({
   RESEND_FROM_NAME: Joi.string().optional(),
 
   SMTP_HOST: Joi.string().optional(),
-  SMTP_PORT: Joi.number().optional(),
+  SMTP_PORT: Joi.number().default(587),
   SMTP_USER: Joi.string().optional(),
   SMTP_PASS: Joi.string().optional(),
   SMTP_FROM_EMAIL: Joi.string().email().optional(),
+  OPS_ALERT_EMAILS: Joi.string().allow('').optional(),
   SMTP_FROM_NAME: Joi.string().optional(),
 
   WA_CHANNEL_MODE: Joi.string()
@@ -31,20 +42,39 @@ export const configValidationSchema = Joi.object({
   warmupLevel: Joi.string()
     .valid('FRESH', 'NORMAL', 'TRUSTED')
     .default('NORMAL'),
+  WA_SESSION_PATH: Joi.string().default('./baileys_session'),
+  WA_TIMEZONE: Joi.string()
+    .default('America/Bogota')
+    .custom((value: string, helpers) =>
+      ZonedClock.isValidTimeZone(value) ? value : helpers.error('any.invalid'),
+    )
+    .messages({ 'any.invalid': 'WA_TIMEZONE debe ser una zona IANA válida' }),
   GREEN_API_INSTANCE_ID: Joi.string().optional(),
   GREEN_API_TOKEN: Joi.string().optional(),
 
-  WEBHOOK_SIGNING_SECRET: Joi.string().required(),
+  INTEGRATION_ENCRYPTION_KEY: Joi.string().hex().length(64).required(),
+  // Firma los jobs de la cola; sin él la firma no protegía nada.
+  WEBHOOK_SIGNING_SECRET: Joi.string().min(16).required(),
 
   QUEUE_MAX_ATTEMPTS: Joi.number().default(5),
   QUEUE_BACKOFF_DELAY: Joi.number().default(120000),
+
+  MESSAGING_MAX_FILE_UPLOAD_ROWS: Joi.number().default(5000),
 });
 
 export interface AppConfig {
   app: {
     nodeEnv: string;
-    port: number | unknown;
+    port: number;
     apiSecretKey: string;
+    frontendUrl: string;
+  };
+  jwt: {
+    secret: string;
+  };
+  auth: {
+    allowPublicRegistration: boolean;
+    registrationToken?: string;
   };
   database: {
     url: string;
@@ -52,6 +82,7 @@ export interface AppConfig {
   redis: {
     host: string;
     port: number;
+    password?: string;
   };
   tenant: {
     defaultId: string;
@@ -69,34 +100,51 @@ export interface AppConfig {
     fromEmail: string;
     fromName: string;
   };
+  alerts: {
+    opsEmails: string[];
+  };
   whatsapp: {
     channelMode: 'baileys' | 'greenapi' | 'walink';
     warmupLevel: string;
     greenApiInstanceId: string;
     greenApiToken: string;
     sessionPath: string;
+    timeZone: string;
   };
   webhook: {
+    encryptionKey: string;
     signingSecret: string;
   };
   queue: {
     maxAttempts: number;
     backoffDelay: number;
   };
+  messaging: {
+    maxFileUploadRows: number;
+  };
 }
 
 export const configFactory = (): AppConfig => ({
   app: {
     nodeEnv: process.env.NODE_ENV ?? '',
-    port: parseInt(process.env.PORT ?? '', 10),
+    port: parseInt(process.env.PORT ?? '3001', 10),
     apiSecretKey: process.env.API_SECRET_KEY ?? '',
+    frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3000',
+  },
+  jwt: {
+    secret: process.env.JWT_SECRET ?? '',
+  },
+  auth: {
+    allowPublicRegistration: process.env.ALLOW_PUBLIC_REGISTRATION === 'true',
+    registrationToken: process.env.REGISTRATION_TOKEN || undefined,
   },
   database: {
     url: process.env.DATABASE_URL ?? '',
   },
   redis: {
     host: process.env.REDIS_HOST ?? '',
-    port: parseInt(process.env.REDIS_PORT ?? '', 10),
+    port: parseInt(process.env.REDIS_PORT ?? '6379', 10),
+    password: process.env.REDIS_PASSWORD || undefined,
   },
   tenant: {
     defaultId: process.env.DEFAULT_TENANT_ID ?? '',
@@ -108,11 +156,17 @@ export const configFactory = (): AppConfig => ({
   },
   smtp: {
     host: process.env.SMTP_HOST ?? '',
-    port: parseInt(process.env.SMTP_PORT ?? '', 10),
+    port: parseInt(process.env.SMTP_PORT ?? '587', 10),
     user: process.env.SMTP_USER ?? '',
     pass: process.env.SMTP_PASS ?? '',
     fromEmail: process.env.SMTP_FROM_EMAIL ?? '',
     fromName: process.env.SMTP_FROM_NAME ?? '',
+  },
+  alerts: {
+    opsEmails: (process.env.OPS_ALERT_EMAILS ?? '')
+      .split(',')
+      .map((email) => email.trim())
+      .filter(Boolean),
   },
   whatsapp: {
     channelMode: process.env.WA_CHANNEL_MODE as
@@ -123,12 +177,21 @@ export const configFactory = (): AppConfig => ({
     warmupLevel: process.env.WA_WARMUP_LEVEL ?? 'NORMAL',
     greenApiToken: process.env.GREEN_API_TOKEN ?? '',
     sessionPath: process.env.WA_SESSION_PATH ?? './baileys_session',
+    timeZone: process.env.WA_TIMEZONE ?? 'America/Bogota',
   },
   webhook: {
+    encryptionKey: process.env.INTEGRATION_ENCRYPTION_KEY ?? '',
     signingSecret: process.env.WEBHOOK_SIGNING_SECRET ?? '',
   },
   queue: {
-    maxAttempts: parseInt(process.env.QUEUE_MAX_ATTEMPTS ?? '', 10),
-    backoffDelay: parseInt(process.env.QUEUE_BACKOFF_DELAY ?? '', 10),
+    maxAttempts: parseInt(process.env.QUEUE_MAX_ATTEMPTS ?? '5', 10),
+    backoffDelay: parseInt(process.env.QUEUE_BACKOFF_DELAY ?? '120000', 10),
+  },
+
+  messaging: {
+    maxFileUploadRows: parseInt(
+      process.env.MESSAGING_MAX_FILE_UPLOAD_ROWS ?? '5000',
+      10,
+    ),
   },
 });

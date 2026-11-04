@@ -1,0 +1,8 @@
+-- AlterTable
+ALTER TABLE "BotAiSettings" ADD COLUMN     "confidence" TEXT NOT NULL DEFAULT 'ASSERTIVE',
+ADD COLUMN     "creativity" DOUBLE PRECISION NOT NULL DEFAULT 0.7,
+ADD COLUMN     "fallbackBehavior" TEXT,
+ADD COLUMN     "goals" TEXT,
+ADD COLUMN     "persuasion" TEXT NOT NULL DEFAULT 'LOW',
+ADD COLUMN     "responseFormat" TEXT NOT NULL DEFAULT 'PROSE',
+ADD COLUMN     "verbosity" TEXT NOT NULL DEFAULT 'MEDIUM';
