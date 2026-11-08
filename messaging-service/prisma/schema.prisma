@@ -132,6 +132,7 @@ model Tenant {
   slug      String   @unique
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
+  systemPausedAt DateTime?
 
   templates        Template[]
   users            User[]

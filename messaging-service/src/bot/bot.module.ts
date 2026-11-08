@@ -39,6 +39,8 @@ import { OrchestratorModule } from 'src/core/orchestrator/orchestrator.module';
 import { AiErrorClassifier } from './ai/AiErrorClassifier';
 import { ToolDefinitionController } from './tools/ToolDefinition.controller';
 import { ConversationAdminController } from './admin/ConversationAdmin.controller';
+import { SystemPauseController } from './pause/SystemPause.controller';
+import { SystemPauseService } from './pause/SystemPause.service';
 
 @Module({
   imports: [
@@ -54,8 +56,10 @@ import { ConversationAdminController } from './admin/ConversationAdmin.controlle
     ToolDefinitionController,
     ConversationAdminController,
     IntentController,
+    SystemPauseController,
   ],
   providers: [
+    SystemPauseService,
     ConversationService,
     ConversationSummarizer,
     ProactiveMessageRecorder,
