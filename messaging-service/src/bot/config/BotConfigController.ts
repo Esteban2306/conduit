@@ -46,6 +46,12 @@ export class BotConfigController {
     return this.botConfigService.findAll(user.tenantId);
   }
 
+  @Get('by-key/:key')
+  @ApiOperation({ summary: 'Obtener una configuración por su clave estable' })
+  findByKey(@Param('key') key: string, @CurrentUser() user: JwtPayload) {
+    return this.botConfigService.findByKey(key, user.tenantId);
+  }
+
   @Get(':id/models')
   @ApiOperation({
     summary: 'Ver modelos de IA configurados y su estado de uso',
