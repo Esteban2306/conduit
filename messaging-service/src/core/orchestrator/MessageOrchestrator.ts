@@ -402,7 +402,7 @@ export class MessageOrchestrator {
 
       if (
         payload.options?.category === 'MARKETING' &&
-        (await this.contacts.isOptedOut(payload.connectionId, address))
+        (await this.contacts.isOptedOutForTenant(tenantId, address))
       ) {
         throw new BadRequestException(
           `El contacto ${address} pidió no recibir más mensajes: no se envían mensajes de marketing.`,

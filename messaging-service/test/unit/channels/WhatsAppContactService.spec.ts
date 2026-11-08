@@ -125,3 +125,29 @@ describe('WhatsAppContactService opt-out', () => {
     expect(await svc.isOptedOut('c1', '573001234567')).toBe(false);
   });
 });
+
+describe('WhatsAppContactService.isOptedOutForTenant', () => {
+  it('consulta solo contactos con baja de conexiones del mismo tenant', async () => {
+    const findFirst = jest.fn().mockResolvedValue({ id: 'x' });
+    const svc = new WhatsAppContactService({
+      whatsAppContact: { findFirst },
+    } as any);
+
+    expect(await svc.isOptedOutForTenant('t1', '573001234567')).toBe(true);
+    expect(findFirst).toHaveBeenCalledWith({
+      where: {
+        address: '573001234567',
+        optedOutAt: { not: null },
+        connection: { tenantId: 't1' },
+      },
+      select: { id: true },
+    });
+  });
+
+  it('sin baja registrada en ninguna línea del tenant devuelve false', async () => {
+    const svc = new WhatsAppContactService({
+      whatsAppContact: { findFirst: jest.fn().mockResolvedValue(null) },
+    } as any);
+    expect(await svc.isOptedOutForTenant('t1', '573001234567')).toBe(false);
+  });
+});

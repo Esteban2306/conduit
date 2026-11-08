@@ -106,6 +106,21 @@ export class WhatsAppContactService {
     });
   }
 
+  async isOptedOutForTenant(
+    tenantId: string,
+    address: string,
+  ): Promise<boolean> {
+    const contact = await this.prisma.whatsAppContact.findFirst({
+      where: {
+        address,
+        optedOutAt: { not: null },
+        connection: { tenantId },
+      },
+      select: { id: true },
+    });
+    return Boolean(contact);
+  }
+
   async isOptedOut(connectionId: string, address: string): Promise<boolean> {
     const contact = await this.prisma.whatsAppContact.findUnique({
       where: { connectionId_address: { connectionId, address } },
