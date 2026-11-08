@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 import { configFactory, configValidationSchema } from './config';
 import { SharedModule } from './shared/shared.module';
 import { HealthModule } from './api/health/health.module';
+import { ResolveModule } from './api/resolve/resolve.module';
 import { TemplateModule } from './core/templates/template.module';
 import { ChannelsModule } from './channels/channels.module';
 import { QueueModule } from './queue/queue.module';
@@ -48,6 +49,7 @@ import { SecurityModule } from './shared/security/security.module';
     SharedModule,
     WebhookModule,
     HealthModule,
+    ResolveModule,
     BotModule,
     TemplateModule,
     ChannelsModule,
