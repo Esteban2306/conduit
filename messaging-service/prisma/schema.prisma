@@ -317,6 +317,7 @@ model AiModelConfig {
 model BotConfig {
   id          String    @id @default(uuid())
   tenantId    String    @default("default")
+  key         String?
   name        String
   status      BotStatus @default(INACTIVE)
   
@@ -349,6 +350,8 @@ model BotConfig {
   toolDefinitions ToolDefinition[]
   escalationContacts BotEscalationContact[]
   intents BotIntent[]
+
+  @@unique([tenantId, key])
 }
 
 model BotAiSettings {
@@ -612,6 +615,7 @@ model WhatsAppConnection {
   id              String      @id @default(uuid())
   tenantId        String      
   botConfigId     String?
+  key             String?
   name            String
   phoneNumber     String?
   status          WhatsAppConnectionStatus  @default(DISCONNECTED)
@@ -636,6 +640,8 @@ model WhatsAppConnection {
   sessions        WhatsAppSession[] 
   contacts        WhatsAppContact[]
 
+  @@unique([tenantId, key])
+  @@unique([tenantId, phoneNumber])
   @@index([tenantId])
   @@index([tenantId, status])
   @@index([botConfigId])
