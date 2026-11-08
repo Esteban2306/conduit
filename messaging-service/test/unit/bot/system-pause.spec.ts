@@ -52,4 +52,23 @@ describe('SystemPauseService', () => {
     await service.set('t1', true);
     expect(await service.isPaused('t1')).toBe(true);
   });
+
+  it('si la base falla, no tumba al bot: usa el último estado conocido', async () => {
+    const { service, prisma } = build();
+    await service.set('t1', true);
+    jest.useFakeTimers();
+    jest.setSystemTime(Date.now() + 60_000);
+    try {
+      prisma.tenant.findUnique.mockRejectedValueOnce(new Error('columna'));
+      expect(await service.isPaused('t1')).toBe(true);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('si nunca pudo leer la base, el bot sigue respondiendo', async () => {
+    const { service, prisma } = build();
+    prisma.tenant.findUnique.mockRejectedValue(new Error('columna'));
+    expect(await service.isPaused('t1')).toBe(false);
+  });
 });
