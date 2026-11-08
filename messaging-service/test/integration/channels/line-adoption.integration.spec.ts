@@ -14,7 +14,7 @@ jest.mock('@whiskeysockets/baileys', () => ({
   proto: {},
 }));
 
-const url = process.env.PHASE2_TEST_DATABASE_URL ?? '';
+const url = process.env.TEST_DATABASE_URL ?? '';
 const isolated = /\/[^/?]*test[^/?]*(\?|$)/i.test(url);
 const suite = isolated ? describe : describe.skip;
 

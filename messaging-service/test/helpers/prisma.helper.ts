@@ -1,27 +1,31 @@
 import { PrismaClient } from '@prisma/client';
 
-const prisma = new PrismaClient({
-  datasources: {
-    db: { url: process.env.DATABASE_URL },
-  },
-});
+export function createTestPrisma(databaseUrl: string): PrismaClient {
+  return new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+}
 
-export async function cleanDatabase(): Promise<void> {
-  await prisma.webhookDelivery.deleteMany();
-  await prisma.deadLetterMessage.deleteMany();
-  await prisma.messageAttempt.deleteMany();
-  await prisma.message.deleteMany();
-  await prisma.template.deleteMany();
-  await prisma.tenant.deleteMany();
-
+export async function createTestTenant(
+  prisma: PrismaClient,
+  tenantId: string,
+): Promise<void> {
   await prisma.tenant.create({
     data: {
-      id: 'default',
-      name: 'Default Tenant',
-      slug: 'default',
+      id: tenantId,
+      name: `Tenant de prueba ${tenantId}`,
+      slug: tenantId,
       isActive: true,
     },
   });
 }
 
-export { prisma };
+export async function deleteTestTenant(
+  prisma: PrismaClient,
+  tenantId: string,
+): Promise<void> {
+  const messages = { message: { tenantId } };
+  await prisma.webhookDelivery.deleteMany({ where: messages });
+  await prisma.deadLetterMessage.deleteMany({ where: messages });
+  await prisma.messageAttempt.deleteMany({ where: messages });
+  await prisma.message.deleteMany({ where: { tenantId } });
+  await prisma.tenant.deleteMany({ where: { id: tenantId } });
+}

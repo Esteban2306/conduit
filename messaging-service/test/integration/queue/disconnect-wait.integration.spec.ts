@@ -14,7 +14,7 @@ import { Queue, Worker } from 'bullmq';
 import { MessageStatus } from '@prisma/client';
 import { MessageProcessor } from 'src/queue/processors/MessageProcessor';
 
-const port = Number(process.env.PHASE25_TEST_REDIS_PORT ?? 0);
+const port = Number(process.env.TEST_REDIS_PORT ?? 0);
 const isolated = port > 0 && port !== 6379;
 const suite = isolated ? describe : describe.skip;
 
@@ -22,7 +22,7 @@ suite('espera por desconexión con Redis real y aislado', () => {
   const connection = {
     host: '127.0.0.1',
     port,
-    password: process.env.PHASE25_TEST_REDIS_PASSWORD || undefined,
+    password: process.env.TEST_REDIS_PASSWORD || undefined,
   };
   const queueName = `phase25-${Date.now()}`;
   let queue: Queue;
@@ -120,7 +120,7 @@ suite('espera por desconexión con Redis real y aislado', () => {
       _signature: 's',
       _signedAt: Date.now(),
       _expiresAt: Date.now() + 1e9,
-    } as never);
+    });
 
   beforeAll(async () => {
     queue = new Queue(queueName, {
