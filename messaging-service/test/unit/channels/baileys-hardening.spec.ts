@@ -186,7 +186,7 @@ describe('BaileysSessionManager — cierres de conexión y lease', () => {
       acquireSessionLease: jest.fn().mockResolvedValue(null),
       releaseSessionLease: jest.fn().mockResolvedValue(undefined),
       updateStatus: jest.fn().mockResolvedValue(undefined),
-      markConnected: jest.fn().mockResolvedValue(undefined),
+      markConnected: jest.fn().mockResolvedValue({ numberConflict: false }),
       updateQR: jest.fn(),
     };
     const prisma = {
@@ -377,6 +377,35 @@ describe('BaileysSessionManager — cierres de conexión y lease', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  it('si el número ya pertenece a otra conexión del tenant, avisa al equipo con la forma de fusionarlas y llama al manejador', async () => {
+    connections.markConnected.mockResolvedValue({ numberConflict: true });
+    connections.findByPhoneNumber = jest
+      .fn()
+      .mockResolvedValue({ id: 'old', key: 'linea-vieja', status: 'ERROR' });
+    const handler = jest.fn();
+    manager.setNumberConflictHandler(handler);
+
+    await manager.start('c1');
+    (fakeSockets[0] as any).user = { id: '573001112233:7@s.whatsapp.net' };
+    fakeSockets[0].ev.emit('connection.update', { connection: 'open' });
+    await flush();
+    await flush();
+
+    expect(alerts.report).toHaveBeenCalledWith(
+      't1',
+      'connection',
+      expect.stringContaining('adopt/c1'),
+      expect.anything(),
+    );
+    expect(alerts.report.mock.calls[0][2]).toContain('linea-vieja');
+    expect(handler).toHaveBeenCalledWith({
+      tenantId: 't1',
+      newConnectionId: 'c1',
+      existing: { id: 'old', key: 'linea-vieja', status: 'ERROR' },
+      phoneNumber: '573001112233',
+    });
   });
 
   it('un mensaje demasiado viejo se guarda sin responder y se avisa, en vez de perderse', async () => {

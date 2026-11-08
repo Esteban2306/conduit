@@ -23,6 +23,7 @@ import { messageReceiptTracker } from './whatsapp/baileys/MessageReceiptTracker'
 import { ConnectionController } from './whatsapp/Connection.controller';
 import { WhatsAppConnectionService } from './whatsapp/WhatsAppConnection.service';
 import { LineAdoptionService } from './whatsapp/LineAdoption.service';
+import { NumberConflictHandler } from './whatsapp/NumberConflictHandler';
 import { restoreSessions } from './whatsapp/restore-sessions';
 import { WhatsAppConnectionOrchestrator } from './whatsapp/WhatsAppConnectionOrchestrator';
 import { BotSentMessageRegistry } from 'src/channels/whatsapp/baileys/BotSentMessageRegistry';
@@ -52,6 +53,7 @@ import { SentMessageStore } from './whatsapp/baileys/SentMessageStore';
     ChannelPluginFactory,
     WhatsAppConnectionOrchestrator,
     LineAdoptionService,
+    NumberConflictHandler,
     BaileysSessionManager,
     WhatsAppConnectionService,
     messageReceiptTracker,
@@ -81,10 +83,12 @@ export class ChannelsModule implements OnModuleInit {
     private readonly sessionManager: BaileysSessionManager,
     private readonly botRouter: BotRouter,
     private readonly connections: WhatsAppConnectionService,
+    private readonly numberConflicts: NumberConflictHandler,
   ) {}
 
   async onModuleInit() {
     this.sessionManager.setBotRouter(this.botRouter);
+    this.sessionManager.setNumberConflictHandler(this.numberConflicts.handle);
 
     await restoreSessions(this.connections, this.sessionManager, this.logger);
   }

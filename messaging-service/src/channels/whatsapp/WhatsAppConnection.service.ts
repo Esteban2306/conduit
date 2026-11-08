@@ -300,7 +300,17 @@ export class WhatsAppConnectionService {
     });
   }
 
-  async markConnected(id: string, phoneNumber: string | null) {
+  findByPhoneNumber(tenantId: string, phoneNumber: string) {
+    return this.prisma.whatsAppConnection.findFirst({
+      where: { tenantId, phoneNumber },
+      select: { id: true, key: true, name: true, status: true },
+    });
+  }
+
+  async markConnected(
+    id: string,
+    phoneNumber: string | null,
+  ): Promise<{ numberConflict: boolean }> {
     const base = {
       status: WhatsAppConnectionStatus.CONNECTED,
       connectedAt: new Date(),
@@ -309,10 +319,11 @@ export class WhatsAppConnectionService {
     };
 
     try {
-      return await this.prisma.whatsAppConnection.update({
+      await this.prisma.whatsAppConnection.update({
         where: { id },
         data: { ...base, phoneNumber },
       });
+      return { numberConflict: false };
     } catch (err) {
       if (
         phoneNumber &&
@@ -322,12 +333,13 @@ export class WhatsAppConnectionService {
         this.logger.error(
           `El número ${phoneNumber} ya está registrado en otra conexión del mismo tenant; ` +
             `la conexión ${id} queda conectada sin guardar el número. ` +
-            `Desvincula o reemplaza la otra conexión.`,
+            `Fusiónala con POST whatsapp/connections/:keepId/adopt/:retireId.`,
         );
-        return this.prisma.whatsAppConnection.update({
+        await this.prisma.whatsAppConnection.update({
           where: { id },
           data: base,
         });
+        return { numberConflict: true };
       }
       throw err;
     }

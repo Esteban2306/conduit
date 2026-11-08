@@ -72,7 +72,8 @@ describe('claves de conexión', () => {
   it('si el número ya está en otra conexión, marca conectada sin guardarlo', async () => {
     const { service, update } = build();
     update.mockRejectedValueOnce(p2002()).mockResolvedValueOnce({ id: 'c1' });
-    await service.markConnected('c1', '573000000001');
+    const result = await service.markConnected('c1', '573000000001');
+    expect(result).toEqual({ numberConflict: true });
     expect(update).toHaveBeenCalledTimes(2);
     expect(update.mock.calls[1][0].data).not.toHaveProperty('phoneNumber');
   });

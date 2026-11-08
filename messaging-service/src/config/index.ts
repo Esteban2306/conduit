@@ -15,6 +15,7 @@ export const configValidationSchema = Joi.object({
   // REGISTRATION_TOKEN en el header x-registration-token.
   ALLOW_PUBLIC_REGISTRATION: Joi.boolean().default(false),
   REGISTRATION_TOKEN: Joi.string().min(24).optional(),
+  LINE_AUTO_ADOPT: Joi.boolean().default(false),
 
   DATABASE_URL: Joi.string().required(),
 
@@ -75,6 +76,9 @@ export interface AppConfig {
   auth: {
     allowPublicRegistration: boolean;
     registrationToken?: string;
+  };
+  channels: {
+    lineAutoAdopt: boolean;
   };
   database: {
     url: string;
@@ -137,6 +141,9 @@ export const configFactory = (): AppConfig => ({
   auth: {
     allowPublicRegistration: process.env.ALLOW_PUBLIC_REGISTRATION === 'true',
     registrationToken: process.env.REGISTRATION_TOKEN || undefined,
+  },
+  channels: {
+    lineAutoAdopt: process.env.LINE_AUTO_ADOPT === 'true',
   },
   database: {
     url: process.env.DATABASE_URL ?? '',
