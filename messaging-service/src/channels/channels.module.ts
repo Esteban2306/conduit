@@ -22,6 +22,7 @@ import { BaileysMessageSender } from './whatsapp/baileys/BaileysMessageSender';
 import { messageReceiptTracker } from './whatsapp/baileys/MessageReceiptTracker';
 import { ConnectionController } from './whatsapp/Connection.controller';
 import { WhatsAppConnectionService } from './whatsapp/WhatsAppConnection.service';
+import { LineAdoptionService } from './whatsapp/LineAdoption.service';
 import { restoreSessions } from './whatsapp/restore-sessions';
 import { WhatsAppConnectionOrchestrator } from './whatsapp/WhatsAppConnectionOrchestrator';
 import { BotSentMessageRegistry } from 'src/channels/whatsapp/baileys/BotSentMessageRegistry';
@@ -50,6 +51,7 @@ import { SentMessageStore } from './whatsapp/baileys/SentMessageStore';
     BaileysMessageSender,
     ChannelPluginFactory,
     WhatsAppConnectionOrchestrator,
+    LineAdoptionService,
     BaileysSessionManager,
     WhatsAppConnectionService,
     messageReceiptTracker,
