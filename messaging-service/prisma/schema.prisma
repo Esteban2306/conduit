@@ -237,6 +237,7 @@ model Message {
   templateId  String?
   connectionId String?
   botConfigId String?
+  category    String?
   channel     MessageChannel    
   recipient   String
   variables   Json      @default("{}")
