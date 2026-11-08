@@ -85,6 +85,12 @@ export class ConnectionController {
     return this.connections.findAll(user.tenantId);
   }
 
+  @Get('by-key/:key')
+  @ApiOperation({ summary: 'Obtener una conexión por su clave estable' })
+  findByKey(@Param('key') key: string, @CurrentUser() user: JwtPayload) {
+    return this.connections.findByKey(key, user.tenantId);
+  }
+
   @Get(':id/qr')
   @ApiOperation({ summary: 'Consultar el QR actual de una conexión' })
   async getQr(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
