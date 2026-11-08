@@ -254,6 +254,7 @@ function world(
   const metrics = new ReplyMetricsService();
   let promptMaxTokens = 400;
   let notifyResult = true;
+  let systemPaused = false;
   const slimPrompts: unknown[] = [];
   const afterSlimTurn = jest.fn(() => Promise.resolve());
   let activeTools: unknown[] = [];
@@ -419,6 +420,7 @@ function world(
             : DEFAULT_AI_UNAVAILABLE_TEXT,
         ),
     } as never,
+    { isPaused: later(() => systemPaused) } as never,
   );
   (router as unknown as { logger: object }).logger = {
     debug: jest.fn(),
@@ -550,6 +552,9 @@ function world(
     },
     setNotifyResult: (value: boolean) => {
       notifyResult = value;
+    },
+    setSystemPaused: (value: boolean) => {
+      systemPaused = value;
     },
     setMaxTokens: (value: number) => {
       promptMaxTokens = value;
@@ -1504,5 +1509,51 @@ describe('Secuencia humana por turno', () => {
 
     expect(w.socket.readMessages).not.toHaveBeenCalled();
     expect(w.order).toEqual([]);
+  });
+});
+
+describe('Pausa del sistema', () => {
+  beforeEach(() => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('en pausa guarda el mensaje pero no responde ni llama a la IA', async () => {
+    const w = world();
+    w.setSystemPaused(true);
+    w.inbound(A, 'hola, quiero una cita');
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.store.inboundTexts(A)).toEqual(['hola, quiero una cita']);
+    expect(w.sends).toHaveLength(0);
+    expect(w.aiCalls).toHaveLength(0);
+  });
+
+  it('si la pausa llega con la respuesta ya en espera, esa respuesta no sale', async () => {
+    const w = world();
+    w.inbound(A, 'hola');
+    await settle(1_000);
+    w.setSystemPaused(true);
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.store.inboundTexts(A)).toEqual(['hola']);
+    expect(w.sends).toHaveLength(0);
+    expect(w.aiCalls).toHaveLength(0);
+  });
+
+  it('al reanudar, los mensajes nuevos vuelven a responderse', async () => {
+    const w = world();
+    w.setSystemPaused(true);
+    w.inbound(A, 'mensaje durante la pausa');
+    await settle(DELAY_MS + 2_000);
+    w.setSystemPaused(false);
+    w.inbound(A, 'ya volvieron');
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.sends.map((s) => s.content)).toEqual([
+      'respuesta a: ya volvieron',
+    ]);
   });
 });

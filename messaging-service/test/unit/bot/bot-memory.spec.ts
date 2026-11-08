@@ -287,6 +287,7 @@ describe('BotRouter — nunca deja mensajes sin responder', () => {
       rerunRequested: new Set<string>(),
       readGates: new Map<string, Promise<void>>(),
       conversationService,
+      systemPause: { isPaused: jest.fn().mockResolvedValue(false) },
       debouncer: { hasPending: jest.fn(), debounce: jest.fn() },
     });
     return r;

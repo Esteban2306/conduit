@@ -21,6 +21,7 @@ import {
   AttachedImage,
 } from '../tools/ToolExecutor.service';
 import { HandoffService } from '../handoff/Handoff.service';
+import { SystemPauseService } from '../pause/SystemPause.service';
 import { FAILURE_STREAKS_KEY } from '../handoff/handoff-defaults';
 import { promisesHumanContact } from '../handoff/handoff-promise';
 import { TurnBudget } from '../ai/turn-budget';
@@ -113,6 +114,7 @@ export class BotRouter {
     private readonly aiOutageDigest: AiOutageDigestService,
     private readonly intentHandler: IntentHandler,
     private readonly handoffService: HandoffService,
+    private readonly systemPause: SystemPauseService,
   ) {}
 
   async route(
@@ -198,6 +200,8 @@ export class BotRouter {
       return;
     }
 
+    const paused = await this.systemPause.isPaused(tenantId);
+
     const messageTimestap = Number(message.messageTimestamp ?? 0) * 1000;
     const messageAgeMs = Date.now() - messageTimestap;
     const MaxAgeMs = (botConfig.maxMessageAgeMinutes ?? 1440) * 60 * 1000;
@@ -207,14 +211,14 @@ export class BotRouter {
         `Mensage de ${phoneNumber} igonrado: anguedad ${Math.round(messageAgeMs / 60000)} min > limite ${botConfig.maxMessageAgeMinutes} min`,
       );
 
-      await this.markAsRead(message, connectionId);
+      if (!paused) await this.markAsRead(message, connectionId);
       return;
     }
 
     const { text, hasImage } = this.extractContent(message);
 
     if (!text && !hasImage) {
-      await this.markAsRead(message, connectionId);
+      if (!paused) await this.markAsRead(message, connectionId);
       return;
     }
 
@@ -246,12 +250,19 @@ export class BotRouter {
       connectionId,
       {
         waMessageId: messageId,
-        processedBy: ignorable ? IGNORED_INBOUND : undefined,
+        processedBy: ignorable || paused ? IGNORED_INBOUND : undefined,
       },
     );
     if (!saved.created) {
       this.logger.debug(
         `Mensaje ${messageId} ya guardado; se ignora el duplicado.`,
+      );
+      return;
+    }
+
+    if (paused) {
+      this.logger.debug(
+        `Sistema en pausa: mensaje de ${phoneNumber} guardado sin respuesta automática.`,
       );
       return;
     }
@@ -372,6 +383,13 @@ export class BotRouter {
    */
   private async respond(turn: TurnContext): Promise<void> {
     const id = turn.conversationId;
+
+    if (await this.systemPause.isPaused(turn.tenantId)) {
+      this.logger.debug(
+        `Sistema en pausa: no se responde la conversación ${id}.`,
+      );
+      return;
+    }
 
     if (this.processingConversations.has(id)) {
       this.rerunRequested.add(id);
@@ -709,11 +727,11 @@ export class BotRouter {
             }
 
             try {
-              const buffer = (await downloadMediaMessage(
+              const buffer = await downloadMediaMessage(
                 imageMessage,
                 'buffer',
                 {},
-              )) as Buffer;
+              );
 
               attachedImage = {
                 dataUri: `data:image/jpeg;base64,${buffer.toString('base64')}`,
