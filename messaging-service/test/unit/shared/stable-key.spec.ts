@@ -21,11 +21,15 @@ describe('claves estables', () => {
 
   it('agrega un sufijo numérico cuando la clave ya existe', async () => {
     const taken = new Set(['ventas', 'ventas-2']);
-    const key = await resolveUniqueKey('ventas', async (k) => taken.has(k));
+    const key = await resolveUniqueKey('ventas', (k) =>
+      Promise.resolve(taken.has(k)),
+    );
     expect(key).toBe('ventas-3');
   });
 
   it('deja la clave intacta cuando está libre', async () => {
-    expect(await resolveUniqueKey('ventas', async () => false)).toBe('ventas');
+    expect(await resolveUniqueKey('ventas', () => Promise.resolve(false))).toBe(
+      'ventas',
+    );
   });
 });

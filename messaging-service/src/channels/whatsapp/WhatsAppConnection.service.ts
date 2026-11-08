@@ -69,9 +69,7 @@ export class WhatsAppConnectionService {
       where: { tenantId, key },
     });
     if (!connection) {
-      throw new NotFoundException(
-        `Conexión con clave "${key}" no encontrada.`,
-      );
+      throw new NotFoundException(`Conexión con clave "${key}" no encontrada.`);
     }
     return connection;
   }
