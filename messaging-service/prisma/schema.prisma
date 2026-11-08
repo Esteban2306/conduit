@@ -665,6 +665,23 @@ model WhatsAppContact {
 
   @@unique([connectionId, address])
   @@index([connectionId, lid])
+  @@index([address])
+}
+
+/// Rastro de las operaciones que fusionan conexiones. No tiene relación con
+/// WhatsAppConnection a propósito: debe sobrevivir al borrado de la fila retirada.
+model WhatsAppConnectionAudit {
+  id                  String   @id @default(uuid())
+  tenantId            String
+  action              String
+  keptConnectionId    String
+  retiredConnectionId String
+  retiredKey          String?
+  counts              Json
+  actor               String?
+  createdAt           DateTime @default(now())
+
+  @@index([tenantId, createdAt])
 }
 
 model ExternalIntegration {
