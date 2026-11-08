@@ -1,6 +1,7 @@
 import {
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import {
@@ -16,6 +17,8 @@ import * as QRCode from 'qrcode';
 
 @Injectable()
 export class WhatsAppConnectionService {
+  private readonly logger = new Logger(WhatsAppConnectionService.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
   async create(tenantId: string, dto: CreateWhatsAppConnectionDto) {
@@ -299,17 +302,37 @@ export class WhatsAppConnectionService {
     });
   }
 
-  markConnected(id: string, phoneNumber: string | null) {
-    return this.prisma.whatsAppConnection.update({
-      where: { id },
-      data: {
-        status: WhatsAppConnectionStatus.CONNECTED,
-        phoneNumber,
-        connectedAt: new Date(),
-        disconnectedAt: null,
-        lastQr: null,
-      },
-    });
+  async markConnected(id: string, phoneNumber: string | null) {
+    const base = {
+      status: WhatsAppConnectionStatus.CONNECTED,
+      connectedAt: new Date(),
+      disconnectedAt: null,
+      lastQr: null,
+    };
+
+    try {
+      return await this.prisma.whatsAppConnection.update({
+        where: { id },
+        data: { ...base, phoneNumber },
+      });
+    } catch (err) {
+      if (
+        phoneNumber &&
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2002'
+      ) {
+        this.logger.error(
+          `El número ${phoneNumber} ya está registrado en otra conexión del mismo tenant; ` +
+            `la conexión ${id} queda conectada sin guardar el número. ` +
+            `Desvincula o reemplaza la otra conexión.`,
+        );
+        return this.prisma.whatsAppConnection.update({
+          where: { id },
+          data: base,
+        });
+      }
+      throw err;
+    }
   }
 
   private async updateStatusForTenant(
