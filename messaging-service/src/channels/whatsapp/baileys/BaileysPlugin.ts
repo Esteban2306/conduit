@@ -213,6 +213,12 @@ export class BaileysPlugin implements IChannelPlugin {
     }
   }
 
+  isAvailable(connectionId?: string): boolean {
+    return (
+      Boolean(connectionId) && this.session.isConnected(connectionId as string)
+    );
+  }
+
   private notConnected(): ChannelSendResult {
     return this.fail(
       'WHATSAPP_NOT_CONNECTED',

@@ -1,5 +1,5 @@
 import { HttpException, Injectable, Logger } from '@nestjs/common';
-import { Job } from 'bullmq';
+import { DelayedError, Job } from 'bullmq';
 import { ConfigService } from '@nestjs/config';
 import { MessageChannel, MessageStatus } from '@prisma/client';
 import { PrismaService } from 'src/shared/prisma.service';
@@ -13,12 +13,18 @@ import { WebhookDispatcher } from 'src/webhooks/WebhookDispatcher';
 import { JobSigner, SignedJobPayload } from '../security/JobSigner';
 import { EventBusService } from 'src/infra/events/event.service';
 import { EVENT_TYPES } from 'src/infra/events/constants/event.types';
+import { WhatsAppContactService } from 'src/channels/whatsapp/contacts/WhatsAppContactService';
 
 const TERMINAL_STATUSES: MessageStatus[] = [
   MessageStatus.SENT,
   MessageStatus.DEAD,
   MessageStatus.CANCELLED,
 ];
+
+const DISCONNECT_POLL_MS = 30_000;
+const WAIT_TOUCH_MS = 10 * 60_000;
+const MAX_DISCONNECT_WAIT_MS = 20 * 60 * 60_000;
+const WAITING_NOTE = 'Esperando a que la línea de WhatsApp se reconecte';
 
 @Injectable()
 export class MessageProcessor {
@@ -34,9 +40,10 @@ export class MessageProcessor {
     private readonly webhookDispatcher: WebhookDispatcher,
     private readonly jobSigner: JobSigner,
     private readonly eventBus: EventBusService,
+    private readonly contacts: WhatsAppContactService,
   ) {}
 
-  async process(job: Job<SignedJobPayload>): Promise<void> {
+  async process(job: Job<SignedJobPayload>, token?: string): Promise<void> {
     const verification = this.jobSigner.verify(job.data);
 
     if (!verification.valid) {
@@ -66,7 +73,16 @@ export class MessageProcessor {
 
     const dbMessage = await this.prisma.message.findUnique({
       where: { id: messageId },
-      select: { id: true, tenantId: true, connectionId: true, status: true },
+      select: {
+        id: true,
+        tenantId: true,
+        connectionId: true,
+        status: true,
+        category: true,
+        scheduledAt: true,
+        updatedAt: true,
+        lastError: true,
+      },
     });
 
     if (!dbMessage || dbMessage.tenantId !== tenantId) {
@@ -112,6 +128,24 @@ export class MessageProcessor {
           'La conexión de WhatsApp no pertenece a este tenant',
           'CONNECTION_TENANT_MISMATCH',
         );
+        return;
+      }
+
+      if (
+        dbMessage.category === 'MARKETING' &&
+        (await this.contacts.isOptedOutForTenant(tenantId, recipient))
+      ) {
+        await this.cancelForOptOut(messageId);
+        return;
+      }
+
+      const whatsapp = this.channelFactory.getPlugin(channel);
+      if (
+        token &&
+        whatsapp.isAvailable &&
+        !whatsapp.isAvailable(connectionId)
+      ) {
+        await this.waitForChannel(job, token, dbMessage);
         return;
       }
     }
@@ -168,6 +202,11 @@ export class MessageProcessor {
           durationMs,
         );
       } else {
+        if (token && result.errorCode === 'WHATSAPP_NOT_CONNECTED') {
+          await this.waitForChannel(job, token, dbMessage);
+          return;
+        }
+
         const classified = ErrorClassifier.classify(
           result.errorCode ?? 'UNKNOWN',
           result.retryable ?? false,
@@ -206,6 +245,7 @@ export class MessageProcessor {
         throw new Error(result.error ?? 'Send failed');
       }
     } catch (error) {
+      if (error instanceof DelayedError) throw error;
       const durationMs = Date.now() - start;
       // Errores de validación previos al envío (plantilla inexistente o que
       // no renderiza): reintentar no los arregla.
@@ -245,6 +285,79 @@ export class MessageProcessor {
       if (isPermanent) return;
       throw error;
     }
+  }
+
+  private disconnectWaitMs(): number {
+    const configured = this.config.get<number>('queue.disconnectWaitMs');
+    const wait = Number.isFinite(configured) ? (configured as number) : 0;
+    return Math.min(Math.max(wait, 0), MAX_DISCONNECT_WAIT_MS);
+  }
+
+  /**
+   * Con la línea desconectada el mensaje no es el que falla: se deja en
+   * espera sin gastar intentos y se revisa de nuevo en unos segundos. Pasado
+   * el tope se manda a la DLQ para que alguien lo revise, nunca se pierde.
+   * Siempre lanza DelayedError salvo cuando agota el tope.
+   */
+  private async waitForChannel(
+    job: Job<SignedJobPayload>,
+    token: string,
+    message: {
+      id: string;
+      status: MessageStatus;
+      scheduledAt: Date;
+      updatedAt: Date;
+      lastError: string | null;
+    },
+  ): Promise<void> {
+    const waitedMs = Date.now() - message.scheduledAt.getTime();
+    const limitMs = this.disconnectWaitMs();
+
+    if (waitedMs > limitMs) {
+      await this.dlqHandler.handle(
+        message.id,
+        `La línea de WhatsApp estuvo desconectada más de ${Math.round(limitMs / 60_000)} minutos`,
+        'WHATSAPP_DISCONNECT_TIMEOUT',
+      );
+      return;
+    }
+
+    const alreadyMarked =
+      message.status === MessageStatus.RETRYING &&
+      message.lastError === WAITING_NOTE &&
+      Date.now() - message.updatedAt.getTime() < WAIT_TOUCH_MS;
+    if (!alreadyMarked) {
+      await this.prisma.message.update({
+        where: { id: message.id },
+        data: {
+          status: MessageStatus.RETRYING,
+          lastError: WAITING_NOTE,
+          updatedAt: new Date(),
+        },
+      });
+    }
+
+    const pollMs =
+      this.config.get<number>('queue.disconnectPollMs') ?? DISCONNECT_POLL_MS;
+    const jitter = 0.8 + Math.random() * 0.4;
+    await job.moveToDelayed(Date.now() + Math.round(pollMs * jitter), token);
+    throw new DelayedError();
+  }
+
+  private async cancelForOptOut(messageId: string): Promise<void> {
+    await this.prisma.message.update({
+      where: { id: messageId },
+      data: {
+        status: MessageStatus.CANCELLED,
+        retryable: false,
+        lastError: 'El contacto pidió no recibir más mensajes de marketing',
+        resolvedAt: new Date(),
+      },
+    });
+    this.logger.warn(
+      `Mensaje ${messageId} cancelado: el contacto se dio de baja antes del envío.`,
+    );
+    await this.webhookDispatcher.dispatch('message.cancelled', messageId);
   }
 
   private async resolveTemplate(

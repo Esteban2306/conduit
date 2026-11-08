@@ -16,6 +16,8 @@ export const configValidationSchema = Joi.object({
   ALLOW_PUBLIC_REGISTRATION: Joi.boolean().default(false),
   REGISTRATION_TOKEN: Joi.string().min(24).optional(),
   LINE_AUTO_ADOPT: Joi.boolean().default(false),
+  QUEUE_DISCONNECT_WAIT_MS: Joi.number().integer().min(0).default(21600000),
+  QUEUE_DISCONNECT_POLL_MS: Joi.number().integer().min(100).default(30000),
 
   DATABASE_URL: Joi.string().required(),
 
@@ -122,6 +124,8 @@ export interface AppConfig {
   queue: {
     maxAttempts: number;
     backoffDelay: number;
+    disconnectWaitMs: number;
+    disconnectPollMs: number;
   };
   messaging: {
     maxFileUploadRows: number;
@@ -193,6 +197,14 @@ export const configFactory = (): AppConfig => ({
   queue: {
     maxAttempts: parseInt(process.env.QUEUE_MAX_ATTEMPTS ?? '5', 10),
     backoffDelay: parseInt(process.env.QUEUE_BACKOFF_DELAY ?? '120000', 10),
+    disconnectWaitMs: parseInt(
+      process.env.QUEUE_DISCONNECT_WAIT_MS ?? '21600000',
+      10,
+    ),
+    disconnectPollMs: parseInt(
+      process.env.QUEUE_DISCONNECT_POLL_MS ?? '30000',
+      10,
+    ),
   },
 
   messaging: {

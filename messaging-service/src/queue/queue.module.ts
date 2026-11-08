@@ -13,6 +13,7 @@ import { JobSigner } from './security/JobSigner';
 import { MessageRecoveryService } from './recovery/MessageRecoveryService';
 import { DeadLetterController } from './Orchestrator/deadletter/DeadLetter.controller';
 import { AuthModule } from 'src/auth/auth.module';
+import { WhatsAppContactModule } from 'src/channels/whatsapp/contacts/whatsapp-contact.module';
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { AuthModule } from 'src/auth/auth.module';
     TemplateModule,
     WebhookModule,
     AuthModule,
+    WhatsAppContactModule,
   ],
   controllers: [DeadLetterController],
   providers: [
