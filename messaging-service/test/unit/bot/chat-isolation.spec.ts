@@ -65,14 +65,14 @@ class Store {
   messages: StoredMessage[] = [];
   private seq = 0;
 
-  conversationOf(phone: string) {
+  conversationOf(phone: string, bot?: string) {
     return [...this.conversations.values()].find(
-      (c) => c.phoneNumber === phone,
+      (c) => c.phoneNumber === phone && (!bot || c.botConfigId === bot),
     );
   }
 
-  inboundTexts(phone: string): string[] {
-    const conv = this.conversationOf(phone);
+  inboundTexts(phone: string, bot?: string): string[] {
+    const conv = this.conversationOf(phone, bot);
     return this.messages
       .filter((m) => m.conversationId === conv?.id && m.direction === 'INBOUND')
       .map((m) => m.content);
@@ -86,10 +86,13 @@ class Store {
           phoneNumber: string;
           connectionId: string;
         }) => {
-          let conv = this.conversationOf(dto.phoneNumber);
+          let conv = this.conversationOf(dto.phoneNumber, dto.botConfigId);
           if (!conv) {
             conv = {
-              id: `conv-${dto.phoneNumber}`,
+              id:
+                dto.botConfigId === BOT
+                  ? `conv-${dto.phoneNumber}`
+                  : `conv-${dto.botConfigId}-${dto.phoneNumber}`,
               phoneNumber: dto.phoneNumber,
               botConfigId: dto.botConfigId,
               lastConnectionId: dto.connectionId,
@@ -156,7 +159,7 @@ class Store {
         });
       }),
       findActiveByPhone: later(
-        (_bot: string, phone: string) => this.conversationOf(phone) ?? null,
+        (bot: string, phone: string) => this.conversationOf(phone, bot) ?? null,
       ),
       findConversationsWithPending: later(() =>
         [...this.conversations.values()].filter(
@@ -250,11 +253,17 @@ function world(
           ok: boolean;
         }>;
       } = (m) => `respuesta a: ${m}`,
+  line: { conn: string; bot: string; tenant: string; status?: BotStatus } = {
+    conn: CONN,
+    bot: BOT,
+    tenant: TENANT,
+  },
 ) {
   const metrics = new ReplyMetricsService();
   let promptMaxTokens = 400;
   let notifyResult = true;
   let systemPaused = false;
+  let botStatus: BotStatus = line.status ?? BotStatus.ACTIVE;
   const slimPrompts: unknown[] = [];
   const afterSlimTurn = jest.fn(() => Promise.resolve());
   let activeTools: unknown[] = [];
@@ -328,10 +337,12 @@ function world(
     ),
   };
   const botConfig = {
-    id: BOT,
-    tenantId: TENANT,
+    id: line.bot,
+    tenantId: line.tenant,
     name: 'Bot',
-    status: BotStatus.ACTIVE,
+    get status() {
+      return botStatus;
+    },
     botResponseDelaySeconds: DELAY_MS / 1000,
     maxHistoryMessages: 10,
     humanTakeoverMinutes: 10,
@@ -450,8 +461,8 @@ function world(
     chatAddresses: new Map(),
   });
   const state = {
-    botConfigId: BOT,
-    tenantId: TENANT,
+    botConfigId: line.bot,
+    tenantId: line.tenant,
     reconnectCount: 1,
     lastReconnectAt: null,
     connectedAt: Date.now(),
@@ -459,7 +470,7 @@ function world(
     stopped: false,
   };
   (manager as unknown as { bindEvents: (...a: unknown[]) => void }).bindEvents(
-    CONN,
+    line.conn,
     {
       ev: {
         on: (event: string, handler: (...a: unknown[]) => void) =>
@@ -552,6 +563,9 @@ function world(
     },
     setNotifyResult: (value: boolean) => {
       notifyResult = value;
+    },
+    setBotStatus: (value: BotStatus) => {
+      botStatus = value;
     },
     setSystemPaused: (value: boolean) => {
       systemPaused = value;
@@ -1555,5 +1569,85 @@ describe('Pausa del sistema', () => {
     expect(w.sends.map((s) => s.content)).toEqual([
       'respuesta a: ya volvieron',
     ]);
+  });
+});
+
+describe('Varias líneas y bots del mismo negocio (fase 1)', () => {
+  const LINE_1 = { conn: 'conn-1', bot: 'bot-1', tenant: TENANT };
+  const LINE_2 = { conn: 'conn-2', bot: 'bot-2', tenant: TENANT };
+
+  beforeEach(() => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('la misma clienta escribiendo a dos líneas con bots distintos tiene dos conversaciones sin mezclar historial ni respuestas', async () => {
+    const store = new Store();
+    const ventas = world(store, (m) => `ventas: ${m}`, LINE_1);
+    const soporte = world(store, (m) => `soporte: ${m}`, LINE_2);
+
+    ventas.inbound(A, 'quiero comprar');
+    soporte.inbound(A, 'tengo un problema');
+    await settle(DELAY_MS + 2_000);
+
+    expect(store.inboundTexts(A, 'bot-1')).toEqual(['quiero comprar']);
+    expect(store.inboundTexts(A, 'bot-2')).toEqual(['tengo un problema']);
+    expect(ventas.sends.map((s) => s.content)).toEqual([
+      'ventas: quiero comprar',
+    ]);
+    expect(soporte.sends.map((s) => s.content)).toEqual([
+      'soporte: tengo un problema',
+    ]);
+    expect(ventas.aiCalls).toEqual(['quiero comprar']);
+    expect(soporte.aiCalls).toEqual(['tengo un problema']);
+    expect(store.conversationOf(A, 'bot-1')?.lastConnectionId).toBe('conn-1');
+    expect(store.conversationOf(A, 'bot-2')?.lastConnectionId).toBe('conn-2');
+  });
+
+  it('apagar el bot de una línea no afecta a la otra', async () => {
+    const store = new Store();
+    const ventas = world(store, (m) => `ventas: ${m}`, LINE_1);
+    const soporte = world(store, (m) => `soporte: ${m}`, LINE_2);
+    soporte.setBotStatus(BotStatus.INACTIVE);
+
+    ventas.inbound(A, 'hola ventas');
+    soporte.inbound(B, 'hola soporte');
+    await settle(DELAY_MS + 2_000);
+
+    expect(ventas.sends).toHaveLength(1);
+    expect(soporte.sends).toHaveLength(0);
+    expect(store.inboundTexts(B, 'bot-2')).toEqual(['hola soporte']);
+  });
+
+  it('con el bot apagado el mensaje queda guardado, sin respuesta, sin llamar a la IA y sin marcarlo como leído', async () => {
+    const w = world(undefined, undefined, {
+      ...LINE_1,
+      status: BotStatus.INACTIVE,
+    });
+
+    w.inbound(A, 'hola, ¿están abiertos?');
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.store.inboundTexts(A)).toEqual(['hola, ¿están abiertos?']);
+    expect(w.sends).toHaveLength(0);
+    expect(w.aiCalls).toHaveLength(0);
+    expect(w.order).not.toContain('read');
+  });
+
+  it('lo recibido con el bot apagado no se responde después al encenderlo', async () => {
+    const w = world(undefined, undefined, {
+      ...LINE_1,
+      status: BotStatus.INACTIVE,
+    });
+
+    w.inbound(A, 'mensaje de ayer');
+    await settle(DELAY_MS + 2_000);
+    w.setBotStatus(BotStatus.ACTIVE);
+    w.inbound(A, 'mensaje de hoy');
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.aiCalls).toEqual(['mensaje de hoy']);
   });
 });

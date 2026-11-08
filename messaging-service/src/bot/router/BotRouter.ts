@@ -170,37 +170,17 @@ export class BotRouter {
       return;
     }
 
-    if (botConfig.status !== BotStatus.ACTIVE) {
-      const activeBot =
-        await this.botConfigService.findActiveForTenant(tenantId);
-
-      if (!activeBot) {
-        this.logger.warn(
-          `Tenant ${tenantId} no tiene ningún bot registrado como ACTIVE. ` +
-            `El bot vinculado a esta conexión ("${botConfig.name}", ${botConfig.id}) ` +
-            `está en estado ${botConfig.status}. Actívalo desde el panel para que ` +
-            `responda a los mensajes. Mensaje de ${phoneNumber} ignorado.`,
-        );
-      } else if (activeBot.id === botConfig.id) {
-        this.logger.warn(
-          `Estado inconsistente detectado para el bot ${botConfig.id}: se ` +
-            `reporta como activo en otra consulta pero como "${botConfig.status}" aquí. ` +
-            `Posible condición de carrera — reintenta el mensaje.`,
-        );
-      } else {
-        this.logger.warn(
-          `El bot vinculado a esta conexión ("${botConfig.name}", ${botConfig.id}) ` +
-            `está en estado ${botConfig.status}, no ACTIVE. Este tenant SÍ tiene un ` +
-            `bot activo — "${activeBot.name}" (${activeBot.id}) — pero no está ` +
-            `vinculado a esta conexión (${connectionId}). Verifica ` +
-            `WhatsAppConnection.botConfigId o activa "${botConfig.name}" si es el ` +
-            `bot correcto para esta conexión. Mensaje de ${phoneNumber} ignorado.`,
-        );
-      }
-      return;
+    const botInactive = botConfig.status !== BotStatus.ACTIVE;
+    if (botInactive) {
+      this.logger.warn(
+        `El bot "${botConfig.name}" (${botConfig.id}) de la conexión ${connectionId} ` +
+          `está en estado ${botConfig.status}, no ACTIVE: el mensaje de ${phoneNumber} ` +
+          `se guarda sin respuesta automática. Actívalo desde el panel para que responda.`,
+      );
     }
 
     const paused = await this.systemPause.isPaused(tenantId);
+    const silent = botInactive || paused;
 
     const messageTimestap = Number(message.messageTimestamp ?? 0) * 1000;
     const messageAgeMs = Date.now() - messageTimestap;
@@ -211,14 +191,14 @@ export class BotRouter {
         `Mensage de ${phoneNumber} igonrado: anguedad ${Math.round(messageAgeMs / 60000)} min > limite ${botConfig.maxMessageAgeMinutes} min`,
       );
 
-      if (!paused) await this.markAsRead(message, connectionId);
+      if (!silent) await this.markAsRead(message, connectionId);
       return;
     }
 
     const { text, hasImage } = this.extractContent(message);
 
     if (!text && !hasImage) {
-      if (!paused) await this.markAsRead(message, connectionId);
+      if (!silent) await this.markAsRead(message, connectionId);
       return;
     }
 
@@ -250,7 +230,7 @@ export class BotRouter {
       connectionId,
       {
         waMessageId: messageId,
-        processedBy: ignorable || paused ? IGNORED_INBOUND : undefined,
+        processedBy: ignorable || silent ? IGNORED_INBOUND : undefined,
       },
     );
     if (!saved.created) {
@@ -260,9 +240,9 @@ export class BotRouter {
       return;
     }
 
-    if (paused) {
+    if (silent) {
       this.logger.debug(
-        `Sistema en pausa: mensaje de ${phoneNumber} guardado sin respuesta automática.`,
+        `${paused ? 'Sistema en pausa' : 'Bot apagado'}: mensaje de ${phoneNumber} guardado sin respuesta automática.`,
       );
       return;
     }
