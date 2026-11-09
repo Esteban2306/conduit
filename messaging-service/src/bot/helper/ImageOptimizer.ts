@@ -50,4 +50,22 @@ export class ImageOptimizer {
       return buffer;
     }
   }
+
+  private static readonly EXTRACTION_MAX_SIDE = 1568;
+  private static readonly EXTRACTION_QUALITY = 80;
+
+  static async optimizeForExtraction(buffer: Buffer): Promise<Buffer> {
+    try {
+      return await sharp(buffer)
+        .rotate()
+        .resize(this.EXTRACTION_MAX_SIDE, this.EXTRACTION_MAX_SIDE, {
+          fit: 'inside',
+          withoutEnlargement: true,
+        })
+        .jpeg({ quality: this.EXTRACTION_QUALITY, mozjpeg: true })
+        .toBuffer();
+    } catch {
+      return buffer;
+    }
+  }
 }

@@ -41,19 +41,19 @@ export class ImageAnalysisService {
     private readonly promptEngine: PromptEngine,
   ) {}
 
+  async downloadOriginal(message: WAMessage): Promise<Buffer> {
+    return (await downloadMediaMessage(message, 'buffer', {})) as Buffer;
+  }
+
   async analyzeFromMessage(
     message: WAMessage,
     botConfigId: string,
     systemPrompt: string,
   ): Promise<ImageAnalysisResult> {
     this.logger.warn('IMAGE ANALYSIS SERVICE EJECUTADO');
-    let imageBuffer: Buffer;
+    let original: Buffer;
     try {
-      imageBuffer = (await downloadMediaMessage(
-        message,
-        'buffer',
-        {},
-      )) as Buffer;
+      original = await this.downloadOriginal(message);
     } catch (err) {
       this.logger.error(
         `Error descargando imagen: ${maskSecrets(String(err.message))}`,
@@ -65,7 +65,14 @@ export class ImageAnalysisService {
         details: 'No se pudo descargar la imagen',
       };
     }
+    return this.analyzeBuffer(original, botConfigId);
+  }
 
+  async analyzeBuffer(
+    original: Buffer,
+    botConfigId: string,
+  ): Promise<ImageAnalysisResult> {
+    let imageBuffer = original;
     const originalKb = Math.round(imageBuffer.length / 1024);
     imageBuffer = await ImageOptimizer.optimize(imageBuffer);
     const optimizedKb = Math.round(imageBuffer.length / 1024);

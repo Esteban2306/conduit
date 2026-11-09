@@ -61,7 +61,7 @@ export interface GenerateTextInput {
 
 export interface AnalyzeImageInput {
   prompt: string;
-  botConfigId: string;
+  botConfigId?: string;
   systemPrompt: string;
   imageBuffer: Buffer;
   mimeType: string;

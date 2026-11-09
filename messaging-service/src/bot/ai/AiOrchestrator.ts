@@ -17,6 +17,7 @@ import {
   AnalyzeImageInput,
   GenerateResponseInput,
   OrchestratorResult,
+  SpecialistImageInput,
 } from './interface/AiOrchestator.types';
 import { AiProviderType } from './interface/AiProviderType';
 import { resolveModel } from '../helper/model-resolver';
@@ -151,8 +152,22 @@ export class AiOrchestrator {
   }
 
   async analyzeImage(input: AnalyzeImageInput): Promise<OrchestratorResult> {
+    return this.runImageAnalysis(input.botConfigId, input);
+  }
+
+  async analyzeImageForSpecialist(
+    specialistId: string,
+    input: SpecialistImageInput,
+  ): Promise<OrchestratorResult> {
+    return this.runImageAnalysis({ specialistId }, input);
+  }
+
+  private async runImageAnalysis(
+    owner: AiModelOwner,
+    input: SpecialistImageInput,
+  ): Promise<OrchestratorResult> {
     const modelConfig = await this.selector.selectModel(
-      input.botConfigId,
+      owner,
       AiModelRole.IMAGE_ANALYSIS,
     );
 
@@ -164,7 +179,7 @@ export class AiOrchestrator {
 
     return this.executeWithFallback(
       modelConfig,
-      input.botConfigId,
+      owner,
       AiModelRole.IMAGE_ANALYSIS,
       new TurnBudget(),
       async (config) => {
@@ -174,14 +189,13 @@ export class AiOrchestrator {
 
         const result = await provider.analyzeImage({
           prompt: input.prompt,
-          botConfigId: input.botConfigId,
           systemPrompt: input.systemPrompt,
           imageBuffer: input.imageBuffer,
           mimeType: input.mimeType,
           model: config.model,
           apiKey: await this.selector.resolveApiKey(config),
           baseUrl: config.baseUrl ?? undefined,
-          maxTokens: 1024,
+          maxTokens: input.maxTokens ?? 1024,
         });
 
         return { result, config };
