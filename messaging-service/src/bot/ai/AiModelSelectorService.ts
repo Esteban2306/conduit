@@ -13,6 +13,20 @@ const PROBE_WINDOW_MS = 30_000;
 const DAY_MS = 86_400_000;
 const MINUTE_MS = 60_000;
 
+export type AiModelOwner = string | { specialistId: string };
+
+export function ownerFilter(
+  owner: AiModelOwner,
+): { botConfigId: string } | { specialistId: string } {
+  return typeof owner === 'string' ? { botConfigId: owner } : owner;
+}
+
+export function ownerOf(model: AiModelConfig): AiModelOwner {
+  if (model.botConfigId) return model.botConfigId;
+  if (model.specialistId) return { specialistId: model.specialistId };
+  throw new Error(`El modelo ${model.id} no tiene dueño`);
+}
+
 @Injectable()
 export class AiModelSelectorService {
   private readonly logger = new Logger(AiModelSelectorService.name);
@@ -24,12 +38,17 @@ export class AiModelSelectorService {
   ) {}
 
   async selectModel(
-    botConfigId: string,
+    owner: AiModelOwner,
     role: AiModelRole,
     exclude: ReadonlySet<string> = new Set(),
   ): Promise<AiModelConfig | null> {
     const candidates = await this.prisma.aiModelConfig.findMany({
-      where: { botConfigId, role, isActive: true, credentialInvalidAt: null },
+      where: {
+        ...ownerFilter(owner),
+        role,
+        isActive: true,
+        credentialInvalidAt: null,
+      },
 
       orderBy: { priority: 'asc' },
     });
@@ -43,7 +62,7 @@ export class AiModelSelectorService {
     }
 
     if (role !== AiModelRole.FALLBACK) {
-      return this.selectModel(botConfigId, AiModelRole.FALLBACK, exclude);
+      return this.selectModel(owner, AiModelRole.FALLBACK, exclude);
     }
 
     return null;
