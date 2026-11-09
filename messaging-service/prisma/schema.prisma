@@ -903,6 +903,8 @@ model Specialist {
   rules Json @default("{\"version\":1,\"rules\":[]}")
   contextSources Json @default("{\"version\":1,\"sources\":[]}")
   outputVersion Int @default(1)
+  version Int @default(1)
+  archivedAt DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -910,6 +912,7 @@ model Specialist {
   models AiModelConfig[]
   bindings BotSpecialistBinding[]
   verificationRecords VerificationRecord[]
+  versions SpecialistVersion[]
 
   @@unique([tenantId, key])
   @@unique([id, tenantId, capability])
@@ -957,6 +960,13 @@ model VerificationRecord {
   hashVersion    Int      @default(1)
   fingerprint    String?
   consumedAt     DateTime?
+  specialistVersion Int?
+  inputTokens    Int?
+  outputTokens   Int?
+  reviewedAt     DateTime?
+  reviewedBy     String?
+  reviewDecision VerificationReviewDecision?
+  reviewNote     String?  @db.Text
   verdict        VerificationVerdict
   confidence     Float    @default(0)
   fields         Json     @default("{}")
@@ -972,9 +982,35 @@ model VerificationRecord {
   tenant     Tenant     @relation(fields: [tenantId], references: [id])
   specialist Specialist @relation(fields: [specialistId, tenantId, capability], references: [id, tenantId, capability], onDelete: Restrict)
 
+  @@index([tenantId, createdAt])
+  @@index([tenantId, verdict, createdAt])
   @@index([tenantId, subjectHash])
   @@index([tenantId, fingerprint])
   @@index([tenantId, conversationId, createdAt])
   @@index([specialistId, createdAt])
   @@index([expiresAt])
+}
+
+enum VerificationReviewDecision {
+  APPROVED
+  REJECTED
+}
+
+model SpecialistVersion {
+  id             String   @id @default(uuid())
+  specialistId   String
+  tenantId       String
+  capability     String
+  version        Int
+  promptTemplate String   @db.Text
+  rules          Json
+  contextSources Json
+  changeNote     String?
+  createdBy      String?
+  createdAt      DateTime @default(now())
+
+  specialist Specialist @relation(fields: [specialistId, tenantId, capability], references: [id, tenantId, capability], onDelete: Restrict)
+
+  @@unique([specialistId, version])
+  @@index([tenantId, specialistId, version])
 }
