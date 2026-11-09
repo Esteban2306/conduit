@@ -46,6 +46,7 @@ interface StoredMessage {
   content: string;
   processedBy: string;
   waMessageId?: string;
+  hasImage?: boolean;
   createdAt: number;
 }
 
@@ -114,6 +115,7 @@ class Store {
             { waMessageId?: string; processedBy?: string }?,
           ]
         ) => {
+          const hasImage = rest[0] ?? false;
           const options = rest[2];
           const waMessageId = options?.waMessageId;
           if (
@@ -133,6 +135,7 @@ class Store {
             content,
             processedBy: options?.processedBy ?? 'user',
             waMessageId,
+            hasImage,
             createdAt: Date.now(),
           });
           return { created: true };
@@ -175,7 +178,7 @@ class Store {
         pending: this.pendingOf(conversationId).map((m) => ({
           id: m.id,
           content: m.content,
-          hasImage: false,
+          hasImage: m.hasImage ?? false,
           waMessageId: m.waMessageId ?? null,
         })),
         summary: null,
@@ -292,8 +295,24 @@ function world(
     Promise.resolve({ handled: false }),
   );
   const notifications: unknown[][] = [];
-  const sends: Array<{ to: string; content: string; conversationId: string }> =
-    [];
+  const sends: Array<{
+    to: string;
+    content: string;
+    conversationId: string;
+    imageVerified?: boolean;
+  }> = [];
+  let imageAnalysisEnabled = false;
+  const imageAnalyze = jest.fn<
+    Promise<Record<string, unknown>>,
+    [unknown, string, string]
+  >(() =>
+    Promise.resolve({
+      status: 'SUCCESS',
+      valid: true,
+      confidence: 'HIGH',
+      details: 'ok',
+    }),
+  );
   const aiCalls: string[] = [];
   const aiInputs: Array<{
     userMessage: string;
@@ -320,6 +339,7 @@ function world(
           phoneNumber: string;
           content: string;
           conversationId: string;
+          imageVerified?: boolean;
         },
       ) => {
         if (type !== EVENT_TYPES.CHANNEL_SEND_REQUESTED) return;
@@ -328,6 +348,7 @@ function world(
           to: payload.phoneNumber,
           content: payload.content,
           conversationId: payload.conversationId,
+          imageVerified: payload.imageVerified,
         });
         await conversations.saveOutbound(
           payload.conversationId,
@@ -347,7 +368,10 @@ function world(
     maxHistoryMessages: 10,
     humanTakeoverMinutes: 10,
     maxMessageAgeMinutes: 1440,
-    imageAnalysisEnabled: false,
+    get imageAnalysisEnabled() {
+      return imageAnalysisEnabled;
+    },
+    systemPrompt: 'PROMPT DEL BOT',
     aiModels: [{ id: 'm1' }],
   };
   const router = new BotRouter(
@@ -378,7 +402,7 @@ function world(
         },
       ),
     } as never,
-    {} as never,
+    { analyzeFromMessage: imageAnalyze } as never,
     tracker,
     debouncer,
     {
@@ -496,6 +520,19 @@ function world(
     });
     return id;
   };
+  const inboundImage = (phone: string, caption?: string, id = `WA${++seq}`) => {
+    ev.emit('messages.upsert', {
+      type: 'notify',
+      messages: [
+        {
+          key: { remoteJid: `${phone}@s.whatsapp.net`, fromMe: false, id },
+          messageTimestamp: Math.floor(Date.now() / 1000),
+          message: { imageMessage: { caption } },
+        },
+      ],
+    });
+    return id;
+  };
   const ownerReads = (phone: string) =>
     ev.emit('messages.update', [
       {
@@ -567,6 +604,18 @@ function world(
     setBotStatus: (value: BotStatus) => {
       botStatus = value;
     },
+    setImageAnalysis: (
+      enabled: boolean,
+      result?: Record<string, unknown> | Error,
+    ) => {
+      imageAnalysisEnabled = enabled;
+      if (result instanceof Error) imageAnalyze.mockRejectedValue(result);
+      else if (result) imageAnalyze.mockResolvedValue(result);
+    },
+    imageAnalyze,
+    setBotPaused: (value: boolean) => {
+      (conversations.isBotPaused as jest.Mock).mockReturnValue(value);
+    },
     setSystemPaused: (value: boolean) => {
       systemPaused = value;
     },
@@ -576,6 +625,7 @@ function world(
     aiCalls,
     aiInputs,
     inbound,
+    inboundImage,
     ownerReads,
     ownerWrites,
     clientTyping,
@@ -1649,5 +1699,212 @@ describe('Varias líneas y bots del mismo negocio (fase 1)', () => {
     await settle(DELAY_MS + 2_000);
 
     expect(w.aiCalls).toEqual(['mensaje de hoy']);
+  });
+});
+
+describe('Rama de imagen del router (red de seguridad de la fase 3c)', () => {
+  beforeEach(() => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  const contextOf = (w: ReturnType<typeof world>, phone: string) =>
+    w.store.conversationOf(phone)?.context ?? {};
+
+  it('con el análisis apagado no se analiza y el modelo recibe solo el aviso de imagen', async () => {
+    const w = world();
+    w.inboundImage(A);
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.imageAnalyze).not.toHaveBeenCalled();
+    expect(w.aiCalls).toEqual(['[imagen recibida]']);
+    expect(w.sends).toHaveLength(1);
+    expect(w.sends[0].imageVerified).toBeUndefined();
+  });
+
+  it('con el análisis encendido analiza el mensaje con el bot y su prompt', async () => {
+    const w = world();
+    w.setImageAnalysis(true);
+    w.inboundImage(A);
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.imageAnalyze).toHaveBeenCalledTimes(1);
+    const [message, botId, prompt] = w.imageAnalyze.mock.calls[0] as [
+      { message: { imageMessage: unknown } },
+      string,
+      string,
+    ];
+    expect(message.message.imageMessage).toBeDefined();
+    expect(botId).toBe(BOT);
+    expect(prompt).toBe('PROMPT DEL BOT');
+  });
+
+  it('una imagen válida llega al modelo como contexto, se guarda en la conversación y marca la respuesta', async () => {
+    const w = world();
+    w.setImageAnalysis(true, {
+      status: 'SUCCESS',
+      valid: true,
+      confidence: 'HIGH',
+      details: 'comprobante de transferencia',
+    });
+    w.inboundImage(A);
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.aiCalls).toEqual([
+      '[imagen: válida=true, confianza=HIGH, comprobante de transferencia]',
+    ]);
+    expect(contextOf(w, A)).toMatchObject({
+      imageVerified: true,
+      lastImageDetails: 'comprobante de transferencia',
+    });
+    expect(w.sends[0].imageVerified).toBe(true);
+  });
+
+  it('una imagen no válida se informa al modelo como válida=false y marca la respuesta', async () => {
+    const w = world();
+    w.setImageAnalysis(true, {
+      status: 'SUCCESS',
+      valid: false,
+      confidence: 'LOW',
+    });
+    w.inboundImage(A);
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.aiCalls).toEqual(['[imagen: válida=false, confianza=LOW]']);
+    expect(contextOf(w, A).imageVerified).toBe(false);
+    expect(w.sends[0].imageVerified).toBe(false);
+  });
+
+  it('el texto que acompaña a la imagen se une después del contexto de imagen', async () => {
+    const w = world();
+    w.setImageAnalysis(true, {
+      status: 'SUCCESS',
+      valid: true,
+      confidence: 'MEDIUM',
+      details: 'ok',
+    });
+    w.inboundImage(A, 'este es mi comprobante');
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.aiCalls).toEqual([
+      '[imagen: válida=true, confianza=MEDIUM, ok]\neste es mi comprobante',
+    ]);
+  });
+
+  it('los detalles se recortan a 80 caracteres para el modelo y a 100 para la conversación', async () => {
+    const w = world();
+    w.setImageAnalysis(true, {
+      status: 'SUCCESS',
+      valid: true,
+      confidence: 'HIGH',
+      details: 'd'.repeat(300),
+    });
+    w.inboundImage(A);
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.aiCalls[0]).toBe(
+      `[imagen: válida=true, confianza=HIGH, ${'d'.repeat(80)}]`,
+    );
+    expect(contextOf(w, A).lastImageDetails).toBe('d'.repeat(100));
+  });
+
+  it('con el proveedor saturado se responde con el mensaje de espera y no se llama al modelo', async () => {
+    const w = world();
+    w.setImageAnalysis(true, {
+      status: 'PROVIDER_UNAVAILABLE',
+      valid: false,
+      confidence: 'LOW',
+    });
+    w.inboundImage(A);
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.aiCalls).toEqual([]);
+    expect(w.sends).toHaveLength(1);
+    expect(w.sends[0].content).toContain('alta demanda');
+    expect(contextOf(w, A).imageVerified).toBeUndefined();
+  });
+
+  it.each(['ANALYSIS_ERROR', 'INVALID_IMAGE'])(
+    'con %s la conversación continúa avisando que la imagen no se analizó',
+    async (status) => {
+      const w = world();
+      w.setImageAnalysis(true, { status, valid: false, confidence: 'LOW' });
+      w.inboundImage(A, 'hola');
+      await settle(DELAY_MS + 2_000);
+
+      expect(w.aiCalls).toEqual(['[imagen recibida, no analizada]\nhola']);
+      expect(contextOf(w, A).imageVerified).toBeUndefined();
+      expect(w.sends[0].imageVerified).toBeUndefined();
+    },
+  );
+
+  it('con el sistema en pausa la imagen se guarda y no se analiza', async () => {
+    const w = world();
+    w.setImageAnalysis(true);
+    w.setSystemPaused(true);
+    w.inboundImage(A);
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.imageAnalyze).not.toHaveBeenCalled();
+    expect(w.aiCalls).toEqual([]);
+    expect(w.sends).toHaveLength(0);
+    expect(w.store.inboundTexts(A)).toEqual(['[imagen]']);
+  });
+
+  it('con el bot apagado la imagen se guarda y no se analiza', async () => {
+    const w = world();
+    w.setImageAnalysis(true);
+    w.setBotStatus(BotStatus.INACTIVE);
+    w.inboundImage(A);
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.imageAnalyze).not.toHaveBeenCalled();
+    expect(w.sends).toHaveLength(0);
+  });
+
+  it('con el bot pausado en esa conversación la imagen no se analiza', async () => {
+    const w = world();
+    w.setImageAnalysis(true);
+    w.setBotPaused(true);
+    w.inboundImage(A);
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.imageAnalyze).not.toHaveBeenCalled();
+    expect(w.aiCalls).toEqual([]);
+    expect(w.sends).toHaveLength(0);
+  });
+
+  it('con el dueño activo en el chat la imagen espera y no se analiza todavía', async () => {
+    const w = world();
+    w.setImageAnalysis(true);
+    w.ownerReads(A);
+    w.inboundImage(A);
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.imageAnalyze).not.toHaveBeenCalled();
+    expect(w.sends).toHaveLength(0);
+  });
+
+  it('dos chats con imagen se analizan por separado con su propio mensaje', async () => {
+    const w = world();
+    w.setImageAnalysis(true);
+    w.inboundImage(A);
+    w.inboundImage(B);
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.imageAnalyze).toHaveBeenCalledTimes(2);
+    expect(w.sends.map((s) => s.to).sort()).toEqual([A, B]);
+  });
+
+  it('un texto sin imagen no dispara el análisis aunque esté encendido', async () => {
+    const w = world();
+    w.setImageAnalysis(true);
+    w.inbound(A, 'hola');
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.imageAnalyze).not.toHaveBeenCalled();
+    expect(w.aiCalls).toEqual(['hola']);
   });
 });
