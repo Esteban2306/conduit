@@ -1331,6 +1331,39 @@ describe('SpecialistRuntime con contexto del negocio (grounding)', () => {
   });
 });
 
+describe('SpecialistRuntime: versión del especialista en cada resultado', () => {
+  const withVersion = (version: number) => ({
+    mode: 'SHADOW',
+    timeoutMs: 12000,
+    onFailure: 'DEGRADE',
+    specialist: {
+      id: 'esp-1',
+      status: 'ACTIVE',
+      version,
+      promptTemplate: 'p',
+      contextSources: { version: 1, sources: [] },
+      rules: { version: 1, rules: [] },
+    },
+  });
+
+  it('guarda con qué versión se generó el resultado', async () => {
+    const w = build({ binding: withVersion(7) });
+    await w.run();
+    expect(w.saved().specialistVersion).toBe(7);
+  });
+
+  it('pide la versión al leer el vínculo', async () => {
+    const w = build({ binding: withVersion(1) });
+    await w.run();
+    const query = (
+      w.prisma.botSpecialistBinding.findFirst.mock.calls[0] as unknown as [
+        { select: { specialist: { select: Record<string, unknown> } } },
+      ]
+    )[0];
+    expect(query.select.specialist.select.version).toBe(true);
+  });
+});
+
 describe('SpecialistRuntime: esfuerzo de razonamiento', () => {
   it('pide al modelo esfuerzo bajo para la extracción', async () => {
     const w = build();

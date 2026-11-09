@@ -156,6 +156,7 @@ suite('SpecialistRuntime contra la base aislada', () => {
       tokens: 42,
       mode: 'SHADOW',
       reasonCodes: ['NO_RULES_CONFIGURED'],
+      specialistVersion: 1,
     });
     expect(saved.fields).toMatchObject({ amount: 90000, legibility: 'CLEAR' });
     expect(saved.comparison).toEqual({
