@@ -221,7 +221,19 @@ export class SpecialistRuntime {
         };
       }
 
-      const decision = decideVerdict(parsed.output.fields, rules.data);
+      const decision = decideVerdict(
+        {
+          fields: parsed.output.fields,
+          isExpectedDocument: parsed.output.isExpectedDocument,
+        },
+        rules.data,
+        {
+          grounding: {},
+          now: new Date(),
+          timeZone:
+            this.config.get<string>('whatsapp.timeZone') ?? 'America/Bogota',
+        },
+      );
       return {
         verdict: decision.verdict,
         reasonCodes: decision.reasonCodes,
