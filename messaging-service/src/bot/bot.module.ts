@@ -22,6 +22,10 @@ import { VerificationLedger } from './specialists/VerificationLedger';
 import { GroundingResolver } from './specialists/GroundingResolver';
 import { SpecialistAdminService } from './specialists/admin/SpecialistAdminService';
 import { SpecialistController } from './specialists/admin/Specialist.controller';
+import { SpecialistModelService } from './specialists/admin/SpecialistModelService';
+import { SpecialistModelController } from './specialists/admin/SpecialistModel.controller';
+import { SpecialistBindingService } from './specialists/admin/SpecialistBindingService';
+import { SpecialistBindingController } from './specialists/admin/SpecialistBinding.controller';
 import { MessageDebouncer } from './router/MessageDebouncer';
 import { ReplyMetricsService } from './router/reply-metrics.service';
 import { OpenRouterProvider } from './ai/providers/OpenRouterProvider';
@@ -63,6 +67,8 @@ import { SystemPauseService } from './pause/SystemPause.service';
     IntentController,
     SystemPauseController,
     SpecialistController,
+    SpecialistModelController,
+    SpecialistBindingController,
   ],
   providers: [
     SystemPauseService,
@@ -85,6 +91,8 @@ import { SystemPauseService } from './pause/SystemPause.service';
     VerificationLedger,
     GroundingResolver,
     SpecialistAdminService,
+    SpecialistModelService,
+    SpecialistBindingService,
     MessageDebouncer,
     ReplyMetricsService,
     ToolDefinitionService,
