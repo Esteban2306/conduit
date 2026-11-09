@@ -13,6 +13,16 @@ const PROBE_WINDOW_MS = 30_000;
 const DAY_MS = 86_400_000;
 const MINUTE_MS = 60_000;
 
+export function isPlaceholderKey(stored: string | null | undefined): boolean {
+  if (!stored || stored.length < 20) return true;
+  const upper = stored.toUpperCase();
+  return (
+    upper.includes('_KEY') ||
+    upper.includes('YOUR_') ||
+    stored === 'placeholder'
+  );
+}
+
 export type AiModelOwner = string | { specialistId: string };
 
 export function ownerFilter(
@@ -70,14 +80,8 @@ export class AiModelSelectorService {
 
   async resolveApiKey(model: AiModelConfig): Promise<string> {
     const stored = this.openStoredKey(model);
-    const isPlaceholder =
-      !stored ||
-      stored.length < 20 ||
-      stored.toUpperCase().includes('_KEY') ||
-      stored.toUpperCase().includes('YOUR_') ||
-      stored === 'placeholder';
 
-    if (!isPlaceholder) {
+    if (!isPlaceholderKey(stored)) {
       return stored;
     }
 
