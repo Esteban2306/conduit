@@ -126,6 +126,7 @@ export class SpecialistModelService {
         lastResetAt: new Date(),
         lastMinuteResetAt: new Date(),
       },
+      select: { id: true },
     });
 
     const full = await this.prisma.aiModelConfig.findUniqueOrThrow({
