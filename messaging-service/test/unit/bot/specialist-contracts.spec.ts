@@ -59,6 +59,7 @@ describe('contratos de especialistas', () => {
       key: 'minAmount',
       kind: 'TOOL',
       name: 'consultar_reserva',
+      valuePath: 'data.anticipo.monto',
       ...extra,
     });
 
@@ -92,6 +93,26 @@ describe('contratos de especialistas', () => {
         },
       ],
       ['versión desconocida', { version: 3, sources: [] }],
+      [
+        'sin valuePath',
+        { version: 1, sources: [{ ...source(), valuePath: undefined }] },
+      ],
+      [
+        'valuePath con puntos dobles',
+        { version: 1, sources: [source({ valuePath: 'data..monto' })] },
+      ],
+      [
+        'valuePath que sube de nivel',
+        { version: 1, sources: [source({ valuePath: '../monto' })] },
+      ],
+      [
+        'valuePath que empieza con número',
+        { version: 1, sources: [source({ valuePath: '1data.x' })] },
+      ],
+      [
+        'valuePath demasiado largo',
+        { version: 1, sources: [source({ valuePath: 'a'.repeat(121) })] },
+      ],
     ])('rechaza %s', (_name, input) => {
       expect(contextSourcesDocumentSchema.safeParse(input).success).toBe(false);
     });

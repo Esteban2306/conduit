@@ -330,20 +330,43 @@ describe('SpecialistRuntime', () => {
       });
     });
 
-    it('con reglas configuradas que todavía no se evalúan nunca es VALID', async () => {
+    const gte = (ref: unknown) =>
+      withRules([{ field: 'amount', op: 'gte', ref, onFail: 'INVALID' }]);
+
+    it('una regla con literal se evalúa: cumplida es VALID', async () => {
+      const result = await verdictOf({}, gte({ literal: 100000 }));
+      expect(result).toMatchObject({
+        verdict: 'VALID',
+        reasonCodes: ['RULES_PASSED'],
+      });
+    });
+
+    it('una regla con literal incumplida es INVALID', async () => {
       const result = await verdictOf(
-        {},
-        withRules([
-          {
-            field: 'amount',
-            op: 'gte',
-            ref: 'grounding.minAmount',
-            onFail: 'INVALID',
-          },
-        ]),
+        { amount: 50000 },
+        gte({ literal: 100000 }),
       );
+      expect(result).toMatchObject({
+        verdict: 'INVALID',
+        reasonCodes: ['AMOUNT_GTE_FAILED'],
+      });
+    });
+
+    it('una regla contra contexto todavía no resuelto pide revisión y nunca es VALID', async () => {
+      const result = await verdictOf({}, gte('grounding.minimo'));
       expect(result.verdict).toBe('NEEDS_REVIEW');
-      expect(result.reasonCodes).toEqual(['RULES_NOT_EVALUATED']);
+      expect(result.reasonCodes).toEqual(['GROUNDING_UNAVAILABLE']);
+    });
+
+    it('un documento que no es el esperado es NOT_APPLICABLE', async () => {
+      const w = build({
+        response: extraction({}, { isExpectedDocument: false }),
+      });
+      const outcome = await w.run();
+      expect(outcome.executed && outcome.result).toMatchObject({
+        verdict: 'NOT_APPLICABLE',
+        reasonCodes: ['NOT_EXPECTED_DOCUMENT'],
+      });
     });
 
     it('un monto altísimo o un destinatario sospechoso no cambian el veredicto por sí solos', async () => {
