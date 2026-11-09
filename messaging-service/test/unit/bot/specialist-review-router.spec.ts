@@ -23,8 +23,26 @@ function harness(
   router.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
   router.imageAnalysisService = {
     downloadOriginal: jest.fn(() => Promise.resolve(Buffer.from('img'))),
+    analyzeBuffer: jest.fn(() => Promise.resolve({ status: 'ERROR' as const })),
+    analyzeFromMessage: jest.fn(() =>
+      Promise.resolve({ status: 'ERROR' as const }),
+    ),
   };
+  router.imagePrefetch = { downloadTimeoutMs: () => 10_000 };
+  const bindingMode =
+    outcome instanceof Error
+      ? 'ACTIVE'
+      : ((outcome.mode as string) ?? 'ACTIVE');
   router.specialistRuntime = {
+    findBindings: jest.fn(() =>
+      Promise.resolve([
+        {
+          capability: 'image-analysis',
+          mode: bindingMode === 'SHADOW' ? 'SHADOW' : 'ACTIVE',
+          timeoutMs: 12000,
+        },
+      ]),
+    ),
     run: jest.fn(() =>
       outcome instanceof Error
         ? Promise.reject(outcome)
@@ -36,17 +54,27 @@ function harness(
   };
   router.botEscalation = botEscalation;
   const target = router as unknown as {
-    verifyWithSpecialist: (...args: unknown[]) => Promise<unknown>;
+    buildImageBundle: (job: unknown) => Promise<unknown>;
+    applyImageBundle: (
+      bundle: unknown,
+      ctx: unknown,
+    ) => Promise<{ kind: string; text?: string; prefix?: string | null }>;
   };
-  const verify = (): Promise<unknown> =>
-    target.verifyWithSpecialist(
-      {},
-      'bot-1',
-      'conv-1',
-      'tenant-1',
-      '573001112233',
-      { context: {} },
-    );
+  const verify = async () => {
+    const bundle = await target.buildImageBundle({
+      message: {},
+      botConfigId: 'bot-1',
+      systemPrompt: 'x',
+      conversationId: 'conv-1',
+      tenantId: 'tenant-1',
+      phoneNumber: '573001112233',
+    });
+    return target.applyImageBundle(bundle, {
+      conversationId: 'conv-1',
+      phoneNumber: '573001112233',
+      aiData: { context: {} },
+    });
+  };
   return { verify, botEscalation };
 }
 
@@ -132,7 +160,7 @@ describe('BotRouter: aviso de pendientes de revisión en ACTIVE', () => {
 
   it('si el aviso falla, la conversación sigue su curso', async () => {
     const { verify } = harness(executed('NEEDS_REVIEW'), { alertFails: true });
-    await expect(verify()).resolves.toMatchObject({ kind: 'VERIFIED' });
+    await expect(verify()).resolves.toMatchObject({ kind: 'CONTINUE' });
   });
 
   it('si el aviso lanza de forma síncrona, la conversación sigue su curso', async () => {
@@ -140,16 +168,96 @@ describe('BotRouter: aviso de pendientes de revisión en ACTIVE', () => {
     botEscalation.notifyVerificationReview.mockImplementation(() => {
       throw new Error('servicio sin inicializar');
     });
-    await expect(verify()).resolves.toMatchObject({ kind: 'VERIFIED' });
+    await expect(verify()).resolves.toMatchObject({ kind: 'CONTINUE' });
   });
 
   it('con onFailure BLOCK y ERROR avisa y bloquea', async () => {
     const { verify, botEscalation } = harness(
       executed('ERROR', { onFailure: 'BLOCK' }),
     );
-    const result = (await verify()) as { kind: string; message: string };
-    expect(result.kind).toBe('BLOCK');
-    expect(typeof result.message).toBe('string');
+    const result = await verify();
+    expect(result.kind).toBe('REPLY');
+    expect(typeof result.text).toBe('string');
     expect(botEscalation.notifyVerificationReview).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('BotRouter: recoger el resultado adelantado', () => {
+  const build = (taken: unknown) => {
+    const router = Object.create(BotRouter.prototype) as Record<
+      string,
+      unknown
+    >;
+    router.logger = { log: jest.fn(), warn: jest.fn(), debug: jest.fn() };
+    router.imagePrefetch = {
+      downloadTimeoutMs: () => 10_000,
+      take: jest.fn(() => Promise.resolve(taken)),
+    };
+    const inline = jest.fn(() => Promise.resolve({ kind: 'UNANALYZED' }));
+    router.buildImageBundle = inline;
+    const resolve = (id: string | undefined = 'm1') =>
+      (
+        router as unknown as {
+          resolveImageBundle: (m: unknown, j: unknown) => Promise<unknown>;
+        }
+      ).resolveImageBundle(
+        { key: { id } },
+        { conversationId: 'c1', botConfigId: 'b1', tenantId: 't1' },
+      );
+    return { resolve, inline, router };
+  };
+
+  it('un resultado listo se usa sin repetir el análisis', async () => {
+    const bundle = { kind: 'ACTIVE', outcomes: [] };
+    const { resolve, inline } = build({
+      status: 'READY',
+      value: bundle,
+      waitedMs: 0,
+    });
+    expect(await resolve()).toBe(bundle);
+    expect(inline).not.toHaveBeenCalled();
+  });
+
+  it('un resultado omitido por el equipo activo se analiza al responder', async () => {
+    const { resolve, inline } = build({
+      status: 'READY',
+      value: { kind: 'SKIPPED' },
+      waitedMs: 0,
+    });
+    await resolve();
+    expect(inline).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['MISSING', 'FAILED'])(
+    '%s: el respaldo analiza al responder',
+    async (status) => {
+      const { resolve, inline } = build({ status, waitedMs: 0 });
+      await resolve();
+      expect(inline).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('si no termina a tiempo se sigue sin analizar y no se repite el análisis', async () => {
+    const { resolve, inline } = build({ status: 'TIMEOUT', waitedMs: 43_000 });
+    expect(await resolve()).toEqual({ kind: 'UNANALYZED' });
+    expect(inline).not.toHaveBeenCalled();
+  });
+
+  it('pide el resultado del mensaje y la conversación correctos', async () => {
+    const { resolve, router } = build({
+      status: 'READY',
+      value: { kind: 'UNANALYZED' },
+      waitedMs: 0,
+    });
+    await resolve('WA-9');
+    expect(
+      (router.imagePrefetch as { take: jest.Mock }).take,
+    ).toHaveBeenCalledWith('c1', 'WA-9', expect.any(Number));
+  });
+
+  it('un mensaje sin id va directo al respaldo', async () => {
+    const { resolve, inline } = build({ status: 'MISSING', waitedMs: 0 });
+    await resolve(undefined);
+    expect(inline).toHaveBeenCalledTimes(1);
   });
 });

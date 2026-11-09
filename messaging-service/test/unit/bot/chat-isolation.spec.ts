@@ -15,8 +15,10 @@ jest.mock('@whiskeysockets/baileys', () => ({
 }));
 
 import { EventEmitter } from 'events';
+import { downloadMediaMessage } from '@whiskeysockets/baileys';
 import { BotStatus } from '@prisma/client';
 import { BotRouter } from 'src/bot/router/BotRouter';
+import { ImagePrefetchService } from 'src/bot/router/ImagePrefetch.service';
 import { exposedVariables } from 'src/bot/specialists/facts';
 import { LEGACY_IMAGE_OUTPUT_SCHEMA } from 'src/bot/specialists/backfill/backfill-specialists';
 import { outputSchemaDocumentSchema } from 'src/bot/specialists/contracts';
@@ -332,7 +334,29 @@ function world(
       : Promise.resolve(original),
   );
   let specialistMode: 'OFF' | 'SHADOW' | 'ACTIVE' = 'OFF';
-  const specialistFindMode = jest.fn(() => Promise.resolve(specialistMode));
+  let prefetchEnabled = true;
+  const specialistFindMode = jest.fn<
+    Promise<
+      Array<{
+        capability: string;
+        mode: 'SHADOW' | 'ACTIVE';
+        timeoutMs: number;
+      }>
+    >,
+    [string, string]
+  >(() =>
+    Promise.resolve(
+      specialistMode === 'OFF'
+        ? []
+        : [
+            {
+              capability: 'image-analysis',
+              mode: specialistMode,
+              timeoutMs: 12000,
+            },
+          ],
+    ),
+  );
   const activeOutcome = (
     verdict = 'VALID',
     over: Record<string, unknown> = {},
@@ -431,6 +455,17 @@ function world(
     systemPrompt: 'PROMPT DEL BOT',
     aiModels: [{ id: 'm1' }],
   };
+  const prefetch = new ImagePrefetchService<any>({
+    get: (key: string) =>
+      key === 'imagePrefetch.enabled'
+        ? prefetchEnabled
+        : (
+            {
+              'imagePrefetch.settleMs': 1500,
+              'imagePrefetch.downloadTimeoutMs': 10000,
+            } as Record<string, number>
+          )[key],
+  } as never);
   const router = new BotRouter(
     sessionManager as never,
     {
@@ -520,7 +555,8 @@ function world(
         ),
     } as never,
     { isPaused: later(() => systemPaused) } as never,
-    { findMode: specialistFindMode, run: specialistRun } as never,
+    { findBindings: specialistFindMode, run: specialistRun } as never,
+    prefetch,
   );
   (router as unknown as { logger: object }).logger = {
     debug: jest.fn(),
@@ -645,6 +681,10 @@ function world(
     afterSlimTurn,
     handoffPerform,
     handoffAfter,
+    prefetch,
+    setPrefetch: (value: boolean) => {
+      prefetchEnabled = value;
+    },
     setToolResults: (value: typeof toolResults) => {
       toolResults = value;
     },
@@ -655,12 +695,13 @@ function world(
       names: string[],
       pausing: string[] = [],
       gated: string[] = [],
+      attaching: string[] = [],
     ) => {
       activeTools = names.map((name) => ({
         spec: { name },
         definitionId: `def-${name}`,
         readOnly: !['crear_reserva_whatsapp', 'pasar_a_persona'].includes(name),
-        requiresImageAttachment: false,
+        requiresImageAttachment: attaching.includes(name),
         imageParamName: null,
         maxImageSizeBytes: null,
         injectPhoneParamName: null,
@@ -2053,11 +2094,7 @@ describe('Especialistas en SHADOW dentro del router (fase 3c-4)', () => {
     const w = shadowWorld();
     await runImage(w);
 
-    expect(w.specialistFindMode).toHaveBeenCalledWith(
-      TENANT,
-      BOT,
-      'image-analysis',
-    );
+    expect(w.specialistFindMode).toHaveBeenCalledWith(TENANT, BOT);
     expect(w.specialistRun).toHaveBeenCalledTimes(1);
     const input = w.specialistRun.mock.calls[0][0];
     expect(input).toMatchObject({
@@ -2443,7 +2480,8 @@ describe('Especialistas en ACTIVE dentro del router (fase 4d)', () => {
       });
       await send(w);
 
-      expect(w.imageAnalyze).toHaveBeenCalledTimes(1);
+      expect(w.imageAnalyzeBuffer).toHaveBeenCalledTimes(1);
+      expect(w.imageAnalyze).not.toHaveBeenCalled();
       expect(factsOf(w)['image-analysis']).toBeUndefined();
       expect(w.sends).toHaveLength(1);
     });
@@ -2572,6 +2610,325 @@ describe('Especialistas en ACTIVE dentro del router (fase 4d)', () => {
 
       expect(w.imageAnalyze).toHaveBeenCalledTimes(1);
       expect(w.specialistRun).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe('Camino rápido de la imagen: se analiza al llegar', () => {
+  beforeEach(() => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  const fastWorld = (verdict = 'VALID') => {
+    const w = world();
+    w.setImageAnalysis(true);
+    w.setSpecialistMode('ACTIVE');
+    w.specialistRun.mockResolvedValue(w.activeOutcome(verdict));
+    return w;
+  };
+  const slow = (outcome: unknown, ms: number): Promise<unknown> =>
+    new Promise((resolve) => setTimeout(() => resolve(outcome), ms));
+  const bindings = (...capabilities: string[]) =>
+    capabilities.map((capability) => ({
+      capability,
+      mode: 'ACTIVE' as const,
+      timeoutMs: 12000,
+    }));
+
+  it('el especialista arranca durante la espera del bot, no después', async () => {
+    const w = fastWorld();
+    w.inboundImage(A);
+    await settle(2_000);
+
+    expect(w.specialistRun).toHaveBeenCalledTimes(1);
+    expect(w.sends).toHaveLength(0);
+  });
+
+  it('el retardo de mensajería no cambia: no se responde antes aunque el análisis ya terminó', async () => {
+    const w = fastWorld();
+    w.inboundImage(A);
+    await settle(DELAY_MS - 1_000);
+
+    expect(w.specialistRun).toHaveBeenCalledTimes(1);
+    expect(w.sends).toHaveLength(0);
+
+    await settle(3_000);
+    expect(w.sends).toHaveLength(1);
+  });
+
+  it('un análisis lento se solapa con el retardo: la respuesta sale en tiempo normal', async () => {
+    const w = fastWorld();
+    w.specialistRun.mockImplementation(() => slow(w.activeOutcome(), 5_000));
+    w.inboundImage(A);
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.sends).toHaveLength(1);
+    expect(w.aiCalls[0]).toContain('[imagen verificada por el sistema: VALID');
+  });
+
+  it('si el análisis es más lento que el retardo, se espera y se responde completo', async () => {
+    const w = fastWorld();
+    w.specialistRun.mockImplementation(() => slow(w.activeOutcome(), 12_000));
+    w.inboundImage(A);
+    await settle(DELAY_MS + 2_000);
+    expect(w.sends).toHaveLength(0);
+
+    await settle(8_000);
+    expect(w.sends).toHaveLength(1);
+    expect(w.aiCalls[0]).toContain('[imagen verificada por el sistema: VALID');
+    expect(w.specialistRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('un reintento por "está escribiendo" no vuelve a analizar la imagen', async () => {
+    const w = fastWorld();
+    w.inboundImage(A);
+    await settle(DELAY_MS - 200);
+    w.clientTyping(A);
+    await settle(1_500);
+    expect(w.sends).toHaveLength(0);
+    await settle(60_000);
+
+    expect(w.specialistRun).toHaveBeenCalledTimes(1);
+    expect(w.imageDownload).toHaveBeenCalledTimes(1);
+    expect(w.sends).toHaveLength(1);
+  });
+
+  it('una ráfaga de imágenes solo analiza la última', async () => {
+    const w = fastWorld();
+    w.inboundImage(A, undefined, 'WA-R1');
+    await settle(400);
+    w.inboundImage(A, undefined, 'WA-R2');
+    await settle(400);
+    w.inboundImage(A, undefined, 'WA-R3');
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.specialistRun).toHaveBeenCalledTimes(1);
+    expect(w.imageDownload).toHaveBeenCalledTimes(1);
+    expect(w.sends).toHaveLength(1);
+  });
+
+  it('si la segunda llega con la primera ya analizándose, la respuesta usa la última', async () => {
+    const w = fastWorld();
+    w.specialistRun
+      .mockImplementationOnce(() => slow(w.activeOutcome('INVALID'), 3_000))
+      .mockImplementation(() => Promise.resolve(w.activeOutcome('VALID')));
+    w.inboundImage(A, undefined, 'WA-S1');
+    await settle(2_000);
+    w.inboundImage(A, undefined, 'WA-S2');
+    await settle(DELAY_MS + 4_000);
+
+    expect(w.specialistRun).toHaveBeenCalledTimes(2);
+    expect(w.sends).toHaveLength(1);
+    expect(w.aiCalls[0]).toContain('VALID');
+    expect(w.aiCalls[0]).not.toContain('INVALID');
+  });
+
+  it('con el adelanto apagado, el análisis ocurre al responder como antes', async () => {
+    const w = fastWorld();
+    w.setPrefetch(false);
+    w.inboundImage(A);
+    await settle(DELAY_MS - 1_000);
+    expect(w.specialistRun).not.toHaveBeenCalled();
+
+    await settle(3_000);
+    expect(w.specialistRun).toHaveBeenCalledTimes(1);
+    expect(w.sends).toHaveLength(1);
+  });
+
+  it('si el adelantado falla, el respaldo analiza al responder', async () => {
+    const w = world();
+    w.setImageAnalysis(true);
+    w.imageAnalyze.mockRejectedValueOnce(new Error('descarga caída'));
+    w.inboundImage(A);
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.imageAnalyze).toHaveBeenCalledTimes(2);
+    expect(w.sends).toHaveLength(1);
+  });
+
+  it('con el dueño activo en el chat no se gasta el análisis adelantado', async () => {
+    const w = fastWorld();
+    w.ownerReads(A);
+    w.inboundImage(A);
+    await settle(3_000);
+
+    expect(w.specialistRun).not.toHaveBeenCalled();
+  });
+
+  it('al consumir la imagen con una herramienta se descarta el resultado adelantado', async () => {
+    const w = fastWorld();
+    w.setTools(
+      ['subir_comprobante', 'consultar'],
+      [],
+      ['subir_comprobante'],
+      ['subir_comprobante'],
+    );
+    w.setToolResults({ subir_comprobante: { status: 'SUCCESS' } });
+    w.setToolScript(async (exec) => {
+      await exec({ name: 'subir_comprobante', arguments: {} });
+    });
+    (downloadMediaMessage as jest.Mock).mockResolvedValue(Buffer.from('img'));
+    w.inboundImage(A, undefined, 'WA-C1');
+    await settle(DELAY_MS + 2_000);
+    expect(w.sends).toHaveLength(1);
+
+    const taken = await w.prefetch.take(`conv-${A}`, 'WA-C1', 0);
+    expect(taken.status).toBe('MISSING');
+  });
+
+  it('sin consumir la imagen, el resultado adelantado se conserva para el siguiente turno', async () => {
+    const w = fastWorld();
+    w.inboundImage(A, undefined, 'WA-K1');
+    await settle(DELAY_MS + 2_000);
+    expect(w.sends).toHaveLength(1);
+
+    const taken = await w.prefetch.take(`conv-${A}`, 'WA-K1', 0);
+    expect(taken.status).toBe('READY');
+  });
+
+  describe('varias capacidades', () => {
+    const multiWorld = (statuses: Record<string, string>) => {
+      const w = fastWorld();
+      w.specialistFindMode.mockResolvedValue(
+        bindings('image-analysis', 'landscape-check'),
+      );
+      w.specialistRun.mockImplementation((input) =>
+        slow(
+          w.activeOutcome(statuses[input.capability as string] ?? 'VALID'),
+          3_000,
+        ),
+      );
+      return w;
+    };
+
+    it('corren en paralelo: el tiempo es el de la más lenta, no la suma', async () => {
+      const w = multiWorld({});
+      w.inboundImage(A);
+      await settle(1_700);
+
+      expect(w.specialistRun).toHaveBeenCalledTimes(2);
+      expect(
+        w.specialistRun.mock.calls
+          .map((call) => call[0].capability as string)
+          .sort(),
+      ).toEqual(['image-analysis', 'landscape-check']);
+      const calls = w.specialistRun.mock.calls.map((call) => call[0]);
+      expect(calls[0].prepared).toBe(calls[1].prepared);
+      expect(calls[0].image).toBe(calls[1].image);
+    });
+
+    it('guarda un hecho por capacidad y el prompt lleva una línea por cada una', async () => {
+      const w = multiWorld({});
+      w.inboundImage(A);
+      await settle(DELAY_MS + 2_000);
+
+      const facts = (w.store.conversationOf(A)?.context.facts ?? {}) as Record<
+        string,
+        unknown
+      >;
+      expect(Object.keys(facts).sort()).toEqual([
+        'image-analysis',
+        'landscape-check',
+      ]);
+      expect(w.aiCalls[0]).toContain(
+        '[imagen verificada por el sistema · image-analysis: VALID',
+      );
+      expect(w.aiCalls[0]).toContain(
+        '[imagen verificada por el sistema · landscape-check: VALID',
+      );
+    });
+
+    it('imageVerified: verdadero solo si todas son VALID, falso si alguna es INVALID', async () => {
+      const ok = multiWorld({});
+      ok.inboundImage(A);
+      await settle(DELAY_MS + 2_000);
+      expect(ok.sends[0].imageVerified).toBe(true);
+
+      const bad = multiWorld({ 'landscape-check': 'INVALID' });
+      bad.inboundImage(A);
+      await settle(DELAY_MS + 2_000);
+      expect(bad.sends[0].imageVerified).toBe(false);
+
+      const doubtful = multiWorld({ 'landscape-check': 'NEEDS_REVIEW' });
+      doubtful.inboundImage(A);
+      await settle(DELAY_MS + 2_000);
+      expect(doubtful.sends[0].imageVerified).toBeUndefined();
+    });
+
+    it('un ERROR con BLOCK en una de ellas responde su texto y no llama al modelo', async () => {
+      const w = fastWorld();
+      w.specialistFindMode.mockResolvedValue(
+        bindings('image-analysis', 'landscape-check'),
+      );
+      w.specialistRun.mockImplementation((input) =>
+        Promise.resolve(
+          input.capability === 'landscape-check'
+            ? w.activeOutcome('ERROR', { reasonCodes: ['TIMEOUT'] })
+            : w.activeOutcome('VALID'),
+        ).then((outcome) =>
+          input.capability === 'landscape-check'
+            ? {
+                ...outcome,
+                onFailure: 'BLOCK',
+                blockMessage: 'Revisamos tu foto.',
+              }
+            : outcome,
+        ),
+      );
+      w.inboundImage(A);
+      await settle(DELAY_MS + 2_000);
+
+      expect(w.aiCalls).toHaveLength(0);
+      expect(w.sends.map((send) => send.content)).toEqual([
+        'Revisamos tu foto.',
+      ]);
+    });
+
+    it('si una capacidad lanza, las demás se usan igual', async () => {
+      const w = fastWorld();
+      w.specialistFindMode.mockResolvedValue(
+        bindings('image-analysis', 'landscape-check'),
+      );
+      w.specialistRun.mockImplementation((input) =>
+        input.capability === 'landscape-check'
+          ? Promise.reject(new Error('boom'))
+          : Promise.resolve(w.activeOutcome('VALID')),
+      );
+      w.inboundImage(A);
+      await settle(DELAY_MS + 2_000);
+
+      expect(w.sends).toHaveLength(1);
+      expect(w.aiCalls[0]).toContain(
+        '[imagen verificada por el sistema: VALID',
+      );
+    });
+
+    it('los vínculos en SHADOW no bloquean ni cambian la respuesta', async () => {
+      const w = fastWorld();
+      w.specialistFindMode.mockResolvedValue([
+        ...bindings('image-analysis'),
+        {
+          capability: 'extra-check',
+          mode: 'SHADOW' as const,
+          timeoutMs: 12000,
+        },
+      ]);
+      w.specialistRun.mockImplementation((input) =>
+        input.capability === 'extra-check'
+          ? new Promise(() => undefined)
+          : Promise.resolve(w.activeOutcome('VALID')),
+      );
+      w.inboundImage(A);
+      await settle(DELAY_MS + 2_000);
+
+      expect(w.sends).toHaveLength(1);
+      expect(w.aiCalls[0]).toContain(
+        '[imagen verificada por el sistema: VALID',
+      );
+      expect(w.aiCalls[0]).not.toContain('extra-check');
     });
   });
 });

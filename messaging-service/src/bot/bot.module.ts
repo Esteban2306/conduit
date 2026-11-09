@@ -31,6 +31,7 @@ import { SpecialistMetricsService } from './specialists/admin/SpecialistMetricsS
 import { SpecialistVerificationController } from './specialists/admin/SpecialistVerification.controller';
 import { MessageDebouncer } from './router/MessageDebouncer';
 import { ReplyMetricsService } from './router/reply-metrics.service';
+import { ImagePrefetchService } from './router/ImagePrefetch.service';
 import { OpenRouterProvider } from './ai/providers/OpenRouterProvider';
 import { PromptModule } from './prompt/Prompt.module';
 import { ToolDefinitionService } from './tools/ToolDefinitionService';
@@ -101,6 +102,7 @@ import { SystemPauseService } from './pause/SystemPause.service';
     SpecialistMetricsService,
     MessageDebouncer,
     ReplyMetricsService,
+    ImagePrefetchService,
     ToolDefinitionService,
     ToolExecutorService,
     BotEscalationService,

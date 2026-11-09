@@ -261,4 +261,65 @@ suite('SpecialistRuntime contra la base aislada', () => {
       'OFF',
     );
   });
+  describe('vínculos del bot', () => {
+    const extra: string[] = [];
+    const bind = async (
+      capability: string,
+      mode: 'OFF' | 'SHADOW' | 'ACTIVE',
+      status: 'ACTIVE' | 'INACTIVE' = 'ACTIVE',
+      tenantId = tenantA,
+      botConfigId = botA,
+    ) => {
+      const created = await prisma.specialist.create({
+        data: {
+          tenantId,
+          key: `k-${capability}`,
+          name: capability,
+          capability,
+          status,
+          promptTemplate: 'p',
+          outputSchema: LEGACY_IMAGE_OUTPUT_SCHEMA,
+        },
+      });
+      extra.push(created.id);
+      await prisma.botSpecialistBinding.create({
+        data: {
+          tenantId,
+          botConfigId,
+          capability,
+          specialistId: created.id,
+          mode,
+          timeoutMs: 9000,
+        },
+      });
+    };
+
+    it('lista solo SHADOW y ACTIVE de especialistas activos del bot, ordenados', async () => {
+      await bind('z-active', 'ACTIVE');
+      await bind('m-off', 'OFF');
+      await bind('n-inactive', 'ACTIVE', 'INACTIVE');
+      const botB = (
+        await prisma.botConfig.create({
+          data: { tenantId: tenantB, name: 'botB', systemPrompt: 'x' },
+        })
+      ).id;
+      await bind('o-other-tenant', 'ACTIVE', 'ACTIVE', tenantB, botB);
+
+      const found = await runtime().findBindings(tenantA, botA);
+
+      expect(found).toEqual([
+        { capability: 'payment-proof', mode: 'SHADOW', timeoutMs: 12000 },
+        { capability: 'z-active', mode: 'ACTIVE', timeoutMs: 9000 },
+      ]);
+      expect(await runtime().findBindings(tenantB, botA)).toEqual([]);
+      expect(await runtime().findBindings(tenantB, botB)).toEqual([
+        { capability: 'o-other-tenant', mode: 'ACTIVE', timeoutMs: 9000 },
+      ]);
+      await prisma.botSpecialistBinding.deleteMany({
+        where: { botConfigId: botB },
+      });
+      await prisma.specialist.deleteMany({ where: { tenantId: tenantB } });
+      await prisma.botConfig.delete({ where: { id: botB } });
+    });
+  });
 });

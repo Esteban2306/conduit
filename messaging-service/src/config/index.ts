@@ -37,6 +37,17 @@ export const configValidationSchema = Joi.object({
     .min(1)
     .max(600)
     .default(10),
+  IMAGE_PREFETCH_ENABLED: Joi.boolean().default(true),
+  IMAGE_PREFETCH_SETTLE_MS: Joi.number()
+    .integer()
+    .min(0)
+    .max(10000)
+    .default(1500),
+  IMAGE_DOWNLOAD_TIMEOUT_MS: Joi.number()
+    .integer()
+    .min(1000)
+    .max(60000)
+    .default(10000),
   SPECIALISTS_REVIEW_ALERT_THROTTLE_MINUTES: Joi.number()
     .integer()
     .min(1)
@@ -108,6 +119,11 @@ export interface AppConfig {
   };
   channels: {
     lineAutoAdopt: boolean;
+  };
+  imagePrefetch: {
+    enabled: boolean;
+    settleMs: number;
+    downloadTimeoutMs: number;
   };
   specialists: {
     enabled: boolean;
@@ -184,6 +200,14 @@ export const configFactory = (): AppConfig => ({
   },
   channels: {
     lineAutoAdopt: process.env.LINE_AUTO_ADOPT === 'true',
+  },
+  imagePrefetch: {
+    enabled: process.env.IMAGE_PREFETCH_ENABLED !== 'false',
+    settleMs: parseInt(process.env.IMAGE_PREFETCH_SETTLE_MS ?? '1500', 10),
+    downloadTimeoutMs: parseInt(
+      process.env.IMAGE_DOWNLOAD_TIMEOUT_MS ?? '10000',
+      10,
+    ),
   },
   specialists: {
     enabled: process.env.SPECIALISTS_ENABLED === 'true',

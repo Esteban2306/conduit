@@ -34,6 +34,9 @@ Si devuelve filas, resolverlas antes (la migración falla si hay duplicados).
 | `LINE_AUTO_ADOPT` | `false` | Une automáticamente una conexión nueva con la anterior del mismo número cuando la anterior está en error o desconectada |
 | `QUEUE_DISCONNECT_WAIT_MS` | `21600000` (6 h, tope 20 h) | Cuánto espera un mensaje con la línea desconectada antes de ir a la DLQ |
 | `QUEUE_DISCONNECT_POLL_MS` | `30000` | Cada cuánto revisa si la línea volvió |
+| `IMAGE_PREFETCH_ENABLED` | `true` | Analiza la imagen al llegar, durante la espera del bot, en vez de al responder. `false` vuelve al análisis al responder sin desplegar |
+| `IMAGE_PREFETCH_SETTLE_MS` | `1500` (0 a 10000) | Ventana por conversación antes de arrancar el análisis, para absorber ráfagas y álbumes: solo se analiza la imagen más nueva |
+| `IMAGE_DOWNLOAD_TIMEOUT_MS` | `10000` (1000 a 60000) | Tiempo máximo para descargar la imagen de WhatsApp |
 | `SPECIALISTS_ENABLED` | `false` | Interruptor global de especialistas |
 | `SPECIALISTS_RETENTION_DAYS` | `90` | Retención de `VerificationRecord` |
 | `SPECIALISTS_GROUNDING_TIMEOUT_MS` | `5000` (500 a 15000) | Tiempo máximo para consultar los datos de referencia de las reglas |
@@ -65,6 +68,17 @@ La espera por desconexión **está activa al desplegar** (no depende de una band
 
 Reversión: `SPECIALISTS_ENABLED=false`.
 
+### Camino rápido de la imagen
+
+El análisis de la imagen **empieza cuando llega**, no cuando el bot decide responder. El retardo del bot (`botResponseDelaySeconds`, con su variación) no cambia, ni el "visto", ni los tiempos humanos de escritura, ni los reintentos por "está escribiendo": solo se solapa el análisis con esa espera, de modo que al responder el resultado ya está y el modelo conversacional recibe la información completa, no por partes.
+
+- **Qué hace al llegar:** descarga la imagen una vez (con `IMAGE_DOWNLOAD_TIMEOUT_MS`), la prepara una vez (hash y optimización en paralelo) y corre **todos los vínculos `ACTIVE` del bot en paralelo** con esa misma imagen. Los `SHADOW` corren aparte y nunca bloquean. Si no hay ningún `ACTIVE`, también adelanta el análisis actual.
+- **Ahorro:** cada conversación espera `IMAGE_PREFETCH_SETTLE_MS` antes de gastar nada y solo corre un análisis a la vez; una ráfaga de imágenes analiza solo la última, y si llega otra con una en curso queda en cola solo la más nueva. No se adelanta si el bot, la conversación o el chat tienen al equipo activo (se comprueba otra vez justo antes de gastar).
+- **Al responder:** recoge el resultado. Si aún no termina, espera (acotado por la descarga más el tope de los vínculos) y responde completo. Si el adelantado falló, no existe o se perdió por un reinicio, se analiza en ese momento como antes. El resultado se conserva mientras la imagen siga disponible, así un reintento no analiza dos veces.
+- **Varias capacidades `ACTIVE`:** el prompt lleva una línea por capacidad (`[imagen verificada por el sistema · <capacidad>: …]`; con una sola, el formato de siempre) y cada una guarda su hecho. `imageVerified` es falso si alguna es `INVALID`, verdadero solo si todas son `VALID` y indefinido en otro caso. Un `ERROR` con política `BLOCK` en cualquiera responde el texto de espera de ese vínculo (la primera por nombre de capacidad) y ese turno no llama al modelo.
+- **Avisos de revisión pendiente** salen cuando termina el análisis, no al responder.
+- **Reversión:** `IMAGE_PREFETCH_ENABLED=false`.
+
 ## 4. Datos de referencia para las reglas (grounding)
 
 Las reglas pueden compararse con datos del negocio mediante `ref: "grounding.<clave>"`. Cada clave debe declararse en `contextSources` del especialista:
@@ -80,7 +94,7 @@ Una herramienta puede exigir que el comprobante adjunto esté verificado antes d
 
 | Campo | Significado |
 |---|---|
-| `verificationCapability` | Hoy solo `image-analysis` (la capacidad que el router verifica) |
+| `verificationCapability` | Hoy solo `image-analysis` (el router ya verifica varias capacidades, pero esta lista aún no se abrió) |
 | `acceptedVerdicts` | `VALID` y/o `NEEDS_REVIEW` (nunca `INVALID` ni `ERROR`) |
 | `verificationParamName` | Opcional: campo del cuerpo donde además va el pasaporte. El modelo no lo ve ni puede pisarlo |
 
@@ -241,12 +255,14 @@ Para los modelos de la familia 5.x, la extracción de imágenes se pide con `eff
 
 - Los modelos del relleno son **copias**: rotar la clave de un bot no actualiza la del especialista.
 - Sin reglas, un especialista legible da `VALID`. Las reglas con valores literales ya se evalúan; las que dependen de datos de contexto dan `NEEDS_REVIEW` hasta que se resuelva ese contexto.
-- Hoy el router solo verifica imágenes bajo la capacidad `image-analysis`, por eso las herramientas con puerta solo admiten esa capacidad.
+- El router ya verifica todos los vínculos `ACTIVE` del bot, pero las herramientas con puerta siguen admitiendo solo la capacidad `image-analysis` hasta que esa validación pase a comprobarse contra los vínculos del bot.
 - El hash exacto de la imagen no detecta reenvíos recomprimidos (WhatsApp recomprime); eso lo cubre la huella de variables (`uniqueBy` del especialista), que solo existe si todas sus variables se leyeron y cada texto cumple su `identityMinLength`.
 - La detección de reutilización y el caché solo aplican a vínculos en `ACTIVE`; en `SHADOW` solo se registra.
 - El análisis legado conserva sus defectos (texto positivo no JSON se acepta como válido; el aviso de "alta demanda" no se muestra cuando caen todos los modelos).
 - El proveedor de Anthropic no desactiva el razonamiento: parte de los tokens de salida se gasta en `thinking`.
 - La caché de datos de referencia vive en memoria del proceso; con una sola réplica es correcta, y con varias cada réplica tendría la suya.
+- Cada análisis adelantado gasta tokens aunque después el bot no responda (por ejemplo, si la persona escribe otra cosa o el equipo toma la conversación); la ventana de `IMAGE_PREFETCH_SETTLE_MS` y el "un análisis a la vez" acotan ese gasto, no lo eliminan. Una imagen que llega con otra ya analizándose no cancela la primera: su costo ya se gastó.
+- El adelantado vive en memoria del proceso: tras un reinicio se pierde y se analiza al responder.
 - El límite de dry-run vive en memoria del proceso y se reinicia al reiniciar; con una sola réplica es correcto.
 - El banco de evaluación mide la extracción y las reglas con los datos del banco, pero no el contexto externo (grounding); las reglas que lo necesiten no se pueden evaluar ahí.
 - La ventana de los avisos de revisión vive en memoria del proceso: al reiniciar se pierde y puede repetirse un aviso.

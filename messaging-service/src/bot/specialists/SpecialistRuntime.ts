@@ -56,8 +56,27 @@ export interface SpecialistRunInput {
   conversationId: string;
   capability: string;
   image: Buffer;
+  prepared?: Promise<PreparedImage>;
   legacy?: LegacyImageVerdict | Promise<LegacyImageVerdict | undefined>;
   contactAddress?: string;
+}
+
+export interface PreparedImage {
+  hash: ImageHash;
+  optimized: Buffer;
+}
+
+export function prepareImage(image: Buffer): Promise<PreparedImage> {
+  return Promise.all([
+    hashImage(image),
+    ImageOptimizer.optimizeForExtraction(image),
+  ]).then(([hash, optimized]) => ({ hash, optimized }));
+}
+
+export interface ActiveBindingInfo {
+  capability: string;
+  mode: 'SHADOW' | 'ACTIVE';
+  timeoutMs: number;
 }
 
 export interface DryRunInput {
@@ -136,6 +155,31 @@ export class SpecialistRuntime {
     return this.config.get<boolean>('specialists.enabled') === true;
   }
 
+  async findBindings(
+    tenantId: string,
+    botConfigId: string,
+  ): Promise<ActiveBindingInfo[]> {
+    if (!this.isEnabled()) return [];
+    try {
+      const rows = await this.prisma.botSpecialistBinding.findMany({
+        where: {
+          tenantId,
+          botConfigId,
+          mode: { in: ['SHADOW', 'ACTIVE'] },
+          specialist: { status: 'ACTIVE' },
+        },
+        select: { capability: true, mode: true, timeoutMs: true },
+        orderBy: { capability: 'asc' },
+      });
+      return rows as ActiveBindingInfo[];
+    } catch (error) {
+      this.logger.error(
+        `No se pudieron leer los vínculos del bot: ${this.describe(error)}`,
+      );
+      return [];
+    }
+  }
+
   async findMode(
     tenantId: string,
     botConfigId: string,
@@ -176,7 +220,8 @@ export class SpecialistRuntime {
     }
 
     const startedAt = Date.now();
-    const hash = await hashImage(input.image);
+    const prepared = input.prepared ?? prepareImage(input.image);
+    const { hash } = await prepared;
     const mode = binding.mode;
     const reuseQuery = {
       tenantId: input.tenantId,
@@ -197,7 +242,7 @@ export class SpecialistRuntime {
       }
     }
 
-    const analysis = await this.analyze(binding, input);
+    const analysis = await this.analyze(binding, input, { prepared });
     const fingerprint = variablesFingerprint(analysis.schema, analysis.fields);
 
     let reuse: ReuseFinding['kind'] = 'NONE';
@@ -475,7 +520,10 @@ export class SpecialistRuntime {
   private async analyze(
     binding: ResolvedBinding,
     input: SpecialistRunInput,
-    options: { skipGrounding?: boolean } = {},
+    options: {
+      skipGrounding?: boolean;
+      prepared?: Promise<PreparedImage>;
+    } = {},
   ): Promise<Analysis> {
     const declared = outputSchemaDocumentSchema.safeParse(
       binding.specialist.outputSchema,
@@ -526,7 +574,9 @@ export class SpecialistRuntime {
     try {
       const budget = new TurnBudget(timeoutMs);
       const prepared = await budget.race(
-        ImageOptimizer.optimizeForExtraction(input.image),
+        options.prepared
+          ? options.prepared.then((ready) => ready.optimized)
+          : ImageOptimizer.optimizeForExtraction(input.image),
       );
       const response = await budget.race(
         this.orchestrator.analyzeImageForSpecialist(binding.specialist.id, {

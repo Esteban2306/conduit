@@ -220,6 +220,109 @@ const withRules = (rules: unknown[]) => ({
 });
 
 describe('SpecialistRuntime', () => {
+  describe('vínculos del bot y imagen preparada', () => {
+    const rows = [
+      { capability: 'a-check', mode: 'ACTIVE', timeoutMs: 12000 },
+      { capability: 'b-check', mode: 'SHADOW', timeoutMs: 8000 },
+    ];
+    const withFindMany = (options: Parameters<typeof build>[0] = {}) => {
+      const w = build(options);
+      const findMany = jest.fn(() => Promise.resolve(rows));
+      (
+        w.prisma.botSpecialistBinding as unknown as Record<string, unknown>
+      ).findMany = findMany;
+      return { w, findMany };
+    };
+
+    it('lista los vínculos SHADOW y ACTIVE de especialistas activos, solo del tenant y bot', async () => {
+      const { w, findMany } = withFindMany();
+      expect(await w.runtime.findBindings(TENANT, BOT)).toEqual(rows);
+      expect(findMany).toHaveBeenCalledWith({
+        where: {
+          tenantId: TENANT,
+          botConfigId: BOT,
+          mode: { in: ['SHADOW', 'ACTIVE'] },
+          specialist: { status: 'ACTIVE' },
+        },
+        select: { capability: true, mode: true, timeoutMs: true },
+        orderBy: { capability: 'asc' },
+      });
+    });
+
+    it('con la bandera apagada no consulta y devuelve vacío', async () => {
+      const { w, findMany } = withFindMany({ enabled: false });
+      expect(await w.runtime.findBindings(TENANT, BOT)).toEqual([]);
+      expect(findMany).not.toHaveBeenCalled();
+    });
+
+    it('si la consulta falla devuelve vacío y deja el error en el log', async () => {
+      const w = build();
+      (
+        w.prisma.botSpecialistBinding as unknown as Record<string, unknown>
+      ).findMany = jest.fn(() => Promise.reject(new Error('db caída')));
+      expect(await w.runtime.findBindings(TENANT, BOT)).toEqual([]);
+      expect(w.logger.error).toHaveBeenCalled();
+    });
+
+    it('usa la imagen preparada: el hash y la imagen optimizada no se recalculan', async () => {
+      const w = build({ hashFinding: undefined });
+      const optimized = Buffer.from('imagen-optimizada-compartida');
+      const hash = { hash: 'h'.repeat(64), version: 2 };
+
+      await w.runtime.run({
+        tenantId: TENANT,
+        botConfigId: BOT,
+        conversationId: 'conv-1',
+        capability: CAP,
+        image,
+        prepared: Promise.resolve({ hash, optimized }),
+      });
+
+      const call = w.orchestrator.analyzeImageForSpecialist.mock
+        .calls[0] as unknown as [string, { imageBuffer: Buffer }];
+      expect(call[1].imageBuffer).toBe(optimized);
+      expect(w.saved().subjectHash).toBe(hash.hash);
+      expect(w.saved().hashVersion).toBe(2);
+    });
+
+    it('varias capacidades comparten una sola preparación', async () => {
+      const w = build();
+      const optimized = Buffer.from('compartida');
+      const prepared = Promise.resolve({
+        hash: { hash: 'a'.repeat(64), version: 2 },
+        optimized,
+      });
+      const thenSpy = jest.spyOn(prepared, 'then');
+
+      await Promise.all(
+        ['one', 'two'].map(() =>
+          w.runtime.run({
+            tenantId: TENANT,
+            botConfigId: BOT,
+            conversationId: 'conv-1',
+            capability: CAP,
+            image,
+            prepared,
+          }),
+        ),
+      );
+
+      const buffers = w.orchestrator.analyzeImageForSpecialist.mock.calls.map(
+        (call) =>
+          (call as unknown as [string, { imageBuffer: Buffer }])[1].imageBuffer,
+      );
+      expect(buffers).toEqual([optimized, optimized]);
+      expect(thenSpy).toHaveBeenCalled();
+    });
+
+    it('sin imagen preparada la prepara él mismo, una sola vez por ejecución', async () => {
+      const w = build();
+      await w.run();
+      expect(w.orchestrator.analyzeImageForSpecialist).toHaveBeenCalledTimes(1);
+      expect(w.saved().subjectHash).toHaveLength(64);
+    });
+  });
+
   describe('puertas', () => {
     it('con la bandera apagada no consulta, no llama al modelo y no guarda nada', async () => {
       const w = build({ enabled: false });
