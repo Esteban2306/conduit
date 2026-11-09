@@ -6,7 +6,12 @@ import { BotStatus, ReasoningMode } from '@prisma/client';
 import { EventBusService } from 'src/infra/events/event.service';
 import { EVENT_TYPES } from 'src/infra/events/constants/event.types';
 import { AiOrchestrator } from '../ai/AiOrchestrator';
-import { ImageAnalysisService } from '../ai/ImageAnalysisService';
+import {
+  ImageAnalysisResult,
+  ImageAnalysisService,
+} from '../ai/ImageAnalysisService';
+import { SpecialistRuntime } from '../specialists/SpecialistRuntime';
+import { IMAGE_ANALYSIS_CAPABILITY } from '../specialists/constants';
 import { BaileysSessionManager } from 'src/channels/whatsapp/baileys/BaileysSessionManager';
 import { messageReceiptTracker } from 'src/channels/whatsapp/baileys/MessageReceiptTracker';
 import { MessageDebouncer } from './MessageDebouncer';
@@ -115,6 +120,7 @@ export class BotRouter {
     private readonly intentHandler: IntentHandler,
     private readonly handoffService: HandoffService,
     private readonly systemPause: SystemPauseService,
+    private readonly specialistRuntime: SpecialistRuntime,
   ) {}
 
   async route(
@@ -569,10 +575,11 @@ export class BotRouter {
     let imageVerified: boolean | undefined;
 
     if (hasImage && imageMessage && botConfig.imageAnalysisEnabled) {
-      const analysisResult = await this.imageAnalysisService.analyzeFromMessage(
+      const analysisResult = await this.analyzeImage(
         imageMessage,
-        botConfig.id,
-        botConfig.systemPrompt,
+        botConfig,
+        conversationId,
+        tenantId,
       );
 
       if (analysisResult.status === 'SUCCESS') {
@@ -1172,6 +1179,82 @@ export class BotRouter {
     }
     this.replyMetrics.increment('truncatedCut');
     return { ...result, content: cutAtSentence(result.content) };
+  }
+
+  private async analyzeImage(
+    message: WAMessage,
+    botConfig: { id: string; systemPrompt: string },
+    conversationId: string,
+    tenantId: string,
+  ): Promise<ImageAnalysisResult> {
+    const legacyOnly = () =>
+      this.imageAnalysisService.analyzeFromMessage(
+        message,
+        botConfig.id,
+        botConfig.systemPrompt,
+      );
+
+    const mode = await this.specialistRuntime.findMode(
+      tenantId,
+      botConfig.id,
+      IMAGE_ANALYSIS_CAPABILITY,
+    );
+    if (mode === 'ACTIVE') {
+      this.logger.warn(
+        `El vínculo de especialista del bot ${botConfig.id} está en ACTIVE, que aún no responde por sí solo: se usa el análisis actual.`,
+      );
+    }
+    if (mode !== 'SHADOW') return legacyOnly();
+
+    let original: Buffer;
+    try {
+      original = await this.imageAnalysisService.downloadOriginal(message);
+    } catch {
+      return legacyOnly();
+    }
+
+    const legacy = this.imageAnalysisService.analyzeBuffer(
+      original,
+      botConfig.id,
+    );
+    this.launchSpecialistShadow(
+      tenantId,
+      botConfig.id,
+      conversationId,
+      original,
+      legacy,
+    );
+    return legacy;
+  }
+
+  private launchSpecialistShadow(
+    tenantId: string,
+    botConfigId: string,
+    conversationId: string,
+    image: Buffer,
+    legacy: Promise<ImageAnalysisResult>,
+  ): void {
+    const verdict = legacy.then(
+      (result) =>
+        result.status === 'SUCCESS'
+          ? { valid: result.valid, confidence: result.confidence }
+          : undefined,
+      () => undefined,
+    );
+    void this.specialistRuntime
+      .run({
+        tenantId,
+        botConfigId,
+        conversationId,
+        capability: IMAGE_ANALYSIS_CAPABILITY,
+        image,
+        legacy: verdict,
+      })
+      .catch((error: unknown) => {
+        this.logger.warn(
+          `Especialista en SHADOW falló sin afectar la respuesta: ${maskSecrets(error instanceof Error ? error.message : String(error))}`,
+        );
+      });
   }
 
   private async sendReply(

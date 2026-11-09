@@ -40,7 +40,7 @@ export interface SpecialistRunInput {
   conversationId: string;
   capability: string;
   image: Buffer;
-  legacy?: LegacyImageVerdict;
+  legacy?: LegacyImageVerdict | Promise<LegacyImageVerdict | undefined>;
 }
 
 export type SpecialistSkipReason =
@@ -295,7 +295,10 @@ export class SpecialistRuntime {
           tokens: data.tokens,
           latencyMs: data.latencyMs,
           mode: data.mode,
-          comparison: this.compare(input.legacy, data.result.verdict),
+          comparison: this.compare(
+            await this.settleLegacy(input.legacy),
+            data.result.verdict,
+          ),
           expiresAt: new Date(Date.now() + days * DAY_MS),
         },
         select: { id: true },
@@ -306,6 +309,16 @@ export class SpecialistRuntime {
         `No se pudo guardar el resultado del especialista: ${this.describe(error)}`,
       );
       return null;
+    }
+  }
+
+  private async settleLegacy(
+    legacy: SpecialistRunInput['legacy'],
+  ): Promise<LegacyImageVerdict | undefined> {
+    try {
+      return await legacy;
+    } catch {
+      return undefined;
     }
   }
 
