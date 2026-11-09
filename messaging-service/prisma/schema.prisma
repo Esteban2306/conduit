@@ -743,6 +743,10 @@ model ToolDefinition {
   imageParamName          String? @default("imageBase64")
   maxImageSizeBytes       Int?    @default(8388608)
 
+  verificationCapability  String?
+  acceptedVerdicts        VerificationVerdict[] @default([])
+  verificationParamName   String?
+
   injectPhoneParamName    String?
   /// Si la llamada sale bien, el bot se pausa en esa conversación durante
   /// estos minutos (p. ej. herramienta de "pasar a una persona").
@@ -950,6 +954,9 @@ model VerificationRecord {
   specialistId   String
   capability     String
   subjectHash    String
+  hashVersion    Int      @default(1)
+  fingerprint    String?
+  consumedAt     DateTime?
   verdict        VerificationVerdict
   confidence     Float    @default(0)
   fields         Json     @default("{}")
@@ -966,6 +973,7 @@ model VerificationRecord {
   specialist Specialist @relation(fields: [specialistId, tenantId, capability], references: [id, tenantId, capability], onDelete: Restrict)
 
   @@index([tenantId, subjectHash])
+  @@index([tenantId, fingerprint])
   @@index([tenantId, conversationId, createdAt])
   @@index([specialistId, createdAt])
   @@index([expiresAt])
