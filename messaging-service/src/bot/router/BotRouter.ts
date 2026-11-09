@@ -18,7 +18,12 @@ import {
   IMAGE_ANALYSIS_CAPABILITY,
   SPECIALIST_BLOCK_TEXT,
 } from '../specialists/constants';
-import { FACTS_KEY, buildFact, mergeFacts } from '../specialists/facts';
+import {
+  FACTS_KEY,
+  buildFact,
+  markConsumed,
+  mergeFacts,
+} from '../specialists/facts';
 import { ConversationContext } from '../conversation/interfaces/ConversationContext';
 import { BaileysSessionManager } from 'src/channels/whatsapp/baileys/BaileysSessionManager';
 import { messageReceiptTracker } from 'src/channels/whatsapp/baileys/MessageReceiptTracker';
@@ -816,6 +821,13 @@ export class BotRouter {
 
           if (resolved.requiresImageAttachment && outcome.status === 'SUCCESS')
             imageConsumed = true;
+          if (resolved.verificationCapability && outcome.status === 'SUCCESS') {
+            await this.markFactConsumed(
+              conversationId,
+              resolved.verificationCapability,
+              aiData,
+            );
+          }
           const limited = limitToolData(outcome.responseBody);
           toolTraces.push({
             name: req.name,
@@ -1270,6 +1282,25 @@ export class BotRouter {
       legacy,
     );
     return legacy;
+  }
+
+  private async markFactConsumed(
+    conversationId: string,
+    capability: string,
+    aiData: { context: ConversationContext },
+  ): Promise<void> {
+    const facts = markConsumed(aiData.context[FACTS_KEY], capability);
+    if (!facts) return;
+    aiData.context = { ...aiData.context, [FACTS_KEY]: facts };
+    try {
+      await this.conversationService.updateContext(conversationId, {
+        contextPatch: { [FACTS_KEY]: facts },
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        `No se pudo marcar la verificación como utilizada: ${maskSecrets(error instanceof Error ? error.message : String(error))}`,
+      );
+    }
   }
 
   private async verifyWithSpecialist(

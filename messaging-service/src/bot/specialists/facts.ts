@@ -34,6 +34,7 @@ export const factEntrySchema = z
     at: z.string().datetime(),
     validUntil: z.string().datetime(),
     pendingReview: z.boolean(),
+    consumed: z.boolean().optional(),
   })
   .strict();
 export type FactEntry = z.infer<typeof factEntrySchema>;
@@ -82,6 +83,22 @@ export function mergeFacts(
   return Object.fromEntries(kept.slice(0, MAX_FACTS));
 }
 
+export function markConsumed(
+  raw: unknown,
+  capability: string,
+): Record<string, FactEntry> | null {
+  const entries = validEntries(raw);
+  const target = entries.find(([key]) => key === capability);
+  if (!target) return null;
+  return Object.fromEntries(
+    entries.map(([key, entry]) =>
+      key === capability
+        ? [key, { ...entry, consumed: true, pendingReview: false }]
+        : [key, entry],
+    ),
+  );
+}
+
 export function readFacts(
   raw: unknown,
   now: Date = new Date(),
@@ -113,6 +130,9 @@ export function renderFacts(
         ? `motivos ${entry.reasonCodes.join(', ')}`
         : null,
       entry.summary,
+      entry.consumed
+        ? 'Ya se utilizó en una acción: no se puede reutilizar.'
+        : null,
       entry.pendingReview
         ? 'Pendiente de revisión humana: no lo confirmes ni lo rechaces por tu cuenta.'
         : null,
