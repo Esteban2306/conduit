@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from 'src/shared/prisma.service';
+import { VERDICTS } from '../contracts';
 import { ModelPrice, buildPriceTable, estimateCostUsd } from '../pricing';
 import { parseOrThrow } from './specialist-admin.schemas';
 import {
@@ -17,7 +18,6 @@ const REUSE_CODES = [
   'RESENT_SAME_IMAGE',
   'RESENT_SAME_RECEIPT',
 ] as const;
-const VERDICTS = ['VALID', 'INVALID', 'NEEDS_REVIEW', 'ERROR'] as const;
 
 const count = (value: bigint | number | null | undefined): number =>
   Number(value ?? 0);

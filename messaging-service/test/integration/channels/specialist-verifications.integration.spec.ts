@@ -40,7 +40,13 @@ suite('Consulta de verificaciones contra la base aislada', () => {
       botConfigId: string;
       specialistId: string;
       conversationId: string;
-      verdict: 'VALID' | 'INVALID' | 'NEEDS_REVIEW' | 'ERROR';
+      verdict:
+        | 'VALID'
+        | 'INVALID'
+        | 'NEEDS_REVIEW'
+        | 'UNREADABLE'
+        | 'NOT_APPLICABLE'
+        | 'ERROR';
       mode: 'SHADOW' | 'ACTIVE';
       reasonCodes: string[];
       minute: number;
@@ -210,6 +216,23 @@ suite('Consulta de verificaciones contra la base aislada', () => {
     it('por código de motivo', async () => {
       expect(await idsOf({ reasonCode: 'AMOUNT_UNCLEAR' })).toEqual([
         needsReview,
+      ]);
+    });
+
+    it('por los veredictos UNREADABLE y NOT_APPLICABLE', async () => {
+      const unreadable = await make({
+        verdict: 'UNREADABLE',
+        conversationId: 'conv-filtros',
+        minute: 16,
+      });
+      const notApplicable = await make({
+        verdict: 'NOT_APPLICABLE',
+        conversationId: 'conv-filtros',
+        minute: 17,
+      });
+      expect(await idsOf({ verdict: 'UNREADABLE' })).toEqual([unreadable]);
+      expect(await idsOf({ verdict: 'NOT_APPLICABLE' })).toEqual([
+        notApplicable,
       ]);
     });
 

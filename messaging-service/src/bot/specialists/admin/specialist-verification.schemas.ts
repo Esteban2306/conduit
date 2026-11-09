@@ -3,17 +3,13 @@ import {
   MAX_PROMPT_LENGTH,
   capabilitySchema,
   contextSourcesDocumentSchema,
+  VERDICTS,
   reasonCodeSchema,
   safeText,
   rulesDocumentSchema,
 } from '../contracts';
 
-export const VERDICT_VALUES = [
-  'VALID',
-  'INVALID',
-  'NEEDS_REVIEW',
-  'ERROR',
-] as const;
+export const VERDICT_VALUES = VERDICTS;
 export const MODE_VALUES = ['SHADOW', 'ACTIVE'] as const;
 
 export const DEFAULT_PAGE_SIZE = 25;

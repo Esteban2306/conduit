@@ -155,6 +155,12 @@ describe('tabla de precios', () => {
 describe('consulta de verificaciones: filtros y cursor', () => {
   it('acepta filtros válidos', () => {
     expect(
+      listVerificationsSchema.safeParse({ verdict: 'UNREADABLE' }).success,
+    ).toBe(true);
+    expect(
+      listVerificationsSchema.safeParse({ verdict: 'NOT_APPLICABLE' }).success,
+    ).toBe(true);
+    expect(
       listVerificationsSchema.safeParse({
         verdict: 'NEEDS_REVIEW',
         mode: 'ACTIVE',

@@ -13,7 +13,13 @@ import { createTestPrisma } from '../../helpers/prisma.helper';
 const infra = isolatedInfra();
 const suite = infra ? describe : describe.skip;
 
-type Verdict = 'VALID' | 'INVALID' | 'NEEDS_REVIEW' | 'ERROR';
+type Verdict =
+  | 'VALID'
+  | 'INVALID'
+  | 'NEEDS_REVIEW'
+  | 'UNREADABLE'
+  | 'NOT_APPLICABLE'
+  | 'ERROR';
 
 suite('Métricas de verificaciones contra la base aislada', () => {
   const run = randomUUID().slice(0, 8);
@@ -25,6 +31,7 @@ suite('Métricas de verificaciones contra la base aislada', () => {
   let botA: string;
   let specA: string;
   let specA2: string;
+  let specA3: string;
   let botB: string;
   let specB: string;
 
@@ -99,6 +106,7 @@ suite('Métricas de verificaciones contra la base aislada', () => {
         .then((s) => s.id);
     specA = await spec(tenantA, 'uno');
     specA2 = await spec(tenantA, 'dos');
+    specA3 = await spec(tenantA, 'tres');
     specB = await spec(tenantB, 'uno');
     service = new SpecialistMetricsService(prisma as never, config as never);
 
@@ -157,6 +165,10 @@ suite('Métricas de verificaciones contra la base aislada', () => {
       reasonCodes: ['B_CODE'],
     });
     await make({ specialistId: specA2, verdict: 'INVALID' });
+    await make({ specialistId: specA3, verdict: 'UNREADABLE' });
+    await make({ specialistId: specA3, verdict: 'UNREADABLE' });
+    await make({ specialistId: specA3, verdict: 'NOT_APPLICABLE' });
+    await make({ specialistId: specA3, verdict: 'VALID' });
   });
 
   afterAll(async () => {
@@ -182,6 +194,19 @@ suite('Métricas de verificaciones contra la base aislada', () => {
     expect(out.verdicts.INVALID.count).toBe(2);
     expect(out.verdicts.NEEDS_REVIEW.count).toBe(1);
     expect(out.verdicts.ERROR.count).toBe(2);
+  });
+
+  it('cuenta los seis veredictos y el total los suma todos', async () => {
+    const out = await service.summary(tenantA, { specialistId: specA3 });
+    expect(out.total).toBe(4);
+    expect(out.verdicts.UNREADABLE).toEqual({ count: 2, rate: 0.5 });
+    expect(out.verdicts.NOT_APPLICABLE).toEqual({ count: 1, rate: 0.25 });
+    expect(out.verdicts.VALID.count).toBe(1);
+    const sum = Object.values(out.verdicts).reduce(
+      (acc, v) => acc + v.count,
+      0,
+    );
+    expect(sum).toBe(out.total);
   });
 
   it('latencia p50 y p95 solo sobre llamadas al modelo', async () => {
