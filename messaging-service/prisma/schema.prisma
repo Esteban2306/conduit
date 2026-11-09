@@ -278,7 +278,8 @@ model Message {
 }
 model AiModelConfig {
   id          String @id @default(uuid())
-  botConfigId String
+  botConfigId String?
+  specialistId String?
   
   provider  AiProvider
   model     String   
@@ -310,10 +311,11 @@ model AiModelConfig {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   
-  botConfig BotConfig @relation(fields: [botConfigId], references: [id])
+  botConfig BotConfig? @relation(fields: [botConfigId], references: [id], onDelete: Restrict)
   
   @@index([botConfigId, role, priority])
   @@index([botConfigId, isActive])
+  @@index([specialistId, role, priority])
 }
 model BotConfig {
   id          String    @id @default(uuid())
