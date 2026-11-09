@@ -20,6 +20,7 @@
     "test:coverage": "jest --coverage",
     "test:watch": "jest --watch",
     "specialists:backfill": "node dist/src/bot/specialists/backfill/run.js",
+    "specialists:eval": "node dist/src/bot/specialists/evaluation/run.js",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "bench:compare": "TS_NODE_PROJECT=test/bench/tsconfig.json TS_NODE_TRANSPILE_ONLY=true ts-node -r tsconfig-paths/register test/bench/compare-runs.ts",

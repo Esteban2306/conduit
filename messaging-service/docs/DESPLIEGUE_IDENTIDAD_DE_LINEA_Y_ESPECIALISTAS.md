@@ -178,6 +178,34 @@ Cuando un vínculo en `ACTIVE` produce `NEEDS_REVIEW` o `ERROR` (incluidos los c
 
 `POST /verifications/:id/review` (propietario o administrador) registra la decisión de una persona sobre un resultado `NEEDS_REVIEW` o `ERROR`: `{"decision": "APPROVED" | "REJECTED", "note": "..."}`. Guarda `reviewedAt`, `reviewedBy` (el usuario del token), `reviewDecision` y `reviewNote`, y nada más. **Es solo constancia de auditoría**: no cambia el veredicto, no consume ni habilita nada, y la puerta de las herramientas no lee esos campos (hay una prueba que lo garantiza). Una verificación se revisa una sola vez (409 `ALREADY_REVIEWED`; dos peticiones simultáneas resuelven con una sola ganadora) y solo si es `NEEDS_REVIEW` o `ERROR` (409 `NOT_REVIEWABLE`). Las revisadas salen de `?pendingReview=true`. Para que una imagen dudosa llegue a una herramienta estricta, la clienta debe reenviarla y obtener un `VALID`, o la herramienta debe aceptar `NEEDS_REVIEW` de forma explícita.
 
+### Banco de evaluación (línea de comandos)
+
+Sirve para medir un especialista (o un cambio de prompt o reglas) contra casos reales antes de pasarlo a `ACTIVE`, y para comparar dos versiones. Las imágenes viven en una carpeta tuya; **no se guardan en la base ni en los resultados** (solo su huella SHA-256).
+
+Carpeta del banco: por cada `caso.jpg|png|webp` (máximo 5 MB, hasta 200 casos) un `caso.expected.json`:
+
+```json
+{ "verdict": "VALID", "fields": { "amount": 150000, "reference": "TRX-48210377" } }
+```
+
+`verdict` es uno de `VALID`, `INVALID`, `NEEDS_REVIEW`, `UNREADABLE`, `NOT_APPLICABLE`, `ERROR`. `fields` es opcional y solo se revisan los campos que listes (`amount`, `currency`, `date`, `reference`, `recipient`, `legibility`); los textos se comparan sin importar mayúsculas ni espacios repetidos. Un banco con problemas (imagen sin esperado, JSON inválido, nombres repetidos, imagen ilegible) se rechaza completo antes de gastar nada.
+
+Se usa desde el código compilado (`npm run build` primero), con las variables de entorno del servicio (`DATABASE_URL`, `INTEGRATION_ENCRYPTION_KEY`):
+
+```bash
+npm run specialists:eval -- run --dir=./banco --tenant=<tenantId> --specialist=<clave|id>
+```
+
+Sin `--yes` solo valida el banco y el especialista y **no llama al modelo**. Con `--yes` ejecuta la evaluación y **gasta tokens reales** del modelo propio del especialista (exige al menos un modelo activo de análisis de imágenes). La corrida se detiene al alcanzar `--max-cost-usd` (0.5 por defecto) o `--max-tokens` (300000); los casos restantes quedan como omitidos y el informe lo advierte. `--draft=<archivo.json>` prueba un borrador de `promptTemplate`, `rules` y/o `contextSources` sin guardarlo; `--out` fija el archivo de resultado (por defecto `eval-<clave>-<fecha>.json`, permisos 0600).
+
+El informe trae acierto de veredicto, **falsos válidos** (esperado distinto de `VALID` y salió `VALID`, el error caro), falsos rechazos, matriz de confusión, acierto por campo, latencia p50/p95, tokens y costo estimado, y la lista de casos con diferencias. Una evaluación usa `dryRun`: no escribe resultados ni toca el historial de reutilización, y no resuelve datos de contexto (una regla que dependa de ellos no puede dar `VALID`). Los contadores de uso del modelo (`tokensUsedToday`) sí avanzan, porque el gasto es real.
+
+```bash
+npm run specialists:eval -- compare --a=antes.json --b=despues.json [--json] [--fail-on-regression]
+```
+
+Compara solo los casos comunes con la misma imagen (avisa de los demás), lista regresiones, mejoras y cambios que siguen mal, y lanza una **alerta de seguridad** si B deja pasar más falsos válidos. Con `--fail-on-regression` el comando termina con código 2 si B es peor o no mejora (más falsos válidos, menor acierto, o más regresiones que mejoras).
+
 ## 7. Endurecimiento de la salida del modelo
 
 Todo texto que el modelo lee de la imagen (referencia, destinatario) y el resumen del veredicto se rechazan si contienen saltos de línea, caracteres de control, separadores de línea o párrafo Unicode, marcas de dirección (incluida la inversión `U+202E`), caracteres de ancho cero o el BOM. Las fechas se validan contra el calendario real (`2026-02-31` es inválida). Una respuesta con claves `__proto__`, `constructor` o `prototype` es `ERROR`. No existe un camino en el que una respuesta del modelo produzca `VALID` por texto libre, por un campo de veredicto propio o por texto fuera del JSON.
@@ -195,5 +223,6 @@ Para los modelos de la familia 5.x, la extracción de imágenes se pide con `eff
 - El proveedor de Anthropic no desactiva el razonamiento: parte de los tokens de salida se gasta en `thinking`.
 - La caché de datos de referencia vive en memoria del proceso; con una sola réplica es correcta, y con varias cada réplica tendría la suya.
 - El límite de dry-run vive en memoria del proceso y se reinicia al reiniciar; con una sola réplica es correcto.
+- El banco de evaluación mide la extracción y las reglas con los datos del banco, pero no el contexto externo (grounding); las reglas que lo necesiten no se pueden evaluar ahí.
 - La ventana de los avisos de revisión vive en memoria del proceso: al reiniciar se pierde y puede repetirse un aviso.
 - Conduit corre en una sola réplica; no escalar horizontalmente.
