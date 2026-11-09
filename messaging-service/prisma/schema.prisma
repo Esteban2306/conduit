@@ -142,6 +142,7 @@ model Tenant {
   botContig        BotConfig[]
   specialists      Specialist[]
   specialistBindings BotSpecialistBinding[]
+  verificationRecords VerificationRecord[]
   whatsappConnections WhatsAppConnection[]
 }
 
@@ -904,6 +905,7 @@ model Specialist {
   tenant Tenant @relation(fields: [tenantId], references: [id])
   models AiModelConfig[]
   bindings BotSpecialistBinding[]
+  verificationRecords VerificationRecord[]
 
   @@unique([tenantId, key])
   @@unique([id, tenantId, capability])
@@ -929,4 +931,42 @@ model BotSpecialistBinding {
   @@unique([botConfigId, capability])
   @@index([specialistId])
   @@index([tenantId])
+}
+
+enum VerificationVerdict {
+  VALID
+  INVALID
+  NEEDS_REVIEW
+  UNREADABLE
+  NOT_APPLICABLE
+  ERROR
+}
+
+model VerificationRecord {
+  id             String   @id @default(uuid())
+  tenantId       String
+  conversationId String
+  botConfigId    String
+  specialistId   String
+  capability     String
+  subjectHash    String
+  verdict        VerificationVerdict
+  confidence     Float    @default(0)
+  fields         Json     @default("{}")
+  reasonCodes    String[]
+  modelUsed      String?
+  tokens         Int      @default(0)
+  latencyMs      Int      @default(0)
+  mode           SpecialistBindingMode
+  comparison     Json?
+  createdAt      DateTime @default(now())
+  expiresAt      DateTime
+
+  tenant     Tenant     @relation(fields: [tenantId], references: [id])
+  specialist Specialist @relation(fields: [specialistId, tenantId, capability], references: [id, tenantId, capability], onDelete: Restrict)
+
+  @@index([tenantId, subjectHash])
+  @@index([tenantId, conversationId, createdAt])
+  @@index([specialistId, createdAt])
+  @@index([expiresAt])
 }
