@@ -12,6 +12,7 @@ Resume lo que añade la rama `feat/line-identity-and-queue-resilience` y el orde
 | `20261108210000_ai_model_owner` | `AiModelConfig` puede pertenecer a un especialista (dueño único con CHECK) |
 | `20261108220000_specialists` | `Specialist`, `BotSpecialistBinding` y claves compuestas entre tenants |
 | `20261108230000_verification_record` | `VerificationRecord` (veredictos, sin bytes de imagen) |
+| `20261109100000_attachment_verification` | Huella de campos, versión de hash y marca de consumo en `VerificationRecord`; campos de verificación y CHECK en `ToolDefinition` |
 
 Todas son aditivas. Antes de `stable_keys` en cada base, buscar números duplicados por tenant:
 
@@ -33,6 +34,7 @@ Si devuelve filas, resolverlas antes (la migración falla si hay duplicados).
 | `QUEUE_DISCONNECT_POLL_MS` | `30000` | Cada cuánto revisa si la línea volvió |
 | `SPECIALISTS_ENABLED` | `false` | Interruptor global de especialistas |
 | `SPECIALISTS_RETENTION_DAYS` | `90` | Retención de `VerificationRecord` |
+| `SPECIALISTS_PASSPORT_TTL_MINUTES` | `60` | Vigencia de un veredicto para habilitar una herramienta y para reutilizarlo desde el caché |
 
 La espera por desconexión **está activa al desplegar** (no depende de una bandera): un mensaje con la línea caída espera sin gastar intentos.
 
@@ -54,7 +56,9 @@ Reversión: `SPECIALISTS_ENABLED=false`.
 ## 4. Límites conocidos
 
 - Los modelos del relleno son **copias**: rotar la clave de un bot no actualiza la del especialista.
-- Sin reglas, un especialista legible da `VALID`; con reglas da `NEEDS_REVIEW` hasta que exista el evaluador de reglas.
+- Sin reglas, un especialista legible da `VALID`. Las reglas con valores literales ya se evalúan; las que dependen de datos de contexto dan `NEEDS_REVIEW` hasta que se resuelva ese contexto.
+- El hash exacto de la imagen no detecta reenvíos recomprimidos (WhatsApp recomprime); eso lo cubre la huella de campos (referencia, monto, fecha, moneda), que exige referencia de al menos 5 caracteres.
+- La detección de reutilización y el caché solo aplican a vínculos en `ACTIVE`; en `SHADOW` solo se registra.
 - El análisis legado conserva sus defectos (texto positivo no JSON se acepta como válido; el aviso de "alta demanda" no se muestra cuando caen todos los modelos).
 - El proveedor de Anthropic no desactiva el razonamiento: parte de los tokens de salida se gasta en `thinking`.
 - Conduit corre en una sola réplica; no escalar horizontalmente.
