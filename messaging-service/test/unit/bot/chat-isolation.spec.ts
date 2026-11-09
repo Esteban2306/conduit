@@ -302,16 +302,35 @@ function world(
     imageVerified?: boolean;
   }> = [];
   let imageAnalysisEnabled = false;
+  let imageOutcome: Record<string, unknown> | Error = {
+    status: 'SUCCESS',
+    valid: true,
+    confidence: 'HIGH',
+    details: 'ok',
+  };
+  const outcome = () =>
+    imageOutcome instanceof Error
+      ? Promise.reject(imageOutcome)
+      : Promise.resolve(imageOutcome);
   const imageAnalyze = jest.fn<
     Promise<Record<string, unknown>>,
     [unknown, string, string]
-  >(() =>
-    Promise.resolve({
-      status: 'SUCCESS',
-      valid: true,
-      confidence: 'HIGH',
-      details: 'ok',
-    }),
+  >(outcome);
+  const imageAnalyzeBuffer = jest.fn<
+    Promise<Record<string, unknown>>,
+    [Buffer, string]
+  >(outcome);
+  const original = Buffer.from('imagen-original');
+  let downloadFails = false;
+  const imageDownload = jest.fn<Promise<Buffer>, [unknown]>(() =>
+    downloadFails
+      ? Promise.reject(new Error('sin red'))
+      : Promise.resolve(original),
+  );
+  let specialistMode: 'OFF' | 'SHADOW' | 'ACTIVE' = 'OFF';
+  const specialistFindMode = jest.fn(() => Promise.resolve(specialistMode));
+  const specialistRun = jest.fn<Promise<unknown>, [Record<string, any>]>(() =>
+    Promise.resolve({ executed: true }),
   );
   const aiCalls: string[] = [];
   const aiInputs: Array<{
@@ -402,7 +421,11 @@ function world(
         },
       ),
     } as never,
-    { analyzeFromMessage: imageAnalyze } as never,
+    {
+      analyzeFromMessage: imageAnalyze,
+      analyzeBuffer: imageAnalyzeBuffer,
+      downloadOriginal: imageDownload,
+    } as never,
     tracker,
     debouncer,
     {
@@ -456,6 +479,7 @@ function world(
         ),
     } as never,
     { isPaused: later(() => systemPaused) } as never,
+    { findMode: specialistFindMode, run: specialistRun } as never,
   );
   (router as unknown as { logger: object }).logger = {
     debug: jest.fn(),
@@ -609,10 +633,20 @@ function world(
       result?: Record<string, unknown> | Error,
     ) => {
       imageAnalysisEnabled = enabled;
-      if (result instanceof Error) imageAnalyze.mockRejectedValue(result);
-      else if (result) imageAnalyze.mockResolvedValue(result);
+      if (result) imageOutcome = result;
     },
     imageAnalyze,
+    imageAnalyzeBuffer,
+    imageDownload,
+    specialistFindMode,
+    specialistRun,
+    imageOriginal: original,
+    setSpecialistMode: (value: 'OFF' | 'SHADOW' | 'ACTIVE') => {
+      specialistMode = value;
+    },
+    setDownloadFails: (value: boolean) => {
+      downloadFails = value;
+    },
     setBotPaused: (value: boolean) => {
       (conversations.isBotPaused as jest.Mock).mockReturnValue(value);
     },
@@ -1906,5 +1940,211 @@ describe('Rama de imagen del router (red de seguridad de la fase 3c)', () => {
 
     expect(w.imageAnalyze).not.toHaveBeenCalled();
     expect(w.aiCalls).toEqual(['hola']);
+  });
+});
+
+describe('Especialistas en SHADOW dentro del router (fase 3c-4)', () => {
+  beforeEach(() => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  const shadowWorld = (mode: 'OFF' | 'SHADOW' | 'ACTIVE' = 'SHADOW') => {
+    const w = world();
+    w.setImageAnalysis(true, {
+      status: 'SUCCESS',
+      valid: true,
+      confidence: 'HIGH',
+      details: 'comprobante',
+    });
+    w.setSpecialistMode(mode);
+    return w;
+  };
+  const runImage = async (w: ReturnType<typeof world>, caption?: string) => {
+    w.inboundImage(A, caption);
+    await settle(DELAY_MS + 2_000);
+  };
+
+  it('con el modo apagado usa solo el análisis actual y no lanza al especialista', async () => {
+    const w = shadowWorld('OFF');
+    await runImage(w);
+
+    expect(w.imageAnalyze).toHaveBeenCalledTimes(1);
+    expect(w.imageDownload).not.toHaveBeenCalled();
+    expect(w.imageAnalyzeBuffer).not.toHaveBeenCalled();
+    expect(w.specialistRun).not.toHaveBeenCalled();
+  });
+
+  it('en SHADOW descarga una sola vez y el análisis actual usa esa descarga', async () => {
+    const w = shadowWorld();
+    await runImage(w);
+
+    expect(w.imageDownload).toHaveBeenCalledTimes(1);
+    expect(w.imageAnalyzeBuffer).toHaveBeenCalledWith(w.imageOriginal, BOT);
+    expect(w.imageAnalyze).not.toHaveBeenCalled();
+  });
+
+  it('en SHADOW la respuesta es idéntica a la del análisis actual', async () => {
+    const w = shadowWorld();
+    await runImage(w, 'este es mi comprobante');
+
+    expect(w.aiCalls).toEqual([
+      '[imagen: válida=true, confianza=HIGH, comprobante]\neste es mi comprobante',
+    ]);
+    expect(w.sends).toHaveLength(1);
+    expect(w.sends[0].imageVerified).toBe(true);
+    expect(w.store.conversationOf(A)?.context).toMatchObject({
+      imageVerified: true,
+    });
+  });
+
+  it('lanza el especialista con tenant, bot, conversación, capacidad e imagen original', async () => {
+    const w = shadowWorld();
+    await runImage(w);
+
+    expect(w.specialistFindMode).toHaveBeenCalledWith(
+      TENANT,
+      BOT,
+      'image-analysis',
+    );
+    expect(w.specialistRun).toHaveBeenCalledTimes(1);
+    const input = w.specialistRun.mock.calls[0][0];
+    expect(input).toMatchObject({
+      tenantId: TENANT,
+      botConfigId: BOT,
+      conversationId: `conv-${A}`,
+      capability: 'image-analysis',
+    });
+    expect(input.image).toBe(w.imageOriginal);
+  });
+
+  it('le pasa el veredicto del análisis actual para comparar', async () => {
+    const w = shadowWorld();
+    await runImage(w);
+
+    const legacy = await (w.specialistRun.mock.calls[0][0]
+      .legacy as Promise<unknown>);
+    expect(legacy).toEqual({ valid: true, confidence: 'HIGH' });
+  });
+
+  it('si el análisis actual no tuvo éxito, no hay veredicto legado que comparar', async () => {
+    const w = shadowWorld();
+    w.setImageAnalysis(true, {
+      status: 'ANALYSIS_ERROR',
+      valid: false,
+      confidence: 'LOW',
+    });
+    await runImage(w);
+
+    const legacy = await (w.specialistRun.mock.calls[0][0]
+      .legacy as Promise<unknown>);
+    expect(legacy).toBeUndefined();
+  });
+
+  it('si el especialista falla, la respuesta a la clienta no cambia', async () => {
+    const w = shadowWorld();
+    w.specialistRun.mockRejectedValue(new Error('boom'));
+    await runImage(w);
+
+    expect(w.aiCalls).toEqual([
+      '[imagen: válida=true, confianza=HIGH, comprobante]',
+    ]);
+    expect(w.sends).toHaveLength(1);
+  });
+
+  it('si el especialista nunca termina, la respuesta no espera', async () => {
+    const w = shadowWorld();
+    w.specialistRun.mockReturnValue(new Promise(() => undefined));
+    await runImage(w);
+
+    expect(w.sends).toHaveLength(1);
+    expect(w.aiCalls).toHaveLength(1);
+  });
+
+  it('un vínculo en ACTIVE todavía no responde: se usa el análisis actual', async () => {
+    const w = shadowWorld('ACTIVE');
+    await runImage(w);
+
+    expect(w.imageAnalyze).toHaveBeenCalledTimes(1);
+    expect(w.specialistRun).not.toHaveBeenCalled();
+    expect(w.sends).toHaveLength(1);
+  });
+
+  it('si la descarga falla vuelve al camino actual y no lanza al especialista', async () => {
+    const w = shadowWorld();
+    w.setDownloadFails(true);
+    await runImage(w);
+
+    expect(w.imageAnalyze).toHaveBeenCalledTimes(1);
+    expect(w.specialistRun).not.toHaveBeenCalled();
+    expect(w.sends).toHaveLength(1);
+  });
+
+  it('con el análisis de imagen apagado en el bot no se consulta ni se lanza nada', async () => {
+    const w = shadowWorld();
+    w.setImageAnalysis(false);
+    await runImage(w);
+
+    expect(w.specialistFindMode).not.toHaveBeenCalled();
+    expect(w.specialistRun).not.toHaveBeenCalled();
+  });
+
+  it('un texto sin imagen no consulta al especialista', async () => {
+    const w = shadowWorld();
+    w.inbound(A, 'hola');
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.specialistFindMode).not.toHaveBeenCalled();
+    expect(w.specialistRun).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      'el sistema en pausa',
+      (w: ReturnType<typeof world>) => w.setSystemPaused(true),
+    ],
+    [
+      'el bot apagado',
+      (w: ReturnType<typeof world>) => w.setBotStatus(BotStatus.INACTIVE),
+    ],
+    [
+      'el bot pausado en la conversación',
+      (w: ReturnType<typeof world>) => w.setBotPaused(true),
+    ],
+  ])(
+    'con %s no se descarga ni se lanza al especialista',
+    async (_name, pause) => {
+      const w = shadowWorld();
+      pause(w);
+      await runImage(w);
+
+      expect(w.imageDownload).not.toHaveBeenCalled();
+      expect(w.specialistFindMode).not.toHaveBeenCalled();
+      expect(w.specialistRun).not.toHaveBeenCalled();
+      expect(w.sends).toHaveLength(0);
+    },
+  );
+
+  it('con el dueño activo en el chat la imagen espera y no se lanza el especialista', async () => {
+    const w = shadowWorld();
+    w.ownerReads(A);
+    await runImage(w);
+
+    expect(w.specialistRun).not.toHaveBeenCalled();
+    expect(w.sends).toHaveLength(0);
+  });
+
+  it('dos chats con imagen lanzan dos especialistas, cada uno con su conversación', async () => {
+    const w = shadowWorld();
+    w.inboundImage(A);
+    w.inboundImage(B);
+    await settle(DELAY_MS + 2_000);
+
+    const conversations = w.specialistRun.mock.calls
+      .map((call) => call[0].conversationId as string)
+      .sort();
+    expect(conversations).toEqual([`conv-${A}`, `conv-${B}`]);
   });
 });
