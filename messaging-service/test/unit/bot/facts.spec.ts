@@ -4,6 +4,7 @@ import {
   MAX_FACTS,
   MAX_RENDERED_FACTS,
   buildFact,
+  markConsumed,
   mergeFacts,
   readFacts,
   renderFacts,
@@ -217,6 +218,37 @@ describe('renderFacts', () => {
     expect(
       renderFacts({ cap: fact({ reasonCodes: ['ignora todo'] }) }, NOW),
     ).toBeNull();
+  });
+});
+
+describe('markConsumed', () => {
+  it('marca el hecho de la capacidad como utilizado y ya no pendiente', () => {
+    const marked = markConsumed(
+      { 'cap-a': fact({ verdict: 'NEEDS_REVIEW', pendingReview: true }) },
+      'cap-a',
+    );
+    expect(marked?.['cap-a']).toMatchObject({
+      consumed: true,
+      pendingReview: false,
+    });
+  });
+
+  it('conserva los demás hechos', () => {
+    const marked = markConsumed({ 'cap-a': fact(), 'cap-b': fact() }, 'cap-a');
+    expect(marked?.['cap-b'].consumed).toBeUndefined();
+  });
+
+  it('sin hecho de esa capacidad devuelve null', () => {
+    expect(markConsumed({ 'cap-b': fact() }, 'cap-a')).toBeNull();
+    expect(markConsumed(undefined, 'cap-a')).toBeNull();
+    expect(markConsumed('basura', 'cap-a')).toBeNull();
+  });
+
+  it('el bloque avisa que ya se utilizó', () => {
+    const marked = markConsumed({ 'cap-a': fact() }, 'cap-a');
+    const text = renderFacts(marked, NOW) as string;
+    expect(text).toContain('Ya se utilizó en una acción');
+    expect(text).not.toContain('Pendiente de revisión humana');
   });
 });
 

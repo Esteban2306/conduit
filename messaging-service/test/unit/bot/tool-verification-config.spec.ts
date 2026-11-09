@@ -1,0 +1,257 @@
+import { BadRequestException } from '@nestjs/common';
+import { plainToInstance } from 'class-transformer';
+import { validate } from 'class-validator';
+import { CreateToolDefinitionDto } from 'src/bot/tools/dto/create-tool-definition.dto';
+import { ToolDefinitionService } from 'src/bot/tools/ToolDefinitionService';
+
+const base = {
+  name: 'subir_comprobante',
+  description: 'Sube el comprobante',
+  parametersSchema: { type: 'object', properties: {} },
+  endpointUrl: 'https://backend.test/subir',
+  httpMethod: 'POST',
+  authHeaderName: 'X-Api-Key',
+  authSecret: 'secreto-largo-de-prueba',
+  requiresImageAttachment: true,
+  imageParamName: 'imageBase64',
+};
+
+const gated = {
+  ...base,
+  verificationCapability: 'image-analysis',
+  acceptedVerdicts: ['VALID'],
+};
+
+const errorsOf = async (input: Record<string, unknown>) =>
+  (await validate(plainToInstance(CreateToolDefinitionDto, input))).map(
+    (e) => e.property,
+  );
+
+function build(existing: Record<string, unknown> | null = null) {
+  const prisma = {
+    toolDefinition: {
+      create: jest.fn(({ data }: { data: Record<string, unknown> }) =>
+        Promise.resolve({ id: 't1', ...data }),
+      ),
+      findFirst: jest.fn().mockResolvedValue(existing),
+      update: jest.fn(({ data }: { data: Record<string, unknown> }) =>
+        Promise.resolve({ id: 't1', ...data }),
+      ),
+      findMany: jest.fn().mockResolvedValue([]),
+    },
+  };
+  const service = new ToolDefinitionService(
+    prisma as never,
+    { findOne: jest.fn().mockResolvedValue({ id: 'bot' }) } as never,
+    { encrypt: (value: string) => `enc:${value}` } as never,
+  );
+  return { service, prisma };
+}
+
+describe('validación de los campos de verificación (DTO)', () => {
+  it('acepta una configuración válida', async () => {
+    expect(await errorsOf(gated)).toEqual([]);
+  });
+
+  it('las herramientas normales no necesitan nada de esto', async () => {
+    expect(await errorsOf(base)).toEqual([]);
+  });
+
+  it('solo se admiten las capacidades que el router verifica', async () => {
+    expect(
+      await errorsOf({ ...gated, verificationCapability: 'payment-proof' }),
+    ).toContain('verificationCapability');
+  });
+
+  it.each([
+    [['VALID', 'NEEDS_REVIEW'], true],
+    [['NEEDS_REVIEW'], true],
+    [['INVALID'], false],
+    [['ERROR'], false],
+    [['UNREADABLE'], false],
+    [['NOT_APPLICABLE'], false],
+    [['VALID', 'VALID'], false],
+    [[], false],
+    ['VALID', false],
+  ])('acceptedVerdicts %j es válido: %s', async (verdicts, ok) => {
+    const errors = await errorsOf({ ...gated, acceptedVerdicts: verdicts });
+    expect(errors.includes('acceptedVerdicts')).toBe(!ok);
+  });
+
+  it.each(['verificacion', 'meta.verificacion', 'a_b'])(
+    'acepta el nombre de parámetro %s',
+    async (name) => {
+      expect(await errorsOf({ ...gated, verificationParamName: name })).toEqual(
+        [],
+      );
+    },
+  );
+
+  it.each(['1abc', 'a b', 'a..b', '../x', ''])(
+    'rechaza el nombre de parámetro "%s"',
+    async (name) => {
+      expect(
+        await errorsOf({ ...gated, verificationParamName: name }),
+      ).toContain('verificationParamName');
+    },
+  );
+});
+
+describe('ToolDefinitionService: coherencia de la verificación', () => {
+  it('crea una herramienta válida guardando los campos', async () => {
+    const w = build();
+    const created = await w.service.create('bot', 'tenant', gated);
+    expect(created).toMatchObject({
+      verificationCapability: 'image-analysis',
+      acceptedVerdicts: ['VALID'],
+    });
+  });
+
+  it('una herramienta normal guarda veredictos vacíos y sin capacidad', async () => {
+    const w = build();
+    const created = await w.service.create('bot', 'tenant', base);
+    expect(created).toMatchObject({ acceptedVerdicts: [] });
+    expect(
+      (created as { verificationCapability?: string }).verificationCapability,
+    ).toBeUndefined();
+  });
+
+  it.each([
+    [
+      'sin imagen adjunta',
+      { requiresImageAttachment: false },
+      /imagen adjunta/,
+    ],
+    ['de solo lectura', { httpMethod: 'GET' }, /solo lectura/],
+    ['sin veredictos aceptados', { acceptedVerdicts: [] }, /acceptedVerdicts/],
+    ['sin secreto para firmar', { authSecret: undefined }, /authSecret/],
+    [
+      'con una capacidad no soportada',
+      { verificationCapability: 'otra' },
+      /verificationCapability/,
+    ],
+  ])('rechaza al crear una herramienta %s', async (_name, over, message) => {
+    const w = build();
+    await expect(
+      w.service.create('bot', 'tenant', { ...gated, ...over }),
+    ).rejects.toThrow(message);
+    expect(w.prisma.toolDefinition.create).not.toHaveBeenCalled();
+  });
+
+  const existing = {
+    id: 't1',
+    botConfigId: 'bot',
+    verificationCapability: 'image-analysis',
+    acceptedVerdicts: ['VALID'],
+    requiresImageAttachment: true,
+    httpMethod: 'POST',
+    authSecretEncrypted: 'enc',
+  };
+
+  it('editar sin tocar la verificación no la rompe', async () => {
+    const w = build(existing);
+    await expect(
+      w.service.update('bot', 't1', 'tenant', {
+        description: 'nueva',
+      }),
+    ).resolves.toBeDefined();
+  });
+
+  it.each([
+    [
+      'quitarle la imagen adjunta',
+      { requiresImageAttachment: false },
+      /imagen adjunta/,
+    ],
+    ['volverla de solo lectura', { httpMethod: 'GET' }, /solo lectura/],
+    ['borrarle el secreto', { clearAuth: true }, /authSecret/],
+    [
+      'vaciar los veredictos aceptados',
+      { acceptedVerdicts: [] },
+      /acceptedVerdicts/,
+    ],
+  ])(
+    'rechaza %s a una herramienta con verificación',
+    async (_n, change, message) => {
+      const w = build(existing);
+      await expect(
+        w.service.update('bot', 't1', 'tenant', change as never),
+      ).rejects.toThrow(message);
+      expect(w.prisma.toolDefinition.update).not.toHaveBeenCalled();
+    },
+  );
+
+  it('se puede quitar la verificación y entonces las demás condiciones ya no aplican', async () => {
+    const w = build(existing);
+    await expect(
+      w.service.update('bot', 't1', 'tenant', {
+        verificationCapability: null,
+        requiresImageAttachment: false,
+      } as never),
+    ).resolves.toBeDefined();
+  });
+
+  it('se puede cambiar el secreto sin perder la verificación', async () => {
+    const w = build(existing);
+    await expect(
+      w.service.update('bot', 't1', 'tenant', {
+        authSecret: 'otro-secreto-nuevo',
+      }),
+    ).resolves.toBeDefined();
+  });
+
+  it('añadir verificación a una herramienta existente exige todo lo necesario', async () => {
+    const plain = {
+      ...existing,
+      verificationCapability: null,
+      acceptedVerdicts: [],
+      authSecretEncrypted: null,
+    };
+    const w = build(plain);
+    await expect(
+      w.service.update('bot', 't1', 'tenant', {
+        verificationCapability: 'image-analysis',
+        acceptedVerdicts: ['VALID'],
+      }),
+    ).rejects.toThrow(BadRequestException);
+  });
+});
+
+describe('ToolDefinitionService.getActiveToolsForBot con verificación', () => {
+  it('expone la capacidad y oculta al modelo el parámetro del pasaporte', async () => {
+    const w = build();
+    w.prisma.toolDefinition.findMany.mockResolvedValue([
+      {
+        id: 'd1',
+        name: 'subir_comprobante',
+        description: 'x',
+        parametersSchema: {
+          type: 'object',
+          properties: {
+            nota: { type: 'string' },
+            verificacion: { type: 'object' },
+          },
+          required: ['verificacion'],
+        },
+        httpMethod: 'POST',
+        requiresImageAttachment: true,
+        imageParamName: 'imageBase64',
+        verificationCapability: 'image-analysis',
+        verificationParamName: 'verificacion',
+        maxImageSizeBytes: null,
+        injectPhoneParamName: null,
+        pausesBotMinutes: null,
+      },
+    ] as never);
+
+    const [tool] = await w.service.getActiveToolsForBot('bot');
+
+    expect(tool.verificationCapability).toBe('image-analysis');
+    const schema = tool.spec.parametersSchema as {
+      properties: Record<string, unknown>;
+      required?: string[];
+    };
+    expect(Object.keys(schema.properties)).toEqual(['nota']);
+    expect(schema.required ?? []).not.toContain('verificacion');
+  });
+});

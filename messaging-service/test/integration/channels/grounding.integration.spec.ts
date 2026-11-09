@@ -90,7 +90,11 @@ suite(
         config as never,
         prisma as never,
         new ToolDefinitionService(prisma as never, {} as never, encryption),
-        new ToolExecutorService(prisma as never, encryption),
+        new ToolExecutorService(
+          prisma as never,
+          encryption,
+          new VerificationLedger(prisma as never, config as never),
+        ),
       );
       return new SpecialistRuntime(
         config as never,

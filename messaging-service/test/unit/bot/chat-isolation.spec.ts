@@ -635,7 +635,11 @@ function world(
     setToolScript: (value: NonNullable<typeof toolScript>) => {
       toolScript = value;
     },
-    setTools: (names: string[], pausing: string[] = []) => {
+    setTools: (
+      names: string[],
+      pausing: string[] = [],
+      gated: string[] = [],
+    ) => {
       activeTools = names.map((name) => ({
         spec: { name },
         definitionId: `def-${name}`,
@@ -645,6 +649,7 @@ function world(
         maxImageSizeBytes: null,
         injectPhoneParamName: null,
         pausesBotMinutes: pausing.includes(name) ? 240 : null,
+        verificationCapability: gated.includes(name) ? 'image-analysis' : null,
       }));
     },
     setNotifyResult: (value: boolean) => {
@@ -2446,6 +2451,58 @@ describe('Especialistas en ACTIVE dentro del router (fase 4d)', () => {
       expect(w.specialistRun).not.toHaveBeenCalled();
       expect(w.imageAnalyze).not.toHaveBeenCalled();
       expect(w.aiCalls).toEqual(['[imagen recibida, no analizada]']);
+    });
+  });
+
+  describe('uso de la verificación por una herramienta con puerta', () => {
+    const useTool = async (
+      w: ReturnType<typeof world>,
+      name: string,
+      result: { status: string; httpStatus?: number },
+    ) => {
+      w.setTools(['subir_comprobante', 'consultar'], [], ['subir_comprobante']);
+      w.setToolResults({ [name]: result });
+      w.setToolScript(async (exec) => {
+        await exec({ name, arguments: {} });
+      });
+      await send(w);
+    };
+
+    it('tras un éxito el hecho queda marcado como utilizado', async () => {
+      const w = activeWorld();
+      await useTool(w, 'subir_comprobante', { status: 'SUCCESS' });
+
+      expect(factsOf(w)['image-analysis'].consumed).toBe(true);
+      expect(factsOf(w)['image-analysis'].pendingReview).toBe(false);
+    });
+
+    it('si la herramienta falla el hecho sigue sin consumirse', async () => {
+      const w = activeWorld();
+      await useTool(w, 'subir_comprobante', {
+        status: 'BUSINESS_ERROR',
+        httpStatus: 422,
+      });
+
+      expect(factsOf(w)['image-analysis'].consumed).toBeUndefined();
+    });
+
+    it('una herramienta sin puerta no consume el hecho', async () => {
+      const w = activeWorld();
+      await useTool(w, 'consultar', { status: 'SUCCESS' });
+
+      expect(factsOf(w)['image-analysis'].consumed).toBeUndefined();
+    });
+
+    it('si no hay hecho guardado no falla', async () => {
+      const w = activeWorld();
+      w.specialistRun.mockResolvedValue({
+        executed: false,
+        reason: 'SPECIALIST_INACTIVE',
+      });
+      await useTool(w, 'subir_comprobante', { status: 'SUCCESS' });
+
+      expect(factsOf(w)['image-analysis']).toBeUndefined();
+      expect(w.sends).toHaveLength(1);
     });
   });
 
