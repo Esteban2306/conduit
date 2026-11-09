@@ -165,15 +165,17 @@ suite('espera por desconexión con Redis real y aislado', () => {
     const job = await enqueue();
     await new Promise((r) => setTimeout(r, 1500));
 
-    const waiting = await queue.getJob(job.id as string);
-    expect(await waiting!.getState()).toBe('delayed');
-    expect(waiting!.attemptsMade).toBe(0);
+    const reload = async () => (await queue.getJob(job.id as string))!;
+    await until(async () => (await (await reload()).getState()) === 'delayed');
+    expect((await reload()).attemptsMade).toBe(0);
     expect(send).not.toHaveBeenCalled();
     expect(messageUpdates.some((d) => 'attempts' in d)).toBe(false);
     expect(messageUpdates[0]).toMatchObject({ status: MessageStatus.RETRYING });
 
     connected = true;
-    await until(async () => (await waiting!.getState()) === 'completed');
+    await until(
+      async () => (await (await reload()).getState()) === 'completed',
+    );
 
     expect(send).toHaveBeenCalledTimes(1);
     expect(messageUpdates.some((d) => d.status === MessageStatus.SENT)).toBe(
