@@ -1,5 +1,5 @@
 import { GUARDS_METADATA } from '@nestjs/common/constants';
-import { AdminGuard } from 'src/auth/guards/admin.guard';
+import { TenantAdminGuard } from 'src/auth/guards/tenant-admin.guard';
 import { ApiAuthGuard } from 'src/auth/guards/api-auth.guard';
 import { SpecialistController } from 'src/bot/specialists/admin/Specialist.controller';
 
@@ -17,16 +17,16 @@ describe('SpecialistController: permisos', () => {
   });
 
   it.each(['create', 'update', 'restore', 'archive', 'unarchive'])(
-    '%s exige además ser administrador',
+    '%s exige además ser propietario o administrador',
     (method) => {
-      expect(guardsOf(proto[method])).toContain(AdminGuard);
+      expect(guardsOf(proto[method])).toContain(TenantAdminGuard);
     },
   );
 
   it.each(['list', 'getByKey', 'get', 'listVersions', 'getVersion'])(
     '%s solo exige autenticación (es de consulta)',
     (method) => {
-      expect(guardsOf(proto[method])).not.toContain(AdminGuard);
+      expect(guardsOf(proto[method])).not.toContain(TenantAdminGuard);
     },
   );
 });

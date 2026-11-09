@@ -150,7 +150,7 @@ suite('Administración de especialistas contra la base aislada', () => {
         }),
       ).rejects.toMatchObject({
         status: 400,
-        response: { undeclaredKeys: ['fantasma'] },
+        response: { details: { undeclaredKeys: ['fantasma'] } },
       });
     });
 
@@ -344,7 +344,10 @@ suite('Administración de especialistas contra la base aislada', () => {
           promptTemplate: 'Cambio 2',
           expectedVersion: 1,
         }),
-      ).rejects.toMatchObject({ status: 409, response: { currentVersion: 2 } });
+      ).rejects.toMatchObject({
+        status: 409,
+        response: { details: { currentVersion: 2 } },
+      });
       expect((await service.get(tenantA, created.id)).promptTemplate).toBe(
         'Cambio 1',
       );
@@ -512,7 +515,9 @@ suite('Administración de especialistas contra la base aislada', () => {
       await bind(created.id, 'SHADOW', 'arch-dos');
       await expect(service.archive(tenantA, created.id)).rejects.toMatchObject({
         status: 409,
-        response: { bindings: [{ botConfigId: botA, mode: 'SHADOW' }] },
+        response: {
+          details: { bindings: [{ botConfigId: botA, mode: 'SHADOW' }] },
+        },
       });
       expect((await service.get(tenantA, created.id)).archivedAt).toBeNull();
     });
