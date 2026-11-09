@@ -536,11 +536,30 @@ describe('permisos de verificaciones y dry-run', () => {
   it('las consultas solo exigen autenticación', () => {
     expect(guardsOf(proto.list)).not.toContain(TenantAdminGuard);
     expect(guardsOf(proto.get)).not.toContain(TenantAdminGuard);
+    expect(guardsOf(proto.summary)).not.toContain(TenantAdminGuard);
+  });
+
+  it('las métricas se piden con el tenant del token', () => {
+    const metrics = { summary: jest.fn() };
+    const controller = new SpecialistVerificationController(
+      {} as never,
+      metrics as never,
+    );
+    controller.summary(
+      { sub: 'u', tenantId: 'tenant-token', role: 'MEMBER' },
+      { mode: 'SHADOW' },
+    );
+    expect(metrics.summary).toHaveBeenCalledWith('tenant-token', {
+      mode: 'SHADOW',
+    });
   });
 
   it('delega con el tenant del token', () => {
     const service = { list: jest.fn(), get: jest.fn(), dryRun: jest.fn() };
-    const controller = new SpecialistVerificationController(service as never);
+    const controller = new SpecialistVerificationController(
+      service as never,
+      { summary: jest.fn() } as never,
+    );
     const user = { sub: 'u', tenantId: 'tenant-token', role: 'ADMIN' };
     controller.list(user, { a: 1 });
     controller.get(user, 'v1');

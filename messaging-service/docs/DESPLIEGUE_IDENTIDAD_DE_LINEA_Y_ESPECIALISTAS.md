@@ -153,6 +153,19 @@ El dry-run gasta tokens reales del modelo del especialista. No guarda resultados
 
 El costo es una estimación: la tabla base cubre por familia (`claude-haiku`, `claude-sonnet`, `claude-opus`) con valores aproximados que conviene contrastar con la tarifa vigente del proveedor; un modelo sin precio conocido da costo `null` en lugar de un valor inventado.
 
+### Métricas
+
+`GET /verifications/metrics` (cualquier usuario del tenant) agrega con SQL sobre `VerificationRecord`. Filtros: `specialistId`, `botConfigId`, `capability`, `mode`, `from`, `to` (por defecto los últimos 7 días, máximo 366). Devuelve:
+
+- `verdicts`: cantidad y tasa de `VALID`, `INVALID`, `NEEDS_REVIEW` y `ERROR` (tasa `null` si no hay datos).
+- `latencyMs`: p50 y p95 solo sobre llamadas reales al modelo (`sample` indica cuántas); los resultados de reutilización, que no llaman al modelo, no sesgan los percentiles.
+- `degradationsByReason` (códigos de los `ERROR`) y `reviewsByReason` (códigos de los `NEEDS_REVIEW`), las 20 primeras por frecuencia.
+- `reuse`: `ALREADY_USED`, `REUSED_OTHER_CONTACT`, `RESENT_SAME_IMAGE`, `RESENT_SAME_RECEIPT`.
+- `tokens` y `estimatedCostUsd` (total y por modelo). Las llamadas sin desglose de tokens o con un modelo sin precio no se estiman: se cuentan en `callsWithoutBreakdown` y `callsExcludedFromCost`, así que el costo total es un mínimo cuando hay registros anteriores a la 5c.
+- `shadowAgreement`: coincidencia con el análisis actual, solo sobre los casos `SHADOW` que tienen comparación.
+
+Los resultados guardados en `ACTIVE` por reutilización (`ALREADY_USED`, `REUSED_OTHER_CONTACT`) cuentan en los veredictos pero no en latencia ni tokens. Los retenidos más allá de `SPECIALISTS_RETENTION_DAYS` ya no existen, así que un rango mayor a la retención muestra solo lo que quedó.
+
 ## 7. Endurecimiento de la salida del modelo
 
 Todo texto que el modelo lee de la imagen (referencia, destinatario) y el resumen del veredicto se rechazan si contienen saltos de línea, caracteres de control, separadores de línea o párrafo Unicode, marcas de dirección (incluida la inversión `U+202E`), caracteres de ancho cero o el BOM. Las fechas se validan contra el calendario real (`2026-02-31` es inválida). Una respuesta con claves `__proto__`, `constructor` o `prototype` es `ERROR`. No existe un camino en el que una respuesta del modelo produzca `VALID` por texto libre, por un campo de veredicto propio o por texto fuera del JSON.

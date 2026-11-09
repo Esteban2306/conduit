@@ -27,6 +27,7 @@ import { SpecialistModelController } from './specialists/admin/SpecialistModel.c
 import { SpecialistBindingService } from './specialists/admin/SpecialistBindingService';
 import { SpecialistBindingController } from './specialists/admin/SpecialistBinding.controller';
 import { SpecialistVerificationService } from './specialists/admin/SpecialistVerificationService';
+import { SpecialistMetricsService } from './specialists/admin/SpecialistMetricsService';
 import { SpecialistVerificationController } from './specialists/admin/SpecialistVerification.controller';
 import { MessageDebouncer } from './router/MessageDebouncer';
 import { ReplyMetricsService } from './router/reply-metrics.service';
@@ -97,6 +98,7 @@ import { SystemPauseService } from './pause/SystemPause.service';
     SpecialistModelService,
     SpecialistBindingService,
     SpecialistVerificationService,
+    SpecialistMetricsService,
     MessageDebouncer,
     ReplyMetricsService,
     ToolDefinitionService,

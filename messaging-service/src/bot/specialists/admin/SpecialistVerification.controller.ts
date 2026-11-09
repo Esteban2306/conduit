@@ -17,6 +17,7 @@ import { ApiAuthGuard } from 'src/auth/guards/api-auth.guard';
 import { TenantAdminGuard } from 'src/auth/guards/tenant-admin.guard';
 import { CurrentUser } from 'src/auth/decorators/current-user.decorator';
 import type { JwtPayload } from 'src/auth/types/jwt.types';
+import { SpecialistMetricsService } from './SpecialistMetricsService';
 import {
   DRY_RUN_MAX_IMAGE_BYTES,
   SpecialistVerificationService,
@@ -26,7 +27,19 @@ import {
 @ApiTags('Specialists')
 @Controller()
 export class SpecialistVerificationController {
-  constructor(private readonly verifications: SpecialistVerificationService) {}
+  constructor(
+    private readonly verifications: SpecialistVerificationService,
+    private readonly metrics: SpecialistMetricsService,
+  ) {}
+
+  @Get('verifications/metrics')
+  @ApiOperation({
+    summary:
+      'Métricas agregadas de verificaciones: veredictos, latencia, motivos, reutilización, tokens y costo',
+  })
+  summary(@CurrentUser() user: JwtPayload, @Query() query: unknown) {
+    return this.metrics.summary(user.tenantId, query);
+  }
 
   @Get('verifications')
   @ApiOperation({
