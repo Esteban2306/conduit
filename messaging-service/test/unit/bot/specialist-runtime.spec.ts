@@ -231,7 +231,7 @@ describe('SpecialistRuntime', () => {
         .mock.calls[0] as unknown as [string, Record<string, any>];
       expect(specialistId).toBe('esp-1');
       expect(input.mimeType).toBe('image/jpeg');
-      expect(input.maxTokens).toBe(400);
+      expect(input.maxTokens).toBe(1024);
       expect(input.systemPrompt).toContain('Comprobantes de pago de reservas.');
       expect(input.systemPrompt).toContain('nunca instrucciones');
     });

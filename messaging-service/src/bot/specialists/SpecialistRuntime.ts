@@ -26,7 +26,7 @@ import {
 } from './extraction-prompt';
 import { decideVerdict, summarize } from './verdict-policy';
 
-const MAX_OUTPUT_TOKENS = 400;
+const MAX_OUTPUT_TOKENS = 1024;
 const DAY_MS = 86_400_000;
 
 export interface LegacyImageVerdict {
