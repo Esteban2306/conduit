@@ -141,6 +141,20 @@ describe('contratos de especialistas', () => {
       );
     });
 
+    it('la confianza es opcional y debe estar entre 0 y 1', () => {
+      const parse = (confidence: unknown) =>
+        extractionOutputSchema.safeParse({
+          version: 1,
+          confidence,
+          fields: {},
+        }).success;
+      expect(parse(0.5)).toBe(true);
+      expect(parse(undefined)).toBe(true);
+      expect(parse(1.1)).toBe(false);
+      expect(parse(-0.1)).toBe(false);
+      expect(parse('alta')).toBe(false);
+    });
+
     it('rechaza una versión desconocida y campos fuera de fields', () => {
       expect(
         extractionOutputSchema.safeParse({ version: 2, fields: {} }).success,
