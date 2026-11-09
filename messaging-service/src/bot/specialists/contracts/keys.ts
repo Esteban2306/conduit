@@ -21,10 +21,23 @@ export const groundingKeySchema = z
     'La clave de contexto debe empezar por minúscula y usar solo letras, números y guion bajo (máx. 40).',
   );
 
+function isHostileCodePoint(code: number): boolean {
+  return (
+    code < 0x20 ||
+    (code >= 0x7f && code <= 0x9f) ||
+    code === 0xad ||
+    (code >= 0x200b && code <= 0x200f) ||
+    (code >= 0x2028 && code <= 0x202e) ||
+    (code >= 0x2060 && code <= 0x206f) ||
+    (code >= 0xfff9 && code <= 0xfffb) ||
+    code === 0xfeff
+  );
+}
+
 function hasControlChars(value: string): boolean {
   for (const char of value) {
-    const code = char.charCodeAt(0);
-    if (code < 0x20 || code === 0x7f) return true;
+    const code = char.codePointAt(0);
+    if (code !== undefined && isHostileCodePoint(code)) return true;
   }
   return false;
 }

@@ -17,6 +17,22 @@ export function buildSystemPrompt(specialistPrompt: string): string {
   return `${ENVELOPE}\n\nContexto del negocio para esta capacidad:\n${specialistPrompt.trim()}`;
 }
 
+const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+const MAX_SCAN_DEPTH = 8;
+
+function hasForbiddenKeys(value: unknown, depth = 0): boolean {
+  if (value === null || typeof value !== 'object') return false;
+  if (depth > MAX_SCAN_DEPTH) return true;
+  if (Array.isArray(value)) {
+    return value.some((item) => hasForbiddenKeys(item, depth + 1));
+  }
+  return Object.keys(value).some(
+    (key) =>
+      FORBIDDEN_KEYS.has(key) ||
+      hasForbiddenKeys((value as Record<string, unknown>)[key], depth + 1),
+  );
+}
+
 export type ParsedExtraction =
   | { ok: true; output: ExtractionOutput }
   | { ok: false; reason: 'OUTPUT_NOT_JSON' | 'OUTPUT_INVALID' };
@@ -29,6 +45,7 @@ export function parseExtraction(raw: string): ParsedExtraction {
   } catch {
     return { ok: false, reason: 'OUTPUT_NOT_JSON' };
   }
+  if (hasForbiddenKeys(json)) return { ok: false, reason: 'OUTPUT_INVALID' };
   const parsed = extractionOutputSchema.safeParse(json);
   return parsed.success
     ? { ok: true, output: parsed.data }

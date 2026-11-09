@@ -2,6 +2,7 @@ import { ZonedClock } from 'src/channels/whatsapp/utils/zoned-clock';
 import {
   DEFAULT_FUZZY_THRESHOLD,
   ExtractedFields,
+  isRealCalendarDate,
   MAX_REASON_CODES,
   Rule,
   RulesDocument,
@@ -72,9 +73,8 @@ function toNumber(value: unknown): number | null {
 }
 
 function dayNumber(dateKey: string): number | null {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) return null;
-  const time = Date.parse(`${dateKey}T00:00:00Z`);
-  return Number.isNaN(time) ? null : time / DAY_MS;
+  if (!isRealCalendarDate(dateKey)) return null;
+  return Date.parse(`${dateKey}T00:00:00Z`) / DAY_MS;
 }
 
 function compare(

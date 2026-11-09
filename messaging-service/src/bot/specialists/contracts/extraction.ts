@@ -10,6 +10,22 @@ export const EXTRACTION_FIELD_NAMES = [
   'legibility',
 ] as const;
 
+export function isRealCalendarDate(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return false;
+  const [year, month, day] = [
+    Number(match[1]),
+    Number(match[2]),
+    Number(match[3]),
+  ];
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return (
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day
+  );
+}
+
 export const extractionFieldNameSchema = z.enum(EXTRACTION_FIELD_NAMES);
 export type ExtractionFieldName = z.infer<typeof extractionFieldNameSchema>;
 
@@ -25,9 +41,7 @@ export const extractedFieldsSchema = z
     date: z
       .string()
       .regex(/^\d{4}-\d{2}-\d{2}$/)
-      .refine((value) => !Number.isNaN(Date.parse(`${value}T00:00:00Z`)), {
-        message: 'Fecha inválida',
-      })
+      .refine(isRealCalendarDate, { message: 'Fecha inválida' })
       .nullable(),
     reference: safeText(64).nullable(),
     recipient: safeText(120).nullable(),
