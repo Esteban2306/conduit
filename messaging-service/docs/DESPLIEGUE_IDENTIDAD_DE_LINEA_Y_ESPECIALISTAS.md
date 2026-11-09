@@ -34,6 +34,7 @@ Si devuelve filas, resolverlas antes (la migración falla si hay duplicados).
 | `QUEUE_DISCONNECT_POLL_MS` | `30000` | Cada cuánto revisa si la línea volvió |
 | `SPECIALISTS_ENABLED` | `false` | Interruptor global de especialistas |
 | `SPECIALISTS_RETENTION_DAYS` | `90` | Retención de `VerificationRecord` |
+| `SPECIALISTS_GROUNDING_TIMEOUT_MS` | `5000` (500 a 15000) | Tiempo máximo para consultar los datos de referencia de las reglas |
 | `SPECIALISTS_PASSPORT_TTL_MINUTES` | `60` | Vigencia de un veredicto para habilitar una herramienta y para reutilizarlo desde el caché |
 
 La espera por desconexión **está activa al desplegar** (no depende de una bandera): un mensaje con la línea caída espera sin gastar intentos.
@@ -53,7 +54,16 @@ La espera por desconexión **está activa al desplegar** (no depende de una band
 
 Reversión: `SPECIALISTS_ENABLED=false`.
 
-## 4. Límites conocidos
+## 4. Datos de referencia para las reglas (grounding)
+
+Las reglas pueden compararse con datos del negocio mediante `ref: "grounding.<clave>"`. Cada clave debe declararse en `contextSources` del especialista:
+
+- `TOOL`: una herramienta del mismo bot, **solo de lectura** (GET o HEAD, sin imagen adjunta ni pausa del bot). Exige `valuePath` (por ejemplo `data.anticipo.monto`). Se llama con la identidad verificada del chat (cabeceras `X-Conduit-*` y el teléfono en el parámetro configurado).
+- `EXTERNAL_MAPPING`: una variable externa del bot, con nombre `<espacio>.<clave>` (por ejemplo `vars.titular`). Si se da `valuePath`, se lee dentro de un JSON guardado.
+
+Las consultas corren en paralelo al modelo, con tiempo máximo y una caché en memoria por conversación (vigencia `maxAgeSeconds`, 0 la desactiva). Un dato que no se puede obtener nunca produce `VALID`: la regla pide revisión (`GROUNDING_UNAVAILABLE`). Una fuente `required` caída convierte un `VALID` en `NEEDS_REVIEW`. Una regla que cita una clave sin declarar deja al especialista en error (`RULES_INVALID`) y queda en el log.
+
+## 5. Límites conocidos
 
 - Los modelos del relleno son **copias**: rotar la clave de un bot no actualiza la del especialista.
 - Sin reglas, un especialista legible da `VALID`. Las reglas con valores literales ya se evalúan; las que dependen de datos de contexto dan `NEEDS_REVIEW` hasta que se resuelva ese contexto.
@@ -61,4 +71,5 @@ Reversión: `SPECIALISTS_ENABLED=false`.
 - La detección de reutilización y el caché solo aplican a vínculos en `ACTIVE`; en `SHADOW` solo se registra.
 - El análisis legado conserva sus defectos (texto positivo no JSON se acepta como válido; el aviso de "alta demanda" no se muestra cuando caen todos los modelos).
 - El proveedor de Anthropic no desactiva el razonamiento: parte de los tokens de salida se gasta en `thinking`.
+- La caché de datos de referencia vive en memoria del proceso; con una sola réplica es correcta, y con varias cada réplica tendría la suya.
 - Conduit corre en una sola réplica; no escalar horizontalmente.
