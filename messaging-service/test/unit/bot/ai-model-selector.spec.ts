@@ -221,3 +221,67 @@ describe('AiModelSelectorService.selectModel (red de seguridad de la fase 3a)', 
     });
   });
 });
+
+describe('AiModelSelectorService.resolveApiKey para especialistas (sin clave oculta)', () => {
+  const ENV = 'ANTHROPIC_DEFAULT_API_KEY';
+  const previous = process.env[ENV];
+  const fake = `sk-ant-${'x'.repeat(40)}`;
+
+  beforeEach(() => {
+    process.env[ENV] = fake;
+  });
+  afterEach(() => {
+    if (previous === undefined) delete process.env[ENV];
+    else process.env[ENV] = previous;
+  });
+
+  const selector = () =>
+    new AiModelSelectorService(
+      {} as never,
+      {} as never,
+      { open: (value: string) => value } as never,
+    );
+  const model = (extra: Row) =>
+    ({
+      id: 'm1',
+      provider: 'ANTHROPIC',
+      botConfigId: null,
+      specialistId: 'esp',
+      apiKey: 'placeholder',
+      ...extra,
+    }) as never;
+
+  it('un modelo de especialista con clave de relleno falla en vez de usar la clave del sistema', async () => {
+    await expect(selector().resolveApiKey(model({}))).rejects.toThrow(
+      /no usan claves del sistema/,
+    );
+  });
+
+  it.each(['', 'YOUR_API_KEY', 'corta'])(
+    'tampoco con la clave "%s"',
+    async (apiKey) => {
+      await expect(selector().resolveApiKey(model({ apiKey }))).rejects.toThrow(
+        /no usan claves del sistema/,
+      );
+    },
+  );
+
+  it('el mensaje no revela la clave del sistema', async () => {
+    await expect(selector().resolveApiKey(model({}))).rejects.not.toThrow(
+      new RegExp(fake),
+    );
+  });
+
+  it('una clave propia válida del especialista se usa tal cual', async () => {
+    const own = `sk-ant-${'y'.repeat(40)}`;
+    expect(await selector().resolveApiKey(model({ apiKey: own }))).toBe(own);
+  });
+
+  it('un modelo de bot con clave de relleno conserva el comportamiento actual', async () => {
+    expect(
+      await selector().resolveApiKey(
+        model({ specialistId: null, botConfigId: 'bot' }),
+      ),
+    ).toBe(fake);
+  });
+});

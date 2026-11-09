@@ -61,6 +61,7 @@ function build(options: Options = {}) {
       ? {
           mode: 'SHADOW',
           timeoutMs: 12000,
+          onFailure: 'DEGRADE',
           specialist: {
             id: 'esp-1',
             status: 'ACTIVE',
@@ -115,6 +116,7 @@ function build(options: Options = {}) {
         : Promise.resolve(value ?? { kind: 'NONE' }),
     );
   const ledger = {
+    passportTtlMs: () => 3_600_000,
     checkByHash: finding(options.hashFinding),
     checkByFingerprint: finding(options.fingerprintFinding),
   };
@@ -1326,5 +1328,82 @@ describe('SpecialistRuntime con contexto del negocio (grounding)', () => {
       w.grounding.resolve.mock.calls[0] as unknown as [Record<string, any>]
     )[0];
     expect(request.sources).toEqual([]);
+  });
+});
+
+describe('SpecialistRuntime: datos para el router', () => {
+  it('devuelve la política de fallo del vínculo', async () => {
+    const w = build({
+      binding: {
+        mode: 'SHADOW',
+        timeoutMs: 12000,
+        onFailure: 'BLOCK',
+        specialist: {
+          id: 'esp-1',
+          status: 'ACTIVE',
+          promptTemplate: 'p',
+          contextSources: { version: 1, sources: [] },
+          rules: { version: 1, rules: [] },
+        },
+      },
+    });
+    const outcome = await w.run();
+    expect(outcome.executed && outcome.onFailure).toBe('BLOCK');
+  });
+
+  it('consulta la política de fallo al leer el vínculo', async () => {
+    const w = build();
+    await w.run();
+    const query = (
+      w.prisma.botSpecialistBinding.findFirst.mock.calls[0] as unknown as [
+        { select: Record<string, unknown> },
+      ]
+    )[0];
+    expect(query.select.onFailure).toBe(true);
+  });
+
+  it('un resultado nuevo es vigente durante la vigencia del pasaporte', async () => {
+    const w = build();
+    const before = Date.now();
+    const outcome = await w.run();
+    const until = outcome.executed ? Date.parse(outcome.validUntil) : 0;
+    expect(until - before).toBeGreaterThanOrEqual(3_600_000 - 1000);
+    expect(until - before).toBeLessThan(3_600_000 + 5000);
+  });
+
+  it('un resultado de caché es vigente desde que se creó el original, no desde ahora', async () => {
+    const created = new Date(Date.now() - 50 * 60_000);
+    const w = build({
+      binding: {
+        mode: 'ACTIVE',
+        timeoutMs: 12000,
+        onFailure: 'DEGRADE',
+        specialist: {
+          id: 'esp-1',
+          status: 'ACTIVE',
+          promptTemplate: 'p',
+          contextSources: { version: 1, sources: [] },
+          rules: { version: 1, rules: [] },
+        },
+      },
+      hashFinding: {
+        kind: 'CACHED',
+        record: {
+          id: 'prev',
+          conversationId: 'conv-1',
+          verdict: 'VALID',
+          confidence: 0.9,
+          fields: {},
+          reasonCodes: ['RULES_PASSED'],
+          fingerprint: null,
+          consumedAt: null,
+          createdAt: created,
+        },
+      },
+    });
+    const outcome = await w.run();
+    expect(outcome.executed && Date.parse(outcome.validUntil)).toBe(
+      created.getTime() + 3_600_000,
+    );
   });
 });
