@@ -18,12 +18,14 @@ import { SecretEncryptionService } from 'src/shared/security/secret-encryption.s
 import { undeclaredGroundingKeys } from '../grounding-config';
 import {
   contextSourcesDocumentSchema,
+  outputSchemaDocumentSchema,
   rulesDocumentSchema,
+  validateRulesAgainst,
 } from '../contracts';
 import { buildPriceTable } from '../pricing';
 import { SpecialistRuntime } from '../SpecialistRuntime';
 import { dryRunDraftSchema } from '../admin/specialist-verification.schemas';
-import { loadBank, MAX_EVAL_CASES } from './eval-case';
+import { loadBank, MAX_EVAL_CASES, validateExpected } from './eval-case';
 import { compareRuns, parseRun } from './eval-compare';
 import {
   DEFAULT_MAX_COST_USD,
@@ -46,7 +48,8 @@ Opciones de run:
   --max-tokens=<n>         tope de tokens (por defecto ${DEFAULT_MAX_TOKENS})
 
 Carpeta del banco: por cada <caso>.jpg|png|webp debe existir <caso>.expected.json con
-{"verdict":"VALID|INVALID|NEEDS_REVIEW|ERROR","fields":{"amount":150000,"reference":"..."}}.
+{"verdict":"VALID|INVALID|NEEDS_REVIEW|UNREADABLE|NOT_APPLICABLE|ERROR","fields":{"<variable>":<valor>}}.
+Los campos son opcionales y deben estar declarados en las variables del especialista.
 Las imágenes nunca se guardan en la base ni en el resultado.`;
 
 function option(name: string): string | undefined {
@@ -131,6 +134,7 @@ async function runCommand(): Promise<void> {
         version: true,
         capability: true,
         promptTemplate: true,
+        outputSchema: true,
         rules: true,
         contextSources: true,
       },
@@ -140,6 +144,7 @@ async function runCommand(): Promise<void> {
     let specialist: EvalSpecialist = row;
     const draftUsed = {
       promptTemplate: false,
+      outputSchema: false,
       rules: false,
       contextSources: false,
     };
@@ -154,20 +159,42 @@ async function runCommand(): Promise<void> {
       specialist = {
         ...row,
         promptTemplate: parsed.data.promptTemplate ?? row.promptTemplate,
+        outputSchema: parsed.data.outputSchema ?? row.outputSchema,
         rules: parsed.data.rules ?? row.rules,
         contextSources: parsed.data.contextSources ?? row.contextSources,
       };
       draftUsed.promptTemplate = parsed.data.promptTemplate !== undefined;
+      draftUsed.outputSchema = parsed.data.outputSchema !== undefined;
       draftUsed.rules = parsed.data.rules !== undefined;
       draftUsed.contextSources = parsed.data.contextSources !== undefined;
     }
 
+    const outputSchema = outputSchemaDocumentSchema.safeParse(
+      specialist.outputSchema,
+    );
     const rules = rulesDocumentSchema.safeParse(specialist.rules);
     const sources = contextSourcesDocumentSchema.safeParse(
       specialist.contextSources,
     );
-    if (!rules.success || !sources.success) {
-      throw new Error('Las reglas o las fuentes de contexto no son válidas');
+    if (!outputSchema.success || !rules.success || !sources.success) {
+      throw new Error(
+        'Las variables de salida, las reglas o las fuentes de contexto no son válidas',
+      );
+    }
+    const ruleIssues = validateRulesAgainst(outputSchema.data, rules.data);
+    if (ruleIssues.length > 0) {
+      throw new Error(
+        `Hay reglas incompatibles con las variables declaradas: ${ruleIssues.map((i) => i.message).join('; ')}`,
+      );
+    }
+    const expectedProblems = validateExpected(outputSchema.data, bank.cases);
+    if (expectedProblems.length > 0) {
+      console.error('El banco no coincide con las variables del especialista:');
+      for (const problem of expectedProblems) {
+        console.error(`  ${problem.file}: ${problem.message}`);
+      }
+      process.exitCode = 1;
+      return;
     }
     const undeclared = undeclaredGroundingKeys(
       rules.data,

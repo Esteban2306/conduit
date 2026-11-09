@@ -17,6 +17,9 @@ jest.mock('@whiskeysockets/baileys', () => ({
 import { EventEmitter } from 'events';
 import { BotStatus } from '@prisma/client';
 import { BotRouter } from 'src/bot/router/BotRouter';
+import { exposedVariables } from 'src/bot/specialists/facts';
+import { LEGACY_IMAGE_OUTPUT_SCHEMA } from 'src/bot/specialists/backfill/backfill-specialists';
+import { outputSchemaDocumentSchema } from 'src/bot/specialists/contracts';
 import { MessageDebouncer } from 'src/bot/router/MessageDebouncer';
 import { messageReceiptTracker } from 'src/channels/whatsapp/baileys/MessageReceiptTracker';
 import { BaileysSessionManager } from 'src/channels/whatsapp/baileys/BaileysSessionManager';
@@ -333,23 +336,36 @@ function world(
   const activeOutcome = (
     verdict = 'VALID',
     over: Record<string, unknown> = {},
-  ) => ({
-    executed: true,
-    mode: 'ACTIVE',
-    specialistId: 'esp-1',
-    recordId: '0b0f3c64-6a3f-4a8c-9a56-2f0d6a1b7c11',
-    onFailure: 'DEGRADE',
-    validUntil: new Date(Date.now() + 3_600_000).toISOString(),
-    result: {
-      version: 1,
-      verdict,
-      confidence: 0.9,
-      fields: { amount: 150000, currency: 'COP', date: '2026-11-08' },
-      reasonCodes: ['RULES_PASSED'],
-      humanSummary: 'Cumple todas las reglas configuradas.',
-      ...over,
-    },
-  });
+  ) => {
+    const { onFailure = 'DEGRADE', ...resultOver } = over;
+    const fields = (resultOver.fields ?? {
+      amount: 150000,
+      currency: 'COP',
+      date: '2026-11-08',
+    }) as Record<string, string | number | boolean | null>;
+    return {
+      executed: true,
+      mode: 'ACTIVE',
+      specialistId: 'esp-1',
+      recordId: '0b0f3c64-6a3f-4a8c-9a56-2f0d6a1b7c11',
+      onFailure,
+      blockMessage: null,
+      exposedVariables: exposedVariables(
+        outputSchemaDocumentSchema.parse(LEGACY_IMAGE_OUTPUT_SCHEMA),
+        fields,
+      ),
+      validUntil: new Date(Date.now() + 3_600_000).toISOString(),
+      result: {
+        version: 1,
+        verdict,
+        confidence: 0.9,
+        fields,
+        reasonCodes: ['RULES_PASSED'],
+        humanSummary: 'Cumple todas las reglas configuradas.',
+        ...resultOver,
+      },
+    };
+  };
   const specialistRun = jest.fn<Promise<unknown>, [Record<string, any>]>(() =>
     Promise.resolve(activeOutcome()),
   );
@@ -2267,9 +2283,7 @@ describe('Especialistas en ACTIVE dentro del router (fase 4d)', () => {
         verdict: 'VALID',
         confidence: 0.9,
         reasonCodes: ['RULES_PASSED'],
-        amount: 150000,
-        currency: 'COP',
-        date: '2026-11-08',
+        variables: { amount: 150000, currency: 'COP', date: '2026-11-08' },
         summary: 'Cumple todas las reglas configuradas.',
         verificationId: '0b0f3c64-6a3f-4a8c-9a56-2f0d6a1b7c11',
         pendingReview: false,
@@ -2294,7 +2308,7 @@ describe('Especialistas en ACTIVE dentro del router (fase 4d)', () => {
       };
       expect(context.facts['image-analysis']).toMatchObject({
         verdict: 'VALID',
-        amount: 150000,
+        variables: { amount: 150000 },
       });
     });
 

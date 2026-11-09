@@ -3,7 +3,11 @@ import {
   evaluateRules,
 } from 'src/bot/specialists/rule-evaluator';
 import { decideVerdict, summarize } from 'src/bot/specialists/verdict-policy';
-import { MAX_HUMAN_SUMMARY } from 'src/bot/specialists/contracts';
+import {
+  MAX_HUMAN_SUMMARY,
+  outputSchemaDocumentSchema,
+} from 'src/bot/specialists/contracts';
+import { LEGACY_IMAGE_OUTPUT_SCHEMA } from 'src/bot/specialists/backfill/backfill-specialists';
 import {
   containsTokens,
   fuzzySimilarity,
@@ -13,6 +17,7 @@ import {
 type Fields = Record<string, unknown>;
 type RuleInput = Record<string, unknown>;
 
+const SCHEMA = outputSchemaDocumentSchema.parse(LEGACY_IMAGE_OUTPUT_SCHEMA);
 const NOW = new Date('2026-11-08T15:00:00Z');
 
 const context = (
@@ -47,7 +52,7 @@ const run = (
   rules: RuleInput[],
   extra: Fields = {},
   ctx: EvaluationContext = context(),
-) => evaluateRules(fields(extra) as never, { version: 1, rules } as never, ctx);
+) => evaluateRules(fields(extra), SCHEMA, { version: 1, rules } as never, ctx);
 
 describe('evaluador de reglas', () => {
   describe('sin reglas', () => {
@@ -121,10 +126,6 @@ describe('evaluador de reglas', () => {
     it('la fecha se compara como texto exacto', () => {
       expect(eq('date', '2026-11-08')).toBe('VALID');
       expect(eq('date', '2026-11-07')).toBe('INVALID');
-    });
-
-    it('la legibilidad se puede exigir', () => {
-      expect(eq('legibility', 'CLEAR')).toBe('VALID');
     });
 
     it('un valor de contexto no numérico para un monto pide revisión', () => {
@@ -312,7 +313,7 @@ describe('evaluador de reglas', () => {
     });
 
     it('un valor de contexto ausente pide revisión y nunca da VALID', () => {
-      for (const grounding of [{}, { minimo: null }, { minimo: true }]) {
+      for (const grounding of [{}, { minimo: null }]) {
         const result = run(
           [rule({ ref: 'grounding.minimo' })],
           {},
@@ -321,6 +322,16 @@ describe('evaluador de reglas', () => {
         expect(result.verdict).toBe('NEEDS_REVIEW');
         expect(result.reasonCodes).toEqual(['GROUNDING_UNAVAILABLE']);
       }
+    });
+
+    it('un valor de contexto booleano para una regla numérica pide revisión', () => {
+      const result = run(
+        [rule({ ref: 'grounding.minimo' })],
+        {},
+        context({ minimo: true }),
+      );
+      expect(result.verdict).toBe('NEEDS_REVIEW');
+      expect(result.reasonCodes).toEqual(['RULE_OPERAND_INVALID']);
     });
   });
 
@@ -401,7 +412,12 @@ describe('política de veredicto con reglas', () => {
     isExpectedDocument?: boolean,
   ) =>
     decideVerdict(
-      { fields: fields(extra) as never, isExpectedDocument },
+      {
+        variables: fields(extra),
+        legibility: fields(extra).legibility as never,
+        isExpectedDocument,
+      },
+      SCHEMA,
       { version: 1, rules } as never,
       context(),
     );
@@ -450,17 +466,19 @@ describe('resúmenes de los códigos de regla', () => {
     'RULES_PASSED',
     'NOT_EXPECTED_DOCUMENT',
   ])('%s tiene un resumen fijo que cabe en 160 caracteres', (code) => {
-    const text = summarize([code]);
+    const text = summarize([code], SCHEMA);
     expect(text).not.toBe('Resultado sin descripción.');
     expect(text.length).toBeLessThanOrEqual(MAX_HUMAN_SUMMARY);
   });
 
   it('los resúmenes nunca incluyen valores de la imagen', () => {
-    expect(summarize(['AMOUNT_GTE_FAILED'])).not.toMatch(/\d/);
+    expect(summarize(['AMOUNT_GTE_FAILED'], SCHEMA)).not.toMatch(/\d/);
   });
 
   it('un código de campo desconocido usa el texto genérico', () => {
-    expect(summarize(['SECRET_MISSING'])).toBe('Resultado sin descripción.');
+    expect(summarize(['SECRET_MISSING'], SCHEMA)).toBe(
+      'Resultado sin descripción.',
+    );
   });
 });
 
@@ -489,7 +507,8 @@ describe('within_days con fechas que no existen', () => {
     '%s pide revisión en lugar de interpretarse como otra fecha',
     (date) => {
       const result = evaluateRules(
-        fields({ date }) as never,
+        fields({ date }),
+        SCHEMA,
         {
           version: 1,
           rules: [

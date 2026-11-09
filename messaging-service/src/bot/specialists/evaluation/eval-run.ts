@@ -1,5 +1,6 @@
 import { promises as fs } from 'fs';
 import { DryRunInput, DryRunOutcome } from '../SpecialistRuntime';
+import { outputSchemaDocumentSchema } from '../contracts';
 import { ModelPrice, estimateCostUsd } from '../pricing';
 import { EvalCase, bankFingerprint, sha256 } from './eval-case';
 import {
@@ -20,6 +21,7 @@ export interface EvalSpecialist {
   version: number;
   capability: string;
   promptTemplate: string;
+  outputSchema: unknown;
   rules: unknown;
   contextSources: unknown;
 }
@@ -29,6 +31,7 @@ export interface EvalRunOptions {
   specialist: EvalSpecialist;
   draftUsed: {
     promptTemplate: boolean;
+    outputSchema: boolean;
     rules: boolean;
     contextSources: boolean;
   };
@@ -59,6 +62,7 @@ export async function runEvaluation(
   options: EvalRunOptions,
 ): Promise<EvalRunResult> {
   const { specialist } = options;
+  const schema = outputSchemaDocumentSchema.parse(specialist.outputSchema);
   const results: CaseResult[] = [];
   const bankEntries: Array<{
     id: string;
@@ -92,6 +96,7 @@ export async function runEvaluation(
       version: specialist.version,
       capability: specialist.capability,
       promptTemplate: specialist.promptTemplate,
+      outputSchema: specialist.outputSchema,
       rules: specialist.rules,
       contextSources: specialist.contextSources,
       image,
@@ -106,7 +111,7 @@ export async function runEvaluation(
     spent += costUsd ?? 0;
     tokens += outcome.tokens;
 
-    const scored = scoreCase(base, {
+    const scored = scoreCase(base, schema, {
       actual: {
         verdict: outcome.result.verdict,
         confidence: outcome.result.confidence,
@@ -138,6 +143,7 @@ export async function runEvaluation(
     definitionSha256: sha256(
       JSON.stringify([
         specialist.promptTemplate,
+        specialist.outputSchema,
         specialist.rules,
         specialist.contextSources,
       ]),

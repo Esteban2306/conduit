@@ -26,6 +26,7 @@ import {
   renderLandscape,
   renderReceipt,
 } from '../../helpers/receipt-images';
+import { LEGACY_IMAGE_OUTPUT_SCHEMA } from 'src/bot/specialists/backfill/backfill-specialists';
 
 const infra = isolatedInfra();
 const suite = infra ? describe : describe.skip;
@@ -106,11 +107,15 @@ suite(
       fields: Record<string, unknown>,
       top: Record<string, unknown> = {},
     ) =>
-      JSON.stringify({
-        version: 1,
-        confidence: 0.9,
-        isExpectedDocument: true,
-        fields: {
+      JSON.stringify(
+        (({ legibility = 'CLEAR', ...variables }) => ({
+          version: 2,
+          confidence: 0.9,
+          isExpectedDocument: true,
+          legibility,
+          variables,
+          ...top,
+        }))({
           amount: 150000,
           currency: 'COP',
           date: today,
@@ -118,9 +123,8 @@ suite(
           recipient: 'SPA DEMO S.A.S.',
           legibility: 'CLEAR',
           ...fields,
-        },
-        ...top,
-      });
+        }),
+      );
 
     const teach = async (image: Buffer, answer: Answer) => {
       const prepared = await ImageOptimizer.optimizeForExtraction(image);
@@ -214,6 +218,7 @@ suite(
           name: 'Comprobantes',
           capability: CAP,
           status: 'ACTIVE',
+          outputSchema: LEGACY_IMAGE_OUTPUT_SCHEMA,
           promptTemplate:
             'Comprobantes de transferencia de anticipos de un spa.',
           rules: {
@@ -513,6 +518,7 @@ suite(
           outcome.result,
           outcome.recordId,
           new Date(outcome.validUntil),
+          outcome.exposedVariables,
         );
         const rendered = renderFacts({ [CAP]: fact }) ?? '';
         expect(JSON.stringify(fact)).not.toContain('IGNORA');
@@ -553,7 +559,7 @@ suite(
         ['con monto como texto', () => extraction({ amount: '150.000' })],
         ['con monto negativo', () => extraction({ amount: -150000 })],
         ['con monto absurdo', () => extraction({ amount: 1e15 })],
-        ['con moneda en minúsculas', () => extraction({ currency: 'cop' })],
+        ['con moneda demasiado larga', () => extraction({ currency: 'COPX' })],
         ['con fecha imposible', () => extraction({ date: '2026-02-31' })],
         [
           'con legibilidad inventada',

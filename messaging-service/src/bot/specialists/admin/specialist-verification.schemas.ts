@@ -3,6 +3,7 @@ import {
   MAX_PROMPT_LENGTH,
   capabilitySchema,
   contextSourcesDocumentSchema,
+  declaredOutputSchemaSchema,
   VERDICTS,
   reasonCodeSchema,
   safeText,
@@ -58,6 +59,7 @@ export type ListVerificationsQuery = z.infer<typeof listVerificationsSchema>;
 export const dryRunDraftSchema = z
   .object({
     promptTemplate: z.string().min(1).max(MAX_PROMPT_LENGTH).optional(),
+    outputSchema: declaredOutputSchemaSchema.optional(),
     rules: rulesDocumentSchema.optional(),
     contextSources: contextSourcesDocumentSchema.optional(),
   })

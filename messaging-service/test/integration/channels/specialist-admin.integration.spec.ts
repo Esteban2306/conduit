@@ -9,6 +9,7 @@ import { PrismaClient } from '@prisma/client';
 import { SpecialistAdminService } from 'src/bot/specialists/admin/SpecialistAdminService';
 import { isolatedInfra } from '../../helpers/isolated-env';
 import { createTestPrisma } from '../../helpers/prisma.helper';
+import { LEGACY_IMAGE_OUTPUT_SCHEMA } from 'src/bot/specialists/backfill/backfill-specialists';
 
 const infra = isolatedInfra();
 const suite = infra ? describe : describe.skip;
@@ -32,6 +33,7 @@ suite('Administración de especialistas contra la base aislada', () => {
     name: 'Comprobantes de pago',
     capability: 'image-analysis',
     promptTemplate: 'Comprobantes de anticipo.',
+    outputSchema: LEGACY_IMAGE_OUTPUT_SCHEMA,
     ...extra,
   });
   const create = (extra: Record<string, unknown> = {}, tenant = tenantA) =>
@@ -557,6 +559,155 @@ suite('Administración de especialistas contra la base aislada', () => {
       const first = await service.archive(tenantA, created.id);
       const second = await service.archive(tenantA, created.id);
       expect(second.archivedAt?.getTime()).toBe(first.archivedAt?.getTime());
+    });
+  });
+  describe('variables de salida', () => {
+    const landscape = {
+      version: 1,
+      variables: [
+        {
+          name: 'kind',
+          type: 'enum',
+          values: ['beach', 'city'],
+          description: 'Tipo de paisaje',
+        },
+        { name: 'has_people', type: 'boolean', description: 'Hay personas' },
+      ],
+      uniqueBy: [],
+    };
+
+    it('un especialista que no es de comprobantes se crea y versiona igual', async () => {
+      const created = await create({
+        name: 'Paisajes',
+        capability: 'landscape-check',
+        outputSchema: landscape,
+        rules: {
+          version: 1,
+          rules: [
+            {
+              field: 'kind',
+              op: 'in',
+              ref: { literal: ['beach'] },
+              onFail: 'INVALID',
+            },
+            {
+              field: 'has_people',
+              op: 'eq',
+              ref: { literal: false },
+              onFail: 'NEEDS_REVIEW',
+            },
+          ],
+        },
+      });
+      expect(created.outputSchema).toEqual(landscape);
+      const [first] = await versions(created.id);
+      expect(first.version).toBe(1);
+      const snapshot = await service.getVersion(tenantA, created.id, 1);
+      expect(snapshot.outputSchema).toEqual(landscape);
+    });
+
+    it('sin variables de salida no se puede crear', async () => {
+      await expect(create({ outputSchema: undefined })).rejects.toMatchObject({
+        status: 400,
+      });
+      await expect(
+        create({ outputSchema: { version: 1, variables: [], uniqueBy: [] } }),
+      ).rejects.toMatchObject({ status: 400 });
+    });
+
+    it('rechaza reglas incompatibles con las variables declaradas', async () => {
+      await expect(
+        create({
+          outputSchema: landscape,
+          rules: { version: 1, rules: [rule()] },
+        }),
+      ).rejects.toMatchObject({
+        status: 400,
+        response: {
+          details: { ruleIssues: [expect.objectContaining({ index: 0 })] },
+        },
+      });
+      await expect(
+        create({
+          outputSchema: landscape,
+          rules: {
+            version: 1,
+            rules: [
+              {
+                field: 'kind',
+                op: 'eq',
+                ref: { literal: 'desert' },
+                onFail: 'INVALID',
+              },
+            ],
+          },
+        }),
+      ).rejects.toMatchObject({ status: 400 });
+    });
+
+    it('cambiar las variables versiona y guarda la instantánea', async () => {
+      const created = await create({ name: 'Cambio de variables' });
+      const updated = await service.update(tenantA, 'user-2', created.id, {
+        outputSchema: landscape,
+        rules: { version: 1, rules: [] },
+        changeNote: 'Ahora analiza paisajes',
+      });
+      expect(updated.version).toBe(2);
+      expect(updated.outputSchema).toEqual(landscape);
+      expect(
+        (await service.getVersion(tenantA, created.id, 1)).outputSchema,
+      ).toEqual(LEGACY_IMAGE_OUTPUT_SCHEMA);
+    });
+
+    it('quitar una variable que una regla usa se rechaza', async () => {
+      const created = await create({
+        name: 'Con regla',
+        rules: { version: 1, rules: [rule()] },
+      });
+      await expect(
+        service.update(tenantA, 'user-2', created.id, {
+          outputSchema: landscape,
+        }),
+      ).rejects.toMatchObject({ status: 400 });
+      const same = await service.get(tenantA, created.id);
+      expect(same.version).toBe(1);
+    });
+
+    it('restaurar una versión devuelve también sus variables', async () => {
+      const created = await create({ name: 'Restaurable' });
+      await service.update(tenantA, 'user-2', created.id, {
+        outputSchema: landscape,
+        rules: { version: 1, rules: [] },
+      });
+      const restored = await service.restore(
+        tenantA,
+        'user-3',
+        created.id,
+        1,
+        {},
+      );
+      expect(restored.version).toBe(3);
+      expect(restored.outputSchema).toEqual(LEGACY_IMAGE_OUTPUT_SCHEMA);
+    });
+
+    it('un cambio solo en las variables cuenta como cambio de contenido', async () => {
+      const created = await create({ name: 'Solo variables' });
+      const changed = {
+        ...LEGACY_IMAGE_OUTPUT_SCHEMA,
+        variables: LEGACY_IMAGE_OUTPUT_SCHEMA.variables.map((v) =>
+          v.name === 'recipient' ? { ...v, maxLength: 80 } : v,
+        ),
+      };
+      const updated = await service.update(tenantA, 'user-2', created.id, {
+        outputSchema: changed,
+      });
+      expect(updated.version).toBe(2);
+    });
+
+    it('uniqueBy con una variable no declarada se rechaza', async () => {
+      await expect(
+        create({ outputSchema: { ...landscape, uniqueBy: ['otra'] } }),
+      ).rejects.toMatchObject({ status: 400 });
     });
   });
 });

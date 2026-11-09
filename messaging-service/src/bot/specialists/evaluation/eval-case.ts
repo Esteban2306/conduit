@@ -3,7 +3,13 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import sharp from 'sharp';
 import { z } from 'zod';
-import { VERDICTS } from '../contracts';
+import {
+  OutputSchemaDocument,
+  VERDICTS,
+  findVariable,
+  variableNameSchema,
+  variableValueSchema,
+} from '../contracts';
 
 export const EVAL_IMAGE_EXTENSIONS = [
   '.jpg',
@@ -19,27 +25,16 @@ const SUPPORTED_FORMATS = new Set(['jpeg', 'png', 'webp']);
 export const EVAL_VERDICTS = VERDICTS;
 export type EvalVerdict = (typeof EVAL_VERDICTS)[number];
 
-export const EVAL_FIELD_NAMES = [
-  'amount',
-  'currency',
-  'date',
-  'reference',
-  'recipient',
-  'legibility',
-] as const;
-export type EvalFieldName = (typeof EVAL_FIELD_NAMES)[number];
+export type EvalFieldName = string;
 
 const expectedFieldsSchema = z
-  .object({
-    amount: z.number().finite().nullable(),
-    currency: z.string().max(10).nullable(),
-    date: z.string().max(40).nullable(),
-    reference: z.string().max(120).nullable(),
-    recipient: z.string().max(120).nullable(),
-    legibility: z.enum(['CLEAR', 'PARTIAL', 'UNREADABLE']),
-  })
-  .partial()
-  .strict();
+  .record(
+    variableNameSchema,
+    z.union([z.string().max(200), z.number().finite(), z.boolean(), z.null()]),
+  )
+  .refine((record) => Object.keys(record).length <= 12, {
+    message: 'Demasiados campos esperados',
+  });
 
 export const expectedSchema = z
   .object({
@@ -195,4 +190,33 @@ export function bankFingerprint(
       sorted.map((entry) => [entry.id, entry.imageSha256, entry.expected]),
     ),
   );
+}
+
+export function validateExpected(
+  schema: OutputSchemaDocument,
+  cases: EvalCase[],
+): BankProblem[] {
+  const problems: BankProblem[] = [];
+  for (const item of cases) {
+    for (const [name, value] of Object.entries(item.expected.fields ?? {})) {
+      const variable = findVariable(schema, name);
+      if (!variable) {
+        problems.push({
+          file: `${item.id}${EXPECTED_SUFFIX}`,
+          message: `El campo ${name} no está declarado por el especialista`,
+        });
+        continue;
+      }
+      if (
+        value !== null &&
+        !variableValueSchema(variable).safeParse(value).success
+      ) {
+        problems.push({
+          file: `${item.id}${EXPECTED_SUFFIX}`,
+          message: `El valor esperado de ${name} no es válido para el tipo ${variable.type}`,
+        });
+      }
+    }
+  }
+  return problems;
 }

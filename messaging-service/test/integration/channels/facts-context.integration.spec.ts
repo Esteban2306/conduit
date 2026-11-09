@@ -53,6 +53,7 @@ suite('Hechos de la conversación contra la base aislada', () => {
         result({ verdict }),
         randomUUID(),
         new Date(Date.now() + 3_600_000),
+        { amount: 150000, currency: 'COP', date: '2026-11-08' },
       ),
     );
     await service.updateContext(conversationId, {
@@ -97,9 +98,7 @@ suite('Hechos de la conversación contra la base aislada', () => {
     expect(facts[0][0]).toBe('image-analysis');
     expect(facts[0][1]).toMatchObject({
       verdict: 'VALID',
-      amount: 150000,
-      currency: 'COP',
-      date: '2026-11-08',
+      variables: { amount: 150000, currency: 'COP', date: '2026-11-08' },
       pendingReview: false,
     });
   });

@@ -1,14 +1,6 @@
 import { z } from 'zod';
+import { OutputSchemaDocument, Variable } from './output-schema';
 import { safeText } from './keys';
-
-export const EXTRACTION_FIELD_NAMES = [
-  'amount',
-  'currency',
-  'date',
-  'reference',
-  'recipient',
-  'legibility',
-] as const;
 
 export function isRealCalendarDate(value: string): boolean {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
@@ -26,39 +18,99 @@ export function isRealCalendarDate(value: string): boolean {
   );
 }
 
-export const extractionFieldNameSchema = z.enum(EXTRACTION_FIELD_NAMES);
-export type ExtractionFieldName = z.infer<typeof extractionFieldNameSchema>;
-
 export const LEGIBILITY_LEVELS = ['CLEAR', 'PARTIAL', 'UNREADABLE'] as const;
+export type Legibility = (typeof LEGIBILITY_LEVELS)[number];
 
-export const extractedFieldsSchema = z
-  .object({
-    amount: z.number().finite().min(0).max(1e12).nullable(),
-    currency: z
-      .string()
-      .regex(/^[A-Z]{3}$/)
-      .nullable(),
-    date: z
-      .string()
-      .regex(/^\d{4}-\d{2}-\d{2}$/)
-      .refine(isRealCalendarDate, { message: 'Fecha inválida' })
-      .nullable(),
-    reference: safeText(64).nullable(),
-    recipient: safeText(120).nullable(),
-    legibility: z.enum(LEGIBILITY_LEVELS),
-  })
-  .partial()
-  .strict();
-export type ExtractedFields = z.infer<typeof extractedFieldsSchema>;
+export type VariableValue = string | number | boolean;
+export type Variables = Record<string, VariableValue | null>;
 
-export const EXTRACTION_VERSION = 1;
+export const DEFAULT_NUMBER_BOUND = 1e12;
+export const DEFAULT_STRING_LENGTH = 120;
 
-export const extractionOutputSchema = z
-  .object({
-    version: z.literal(EXTRACTION_VERSION),
-    confidence: z.number().min(0).max(1).optional(),
-    isExpectedDocument: z.boolean().optional(),
-    fields: extractedFieldsSchema,
-  })
-  .strict();
-export type ExtractionOutput = z.infer<typeof extractionOutputSchema>;
+export function variableValueSchema(variable: Variable): z.ZodType {
+  switch (variable.type) {
+    case 'number':
+      return z
+        .number()
+        .finite()
+        .min(variable.min ?? -DEFAULT_NUMBER_BOUND)
+        .max(variable.max ?? DEFAULT_NUMBER_BOUND);
+    case 'string':
+      return safeText(variable.maxLength ?? DEFAULT_STRING_LENGTH);
+    case 'boolean':
+      return z.boolean();
+    case 'date':
+      return z
+        .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/)
+        .refine(isRealCalendarDate, { message: 'Fecha inválida' });
+    case 'enum':
+      return z.enum(variable.values as [string, ...string[]]);
+  }
+}
+
+export function variablesSchemaFor(
+  schema: OutputSchemaDocument,
+): z.ZodType<Variables> {
+  const shape: Record<string, z.ZodType> = {};
+  for (const variable of schema.variables) {
+    shape[variable.name] = variableValueSchema(variable).nullable().optional();
+  }
+  return z.object(shape).strict().partial() as unknown as z.ZodType<Variables>;
+}
+
+export const EXTRACTION_VERSION = 2;
+
+export interface ExtractionOutput {
+  version: typeof EXTRACTION_VERSION;
+  confidence?: number;
+  isExpectedDocument?: boolean;
+  legibility?: Legibility;
+  variables: Variables;
+}
+
+export function extractionSchemaFor(
+  schema: OutputSchemaDocument,
+): z.ZodType<ExtractionOutput> {
+  return z
+    .object({
+      version: z.literal(EXTRACTION_VERSION),
+      confidence: z.number().min(0).max(1).optional(),
+      isExpectedDocument: z.boolean().optional(),
+      legibility: z.enum(LEGIBILITY_LEVELS).optional(),
+      variables: variablesSchemaFor(schema),
+    })
+    .strict();
+}
+
+export function sanitizeVariables(
+  raw: unknown,
+  schema: OutputSchemaDocument,
+): Variables {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const source = raw as Record<string, unknown>;
+  const clean: Variables = {};
+  for (const variable of schema.variables) {
+    if (!Object.prototype.hasOwnProperty.call(source, variable.name)) continue;
+    const value = source[variable.name];
+    if (value === null) {
+      clean[variable.name] = null;
+      continue;
+    }
+    const parsed = variableValueSchema(variable).safeParse(value);
+    if (parsed.success) clean[variable.name] = parsed.data as VariableValue;
+  }
+  return clean;
+}
+
+export const MAX_RECORD_VARIABLES = 12;
+const RECORD_KEY = /^[a-z][a-z0-9_]{0,19}$/;
+
+export const variablesRecordSchema = z
+  .record(
+    z.string().regex(RECORD_KEY),
+    z.union([z.string().max(200), z.number().finite(), z.boolean(), z.null()]),
+  )
+  .refine((record) => Object.keys(record).length <= MAX_RECORD_VARIABLES, {
+    message: 'Demasiadas variables',
+  });

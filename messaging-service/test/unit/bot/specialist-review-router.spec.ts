@@ -59,6 +59,8 @@ const executed = (
   specialistId: 'esp-1',
   recordId: 'rec-1',
   onFailure: 'DEGRADE',
+  blockMessage: null,
+  exposedVariables: {},
   validUntil: new Date(Date.now() + 3_600_000).toISOString(),
   result: {
     version: 1,
@@ -145,7 +147,9 @@ describe('BotRouter: aviso de pendientes de revisión en ACTIVE', () => {
     const { verify, botEscalation } = harness(
       executed('ERROR', { onFailure: 'BLOCK' }),
     );
-    await expect(verify()).resolves.toEqual({ kind: 'BLOCK' });
+    const result = (await verify()) as { kind: string; message: string };
+    expect(result.kind).toBe('BLOCK');
+    expect(typeof result.message).toBe('string');
     expect(botEscalation.notifyVerificationReview).toHaveBeenCalledTimes(1);
   });
 });

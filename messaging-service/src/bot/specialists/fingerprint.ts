@@ -1,31 +1,41 @@
 import { createHash } from 'crypto';
-import { ExtractedFields } from './contracts';
+import { OutputSchemaDocument, Variables, findVariable } from './contracts';
 
-const MIN_REFERENCE_LENGTH = 5;
-const FINGERPRINT_VERSION = 'v1';
+const FINGERPRINT_VERSION = 'v2';
+const NUMBER_DECIMALS = 6;
 
-export function fieldsFingerprint(fields: ExtractedFields): string | null {
-  const { reference, amount, date, currency } = fields;
-  if (
-    typeof reference !== 'string' ||
-    typeof amount !== 'number' ||
-    typeof date !== 'string'
-  ) {
-    return null;
+function normalizeIdentity(text: string): string {
+  return text.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+}
+
+export function variablesFingerprint(
+  schema: OutputSchemaDocument,
+  variables: Variables,
+): string | null {
+  if (schema.uniqueBy.length === 0) return null;
+
+  const parts: string[] = [FINGERPRINT_VERSION];
+  for (const name of schema.uniqueBy) {
+    const variable = findVariable(schema, name);
+    const value = variables[name];
+    if (!variable || value === undefined || value === null) return null;
+
+    let normalized: string;
+    switch (variable.type) {
+      case 'number':
+        if (typeof value !== 'number') return null;
+        normalized = value.toFixed(NUMBER_DECIMALS);
+        break;
+      case 'string': {
+        if (typeof value !== 'string') return null;
+        normalized = normalizeIdentity(value);
+        if (normalized.length < (variable.identityMinLength ?? 1)) return null;
+        break;
+      }
+      default:
+        normalized = String(value);
+    }
+    parts.push(`${name}=${normalized}`);
   }
-
-  const normalizedReference = reference.toLowerCase().replace(/[^a-z0-9]/g, '');
-  if (normalizedReference.length < MIN_REFERENCE_LENGTH) return null;
-
-  return createHash('sha256')
-    .update(
-      [
-        FINGERPRINT_VERSION,
-        normalizedReference,
-        amount.toFixed(2),
-        date,
-        currency ?? '',
-      ].join('|'),
-    )
-    .digest('hex');
+  return createHash('sha256').update(parts.join('|')).digest('hex');
 }

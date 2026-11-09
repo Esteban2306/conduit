@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   capabilitySchema,
   contextSourcesDocumentSchema,
+  declaredOutputSchemaSchema,
   rulesDocumentSchema,
   safeText,
   specialistKeySchema,
@@ -18,6 +19,7 @@ export const createSpecialistSchema = z
     name: safeText(120).min(1),
     capability: capabilitySchema,
     promptTemplate: z.string().min(1).max(MAX_PROMPT_LENGTH),
+    outputSchema: declaredOutputSchemaSchema,
     rules: rulesDocumentSchema.optional(),
     contextSources: contextSourcesDocumentSchema.optional(),
     changeNote,
@@ -31,6 +33,7 @@ export const updateSpecialistSchema = z
   .object({
     name: safeText(120).min(1).optional(),
     promptTemplate: z.string().min(1).max(MAX_PROMPT_LENGTH).optional(),
+    outputSchema: declaredOutputSchemaSchema.optional(),
     rules: rulesDocumentSchema.optional(),
     contextSources: contextSourcesDocumentSchema.optional(),
     status: z.enum(SPECIALIST_STATUSES).optional(),
@@ -40,7 +43,14 @@ export const updateSpecialistSchema = z
   .strict()
   .refine(
     (value) =>
-      ['name', 'promptTemplate', 'rules', 'contextSources', 'status'].some(
+      [
+        'name',
+        'promptTemplate',
+        'outputSchema',
+        'rules',
+        'contextSources',
+        'status',
+      ].some(
         (field) => (value as Record<string, unknown>)[field] !== undefined,
       ),
     { message: 'Indica al menos un campo para modificar' },

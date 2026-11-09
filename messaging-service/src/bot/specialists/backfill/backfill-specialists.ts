@@ -7,6 +7,51 @@ import { DEFAULT_TIMEOUT_MS } from '../contracts';
 export const DEFAULT_IMAGE_PROMPT =
   'Imágenes que envían los clientes por WhatsApp, por ejemplo comprobantes de pago o fotos de documentos. Lee los datos visibles tal como aparecen.';
 
+export const LEGACY_IMAGE_OUTPUT_SCHEMA = {
+  version: 1,
+  variables: [
+    {
+      name: 'amount',
+      type: 'number',
+      min: 0,
+      max: 1_000_000_000_000,
+      tolerance: 0.005,
+      label: 'monto',
+      description: 'Valor total del documento, solo el número',
+    },
+    {
+      name: 'currency',
+      type: 'string',
+      maxLength: 3,
+      exposeToBot: true,
+      label: 'moneda',
+      description: 'Código ISO de 3 letras mayúsculas',
+    },
+    {
+      name: 'date',
+      type: 'date',
+      label: 'fecha',
+      description: 'Fecha del documento en formato YYYY-MM-DD',
+    },
+    {
+      name: 'reference',
+      type: 'string',
+      maxLength: 64,
+      identityMinLength: 5,
+      label: 'referencia',
+      description: 'Número o código de referencia del documento',
+    },
+    {
+      name: 'recipient',
+      type: 'string',
+      maxLength: 120,
+      label: 'destinatario',
+      description: 'Nombre de quien recibe',
+    },
+  ],
+  uniqueBy: ['reference', 'amount', 'date'],
+};
+
 export interface BackfillOptions {
   apply: boolean;
   tenantId?: string;
@@ -125,6 +170,7 @@ export async function backfillSpecialists(
             capability: IMAGE_ANALYSIS_CAPABILITY,
             status: 'ACTIVE',
             promptTemplate: DEFAULT_IMAGE_PROMPT,
+            outputSchema: LEGACY_IMAGE_OUTPUT_SCHEMA,
           },
         });
         await tx.aiModelConfig.createMany({

@@ -1,7 +1,9 @@
 import { z } from 'zod';
 import {
   MAX_HUMAN_SUMMARY,
+  OutputSchemaDocument,
   VERDICTS,
+  Variables,
   VerificationResult,
   capabilitySchema,
   reasonCodeSchema,
@@ -12,6 +14,17 @@ export const FACTS_KEY = 'facts';
 export const MAX_FACTS = 5;
 export const MAX_FACT_REASONS = 5;
 export const MAX_RENDERED_FACTS = 3;
+export const MAX_FACT_VARIABLES = 8;
+export const MAX_FACT_TEXT = 64;
+
+const factVariablesSchema = z
+  .record(
+    z.string().regex(/^[a-z][a-z0-9_]{0,19}$/),
+    z.union([safeText(MAX_FACT_TEXT), z.number().finite(), z.boolean()]),
+  )
+  .refine((record) => Object.keys(record).length <= MAX_FACT_VARIABLES, {
+    message: 'Demasiadas variables',
+  });
 
 const PENDING_VERDICTS = new Set(['NEEDS_REVIEW', 'ERROR']);
 
@@ -20,15 +33,7 @@ export const factEntrySchema = z
     verdict: z.enum(VERDICTS),
     confidence: z.number().min(0).max(1),
     reasonCodes: z.array(reasonCodeSchema).max(MAX_FACT_REASONS),
-    amount: z.number().finite().min(0).max(1e12).optional(),
-    currency: z
-      .string()
-      .regex(/^[A-Z]{3}$/)
-      .optional(),
-    date: z
-      .string()
-      .regex(/^\d{4}-\d{2}-\d{2}$/)
-      .optional(),
+    variables: factVariablesSchema.optional(),
     summary: safeText(MAX_HUMAN_SUMMARY),
     verificationId: z.string().uuid().nullable(),
     at: z.string().datetime(),
@@ -39,26 +44,55 @@ export const factEntrySchema = z
   .strict();
 export type FactEntry = z.infer<typeof factEntrySchema>;
 
+export function exposedVariables(
+  schema: OutputSchemaDocument,
+  variables: Variables,
+): Record<string, string | number | boolean> {
+  const allowed: Variables = {};
+  for (const variable of schema.variables) {
+    const exposable =
+      variable.type !== 'string' || variable.exposeToBot === true;
+    if (exposable && variable.name in variables) {
+      allowed[variable.name] = variables[variable.name];
+    }
+  }
+  return factVariables(allowed);
+}
+
 export function buildFact(
   result: VerificationResult,
   verificationId: string | null,
   validUntil: Date,
+  exposed: Record<string, string | number | boolean>,
   now: Date = new Date(),
 ): FactEntry {
-  const { amount, currency, date } = result.fields;
+  const variables = factVariables(exposed);
   return {
     verdict: result.verdict,
     confidence: Math.round(result.confidence * 100) / 100,
     reasonCodes: result.reasonCodes.slice(0, MAX_FACT_REASONS),
-    ...(typeof amount === 'number' && { amount }),
-    ...(typeof currency === 'string' && { currency }),
-    ...(typeof date === 'string' && { date }),
+    ...(Object.keys(variables).length > 0 && { variables }),
     summary: result.humanSummary,
     verificationId,
     at: now.toISOString(),
     validUntil: validUntil.toISOString(),
     pendingReview: PENDING_VERDICTS.has(result.verdict),
   };
+}
+
+function factVariables(
+  fields: Record<string, string | number | boolean | null>,
+): Record<string, string | number | boolean> {
+  const picked: Record<string, string | number | boolean> = {};
+  for (const [name, value] of Object.entries(fields)) {
+    if (Object.keys(picked).length >= MAX_FACT_VARIABLES) break;
+    if (value === null || value === undefined) continue;
+    const candidate =
+      typeof value === 'string' ? value.slice(0, MAX_FACT_TEXT) : value;
+    const parsed = factVariablesSchema.safeParse({ [name]: candidate });
+    if (parsed.success) picked[name] = candidate;
+  }
+  return picked;
 }
 
 function validEntries(raw: unknown): Array<[string, FactEntry]> {
@@ -117,12 +151,9 @@ export function renderFacts(
   if (facts.length === 0) return null;
 
   const lines = facts.map(([capability, entry]) => {
-    const data = [
-      typeof entry.amount === 'number'
-        ? `monto ${entry.amount}${entry.currency ? ` ${entry.currency}` : ''}`
-        : null,
-      entry.date ? `fecha ${entry.date}` : null,
-    ].filter(Boolean);
+    const data = Object.entries(entry.variables ?? {}).map(
+      ([name, value]) => `${name}: ${String(value)}`,
+    );
     const parts = [
       `${capability}: ${entry.verdict} (confianza ${entry.confidence})`,
       data.length > 0 ? data.join(', ') : null,

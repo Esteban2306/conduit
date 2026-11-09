@@ -1,6 +1,8 @@
 import { createHash, randomBytes } from 'crypto';
 import sharp from 'sharp';
-import { fieldsFingerprint } from 'src/bot/specialists/fingerprint';
+import { variablesFingerprint } from 'src/bot/specialists/fingerprint';
+import { LEGACY_IMAGE_OUTPUT_SCHEMA } from 'src/bot/specialists/backfill/backfill-specialists';
+import { outputSchemaDocumentSchema } from 'src/bot/specialists/contracts';
 import { hashImage } from 'src/bot/specialists/image-hash';
 
 const pixels = (width: number, height: number, seed = 0) => {
@@ -72,7 +74,7 @@ describe('hashImage', () => {
   });
 });
 
-describe('fieldsFingerprint', () => {
+describe('variablesFingerprint', () => {
   const fields = (extra: Record<string, unknown> = {}) => ({
     amount: 150000,
     currency: 'COP',
@@ -83,7 +85,10 @@ describe('fieldsFingerprint', () => {
     ...extra,
   });
   const fingerprint = (extra: Record<string, unknown> = {}) =>
-    fieldsFingerprint(fields(extra) as never);
+    variablesFingerprint(
+      outputSchemaDocumentSchema.parse(LEGACY_IMAGE_OUTPUT_SCHEMA),
+      fields(extra),
+    );
 
   it('da una huella de 64 caracteres', () => {
     expect(fingerprint()).toHaveLength(64);
@@ -99,8 +104,8 @@ describe('fieldsFingerprint', () => {
     expect(fingerprint({ amount: 150000.0 })).toBe(fingerprint());
   });
 
-  it('el destinatario y la legibilidad no cambian la huella', () => {
-    expect(fingerprint({ recipient: 'Otro', legibility: 'PARTIAL' })).toBe(
+  it('lo que no está en uniqueBy no cambia la huella', () => {
+    expect(fingerprint({ recipient: 'Otro', currency: 'USD' })).toBe(
       fingerprint(),
     );
   });
@@ -109,7 +114,6 @@ describe('fieldsFingerprint', () => {
     ['monto', { amount: 150001 }],
     ['fecha', { date: '2026-11-09' }],
     ['referencia', { reference: 'TRX-48210378' }],
-    ['moneda', { currency: 'USD' }],
   ])('cambia si cambia la %s', (_name, extra) => {
     expect(fingerprint(extra)).not.toBe(fingerprint());
   });

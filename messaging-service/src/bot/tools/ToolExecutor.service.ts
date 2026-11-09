@@ -5,7 +5,7 @@ import { PrismaService } from 'src/shared/prisma.service';
 import { SecretEncryptionService } from 'src/shared/security/secret-encryption.service';
 import { canonicalJson, setByPath } from './json-path.util';
 import { createHmac } from 'crypto';
-import { extractedFieldsSchema } from '../specialists/contracts';
+import { variablesRecordSchema } from '../specialists/contracts';
 import { hashImage, NORMALIZED_HASH_VERSION } from '../specialists/image-hash';
 import {
   AcceptableRecord,
@@ -407,7 +407,7 @@ export class ToolExecutorService {
         responseBody: {
           code: VERIFICATION_REQUIRED,
           message:
-            'Esta acción exige un comprobante con verificación aprobada, vigente y sin usar. Pídele a la clienta que envíe el comprobante en este chat o informa que una persona lo revisará.',
+            'Esta acción exige una imagen con verificación aprobada, vigente y sin usar. Pídele a la clienta que envíe la imagen en este chat o informa que una persona la revisará.',
           nextStep: 'WAIT_FOR_REVIEW',
         },
         httpStatus: 422,
@@ -481,7 +481,7 @@ export class ToolExecutorService {
     conversationId: string,
     capability: string,
   ): Record<string, unknown> {
-    const fields = extractedFieldsSchema.safeParse(record.fields);
+    const fields = variablesRecordSchema.safeParse(record.fields);
     return {
       version: PASSPORT_VERSION,
       verificationId: record.id,

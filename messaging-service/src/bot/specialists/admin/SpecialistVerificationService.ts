@@ -12,7 +12,9 @@ import sharp from 'sharp';
 import { PrismaService } from 'src/shared/prisma.service';
 import {
   contextSourcesDocumentSchema,
+  outputSchemaDocumentSchema,
   rulesDocumentSchema,
+  validateRulesAgainst,
 } from '../contracts';
 import { undeclaredGroundingKeys } from '../grounding-config';
 import { SpecialistRuntime } from '../SpecialistRuntime';
@@ -65,6 +67,7 @@ const SPECIALIST_SELECT = {
   capability: true,
   version: true,
   promptTemplate: true,
+  outputSchema: true,
   rules: true,
   contextSources: true,
 } satisfies Prisma.SpecialistSelect;
@@ -222,9 +225,10 @@ export class SpecialistVerificationService {
     });
     if (!specialist) throw new NotFoundException('Especialista no encontrado');
 
+    const outputSchema = draft.outputSchema ?? specialist.outputSchema;
     const rules = draft.rules ?? specialist.rules;
     const contextSources = draft.contextSources ?? specialist.contextSources;
-    this.assertCoherent(rules, contextSources);
+    this.assertCoherent(outputSchema, rules, contextSources);
 
     const outcome = await this.runtime.dryRun({
       tenantId,
@@ -232,6 +236,7 @@ export class SpecialistVerificationService {
       version: specialist.version,
       capability: specialist.capability,
       promptTemplate: draft.promptTemplate ?? specialist.promptTemplate,
+      outputSchema,
       rules,
       contextSources,
       image: image.buffer,
@@ -242,6 +247,7 @@ export class SpecialistVerificationService {
       persisted: false,
       usedDraft: {
         promptTemplate: draft.promptTemplate !== undefined,
+        outputSchema: draft.outputSchema !== undefined,
         rules: draft.rules !== undefined,
         contextSources: draft.contextSources !== undefined,
       },
@@ -341,14 +347,33 @@ export class SpecialistVerificationService {
     }
   }
 
-  private assertCoherent(rules: unknown, contextSources: unknown): void {
+  private assertCoherent(
+    outputSchema: unknown,
+    rules: unknown,
+    contextSources: unknown,
+  ): void {
+    const parsedSchema = outputSchemaDocumentSchema.safeParse(outputSchema);
     const parsedRules = rulesDocumentSchema.safeParse(rules);
     const parsedSources =
       contextSourcesDocumentSchema.safeParse(contextSources);
-    if (!parsedRules.success || !parsedSources.success) {
+    if (
+      !parsedSchema.success ||
+      !parsedRules.success ||
+      !parsedSources.success
+    ) {
       throw this.invalid(
         'draft',
-        'Las reglas o fuentes de contexto no son válidas',
+        'Las variables, reglas o fuentes de contexto no son válidas',
+      );
+    }
+    const ruleIssues = validateRulesAgainst(
+      parsedSchema.data,
+      parsedRules.data,
+    );
+    if (ruleIssues.length > 0) {
+      throw this.invalid(
+        'draft.rules',
+        ruleIssues.map((issue) => issue.message).join('; '),
       );
     }
     const undeclared = undeclaredGroundingKeys(

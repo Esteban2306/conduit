@@ -9,7 +9,9 @@ import { EventBusService } from 'src/infra/events/event.service';
 import { EVENT_TYPES } from 'src/infra/events/constants/event.types';
 import { maskSecrets } from 'src/shared/security/mask-secrets';
 import {
-  ExtractedFields,
+  EMPTY_OUTPUT_SCHEMA,
+  OutputSchemaDocument,
+  Variables,
   MAX_REASON_CODES,
   MAX_TIMEOUT_MS,
   MIN_TIMEOUT_MS,
@@ -17,7 +19,9 @@ import {
   contextSourcesDocumentSchema,
   Verdict,
   VerificationResult,
-  extractedFieldsSchema,
+  outputSchemaDocumentSchema,
+  sanitizeVariables,
+  validateRulesAgainst,
   rulesDocumentSchema,
   verificationResultSchema,
 } from './contracts';
@@ -27,18 +31,15 @@ import {
   parseExtraction,
 } from './extraction-prompt';
 import { decideVerdict, summarize } from './verdict-policy';
-import { fieldsFingerprint } from './fingerprint';
+import { variablesFingerprint } from './fingerprint';
+import { exposedVariables } from './facts';
 import { ImageHash, hashImage } from './image-hash';
 import { GroundingOutcome, GroundingResolver } from './GroundingResolver';
 import {
   referencedGroundingKeys,
   undeclaredGroundingKeys,
 } from './grounding-config';
-import {
-  PriorRecord,
-  ReuseFinding,
-  VerificationLedger,
-} from './VerificationLedger';
+import { ReuseFinding, VerificationLedger } from './VerificationLedger';
 
 const MAX_OUTPUT_TOKENS = 1024;
 const DRY_RUN_TIMEOUT_MS = 20_000;
@@ -65,6 +66,7 @@ export interface DryRunInput {
   version: number;
   capability: string;
   promptTemplate: string;
+  outputSchema: unknown;
   rules: unknown;
   contextSources: unknown;
   image: Buffer;
@@ -95,6 +97,8 @@ export type SpecialistRunOutcome =
       result: VerificationResult;
       recordId: string | null;
       onFailure: 'DEGRADE' | 'BLOCK';
+      blockMessage: string | null;
+      exposedVariables: Record<string, string | number | boolean>;
       validUntil: string;
       reuse?: 'CACHED' | 'ALREADY_USED' | 'OTHER_CONTACT' | 'RESENT';
     };
@@ -103,11 +107,13 @@ interface ResolvedBinding {
   mode: 'OFF' | 'SHADOW' | 'ACTIVE';
   timeoutMs: number;
   onFailure: 'DEGRADE' | 'BLOCK';
+  blockMessage: string | null;
   specialist: {
     id: string;
     status: 'ACTIVE' | 'INACTIVE';
     version: number;
     promptTemplate: string;
+    outputSchema: unknown;
     rules: unknown;
     contextSources: unknown;
   };
@@ -184,6 +190,7 @@ export class SpecialistRuntime {
         await this.safeFinding(() =>
           this.ledger.checkByHash({ ...reuseQuery, hash }),
         ),
+        this.readSchema(binding.specialist.outputSchema),
       );
       if (early.kind !== 'NONE') {
         return this.finishEarly(input, binding, hash, early, startedAt);
@@ -191,7 +198,7 @@ export class SpecialistRuntime {
     }
 
     const analysis = await this.analyze(binding, input);
-    const fingerprint = fieldsFingerprint(analysis.fields);
+    const fingerprint = variablesFingerprint(analysis.schema, analysis.fields);
 
     let reuse: ReuseFinding['kind'] = 'NONE';
     if (mode === 'ACTIVE' && fingerprint && analysis.verdict !== 'ERROR') {
@@ -225,6 +232,8 @@ export class SpecialistRuntime {
       result,
       recordId,
       onFailure: binding.onFailure,
+      blockMessage: binding.blockMessage,
+      exposedVariables: exposedVariables(analysis.schema, analysis.fields),
       validUntil: this.validUntil(),
       ...(reuse !== 'NONE' && { reuse }),
     };
@@ -236,11 +245,13 @@ export class SpecialistRuntime {
       mode: 'SHADOW',
       timeoutMs: DRY_RUN_TIMEOUT_MS,
       onFailure: 'DEGRADE',
+      blockMessage: null,
       specialist: {
         id: input.specialistId,
         status: 'ACTIVE',
         version: input.version,
         promptTemplate: input.promptTemplate,
+        outputSchema: input.outputSchema,
         rules: input.rules,
         contextSources: input.contextSources,
       },
@@ -275,13 +286,15 @@ export class SpecialistRuntime {
     startedAt: number,
   ): Promise<SpecialistRunOutcome> {
     const { record } = finding;
-    const fields = this.priorFields(record);
+    const schema = this.readSchema(binding.specialist.outputSchema);
+    const fields = sanitizeVariables(record.fields, schema);
 
     if (finding.kind === 'CACHED') {
       const result = this.buildResult({
         verdict: record.verdict,
         reasonCodes: this.withCode(record.reasonCodes, 'RESENT_SAME_IMAGE'),
         fields,
+        schema,
         confidence: record.confidence,
         modelUsed: null,
         tokens: 0,
@@ -294,6 +307,8 @@ export class SpecialistRuntime {
         result,
         recordId: record.id,
         onFailure: binding.onFailure,
+        blockMessage: binding.blockMessage,
+        exposedVariables: exposedVariables(schema, fields),
         validUntil: this.validUntil(record.createdAt),
         reuse: 'CACHED',
       };
@@ -304,6 +319,7 @@ export class SpecialistRuntime {
       verdict: used ? 'INVALID' : 'NEEDS_REVIEW',
       reasonCodes: [used ? 'ALREADY_USED' : 'REUSED_OTHER_CONTACT'],
       fields,
+      schema,
       confidence: 0,
       modelUsed: null,
       tokens: 0,
@@ -311,7 +327,7 @@ export class SpecialistRuntime {
     const latencyMs = Date.now() - startedAt;
     const recordId = await this.persist(input, binding, {
       hash,
-      fingerprint: fieldsFingerprint(fields),
+      fingerprint: variablesFingerprint(schema, fields),
       result,
       mode: 'ACTIVE',
       latencyMs,
@@ -326,6 +342,8 @@ export class SpecialistRuntime {
       result,
       recordId,
       onFailure: binding.onFailure,
+      blockMessage: binding.blockMessage,
+      exposedVariables: exposedVariables(schema, fields),
       validUntil: this.validUntil(),
       reuse: finding.kind,
     };
@@ -334,13 +352,17 @@ export class SpecialistRuntime {
   private async strongestFinding(
     query: { tenantId: string; capability: string; conversationId: string },
     finding: ReuseFinding,
+    schema: OutputSchemaDocument,
   ): Promise<ReuseFinding> {
     if (finding.kind === 'NONE' || finding.kind === 'ALREADY_USED') {
       return finding;
     }
     const fingerprint =
       finding.record.fingerprint ??
-      fieldsFingerprint(this.priorFields(finding.record));
+      variablesFingerprint(
+        schema,
+        sanitizeVariables(finding.record.fields, schema),
+      );
     if (!fingerprint) return finding;
 
     const byFingerprint = await this.safeFinding(() =>
@@ -384,9 +406,9 @@ export class SpecialistRuntime {
     return next.slice(0, MAX_REASON_CODES);
   }
 
-  private priorFields(record: PriorRecord): ExtractedFields {
-    const parsed = extractedFieldsSchema.safeParse(record.fields);
-    return parsed.success ? parsed.data : {};
+  private readSchema(raw: unknown): OutputSchemaDocument {
+    const parsed = outputSchemaDocumentSchema.safeParse(raw);
+    return parsed.success ? parsed.data : EMPTY_OUTPUT_SCHEMA;
   }
 
   private async safeFinding(
@@ -433,12 +455,14 @@ export class SpecialistRuntime {
         mode: true,
         timeoutMs: true,
         onFailure: true,
+        blockMessage: true,
         specialist: {
           select: {
             id: true,
             status: true,
             version: true,
             promptTemplate: true,
+            outputSchema: true,
             rules: true,
             contextSources: true,
           },
@@ -453,13 +477,24 @@ export class SpecialistRuntime {
     input: SpecialistRunInput,
     options: { skipGrounding?: boolean } = {},
   ): Promise<Analysis> {
+    const declared = outputSchemaDocumentSchema.safeParse(
+      binding.specialist.outputSchema,
+    );
+    if (!declared.success || declared.data.variables.length === 0) {
+      return failure('OUTPUT_SCHEMA_INVALID');
+    }
+    const schema = declared.data;
+
     const rules = rulesDocumentSchema.safeParse(binding.specialist.rules);
-    if (!rules.success) return failure('RULES_INVALID');
+    if (!rules.success) return failure('RULES_INVALID', schema);
+    if (validateRulesAgainst(schema, rules.data).length > 0) {
+      return failure('RULES_INVALID', schema);
+    }
 
     const sources = contextSourcesDocumentSchema.safeParse(
       binding.specialist.contextSources,
     );
-    if (!sources.success) return failure('CONTEXT_SOURCES_INVALID');
+    if (!sources.success) return failure('CONTEXT_SOURCES_INVALID', schema);
 
     const undeclared = undeclaredGroundingKeys(
       rules.data,
@@ -469,7 +504,7 @@ export class SpecialistRuntime {
       this.logger.error(
         `El especialista ${binding.specialist.id} usa claves de contexto sin declarar: ${undeclared.join(', ')}`,
       );
-      return failure('RULES_INVALID');
+      return failure('RULES_INVALID', schema);
     }
 
     const timeoutMs = Math.min(
@@ -496,7 +531,10 @@ export class SpecialistRuntime {
       const response = await budget.race(
         this.orchestrator.analyzeImageForSpecialist(binding.specialist.id, {
           prompt: EXTRACTION_USER_PROMPT,
-          systemPrompt: buildSystemPrompt(binding.specialist.promptTemplate),
+          systemPrompt: buildSystemPrompt(
+            schema,
+            binding.specialist.promptTemplate,
+          ),
           imageBuffer: prepared,
           mimeType: 'image/jpeg',
           maxTokens: MAX_OUTPUT_TOKENS,
@@ -504,10 +542,10 @@ export class SpecialistRuntime {
         }),
       );
 
-      const parsed = parseExtraction(response.content);
+      const parsed = parseExtraction(response.content, schema);
       if (!parsed.ok) {
         return {
-          ...failure(parsed.reason),
+          ...failure(parsed.reason, schema),
           modelUsed: response.modelUsed,
           tokens: response.tokensUsed,
           ...usageOf(response),
@@ -517,9 +555,11 @@ export class SpecialistRuntime {
       const grounded = await grounding;
       const decision = decideVerdict(
         {
-          fields: parsed.output.fields,
+          variables: parsed.output.variables,
+          legibility: parsed.output.legibility,
           isExpectedDocument: parsed.output.isExpectedDocument,
         },
+        schema,
         rules.data,
         {
           grounding: grounded.values,
@@ -532,7 +572,8 @@ export class SpecialistRuntime {
       return {
         verdict: decision.verdict,
         reasonCodes: decision.reasonCodes,
-        fields: parsed.output.fields,
+        fields: parsed.output.variables,
+        schema,
         confidence: parsed.output.confidence ?? 0,
         modelUsed: response.modelUsed,
         tokens: response.tokensUsed,
@@ -543,7 +584,7 @@ export class SpecialistRuntime {
       this.logger.warn(
         `Especialista ${binding.specialist.id}: ${code} | ${this.describe(error)}`,
       );
-      return failure(code);
+      return failure(code, schema);
     }
   }
 
@@ -581,7 +622,7 @@ export class SpecialistRuntime {
       confidence: analysis.verdict === 'ERROR' ? 0 : analysis.confidence,
       fields: analysis.fields,
       reasonCodes: analysis.reasonCodes,
-      humanSummary: summarize(analysis.reasonCodes),
+      humanSummary: summarize(analysis.reasonCodes, analysis.schema),
     };
     const checked = verificationResultSchema.safeParse(candidate);
     if (checked.success) return checked.data;
@@ -692,7 +733,8 @@ export class SpecialistRuntime {
 interface Analysis {
   verdict: Verdict;
   reasonCodes: string[];
-  fields: ExtractedFields;
+  fields: Variables;
+  schema: OutputSchemaDocument;
   confidence: number;
   modelUsed: string | null;
   tokens: number;
@@ -716,11 +758,15 @@ function usageOf(response: {
   };
 }
 
-function failure(code: string): Analysis {
+function failure(
+  code: string,
+  schema: OutputSchemaDocument = EMPTY_OUTPUT_SCHEMA,
+): Analysis {
   return {
     verdict: 'ERROR',
     reasonCodes: [code],
     fields: {},
+    schema,
     confidence: 0,
     modelUsed: null,
     tokens: 0,

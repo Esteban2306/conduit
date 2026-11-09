@@ -96,7 +96,7 @@ export interface IncomingMessageDto {
 }
 
 type ActiveVerification =
-  | { kind: 'BLOCK' }
+  | { kind: 'BLOCK'; message: string }
   | { kind: 'UNANALYZED' }
   | { kind: 'VERIFIED'; line: string; imageVerified: boolean | undefined };
 
@@ -615,7 +615,7 @@ export class BotRouter {
         this.logger.warn(
           `Verificación no disponible para ${phoneNumber} y el vínculo exige bloquear: se responde el texto de espera.`,
         );
-        await this.sendReply(turn, SPECIALIST_BLOCK_TEXT, 0);
+        await this.sendReply(turn, active.message, 0);
         return;
       }
 
@@ -1362,7 +1362,12 @@ export class BotRouter {
     const facts = mergeFacts(
       aiData.context[FACTS_KEY],
       IMAGE_ANALYSIS_CAPABILITY,
-      buildFact(result, outcome.recordId, new Date(outcome.validUntil)),
+      buildFact(
+        result,
+        outcome.recordId,
+        new Date(outcome.validUntil),
+        outcome.exposedVariables,
+      ),
     );
     aiData.context = { ...aiData.context, [FACTS_KEY]: facts };
 
@@ -1387,7 +1392,10 @@ export class BotRouter {
     }
 
     if (result.verdict === 'ERROR' && outcome.onFailure === 'BLOCK') {
-      return { kind: 'BLOCK' };
+      return {
+        kind: 'BLOCK',
+        message: outcome.blockMessage ?? SPECIALIST_BLOCK_TEXT,
+      };
     }
 
     const codes =

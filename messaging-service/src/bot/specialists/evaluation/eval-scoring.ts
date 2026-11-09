@@ -1,10 +1,10 @@
 import {
-  EVAL_FIELD_NAMES,
   EVAL_VERDICTS,
   EvalFieldName,
   EvalVerdict,
   Expected,
 } from './eval-case';
+import { OutputSchemaDocument, Variable, findVariable } from '../contracts';
 
 export interface ActualOutcome {
   verdict: EvalVerdict;
@@ -38,8 +38,10 @@ export interface CaseResult {
 const normalizeText = (value: unknown): string =>
   String(value).trim().toLowerCase().replace(/\s+/g, ' ');
 
+const EXACT_EPSILON = 1e-9;
+
 export function fieldEquals(
-  name: EvalFieldName,
+  variable: Variable | undefined,
   expected: unknown,
   actual: unknown,
 ): boolean {
@@ -47,23 +49,37 @@ export function fieldEquals(
     return actual === null || actual === undefined;
   }
   if (actual === null || actual === undefined) return false;
-  if (name === 'amount') return Number(expected) === Number(actual);
+  if (variable?.type === 'number') {
+    const tolerance = variable.tolerance ?? 0;
+    return (
+      Math.abs(Number(expected) - Number(actual)) <= tolerance + EXACT_EPSILON
+    );
+  }
+  if (
+    variable?.type === 'boolean' ||
+    variable?.type === 'enum' ||
+    variable?.type === 'date'
+  ) {
+    return expected === actual;
+  }
   return normalizeText(expected) === normalizeText(actual);
 }
 
 export function compareFields(
   expected: Expected['fields'],
   actual: ActualOutcome['fields'],
+  schema: OutputSchemaDocument,
 ): EvalFieldName[] {
   if (!expected) return [];
-  return EVAL_FIELD_NAMES.filter(
+  return Object.keys(expected).filter(
     (name) =>
-      name in expected && !fieldEquals(name, expected[name], actual[name]),
+      !fieldEquals(findVariable(schema, name), expected[name], actual[name]),
   );
 }
 
 export function scoreCase(
   base: Pick<CaseResult, 'id' | 'imageSha256' | 'expected'>,
+  schema: OutputSchemaDocument,
   run: {
     actual: ActualOutcome;
     tokens: CaseTokens;
@@ -81,7 +97,7 @@ export function scoreCase(
     verdictMatch: actual.verdict === expected.verdict,
     falseValid: expected.verdict !== 'VALID' && actual.verdict === 'VALID',
     falseReject: expected.verdict === 'VALID' && actual.verdict !== 'VALID',
-    fieldMismatches: compareFields(expected.fields, actual.fields),
+    fieldMismatches: compareFields(expected.fields, actual.fields, schema),
     tokens: run.tokens,
     latencyMs: run.latencyMs,
     modelUsed: run.modelUsed,
@@ -154,8 +170,11 @@ export function summarize(results: CaseResult[]): EvalSummary {
   }
   for (const r of done) confusion[r.expected.verdict][r.actual!.verdict] += 1;
 
+  const fieldNames = [
+    ...new Set(done.flatMap((r) => Object.keys(r.expected.fields ?? {}))),
+  ].sort();
   const fieldAccuracy: Record<string, FieldStat> = {};
-  for (const name of EVAL_FIELD_NAMES) {
+  for (const name of fieldNames) {
     const withField = done.filter(
       (r) => r.expected.fields && name in r.expected.fields,
     );

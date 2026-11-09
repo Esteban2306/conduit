@@ -25,6 +25,7 @@ const BINDING_SELECT = {
   mode: true,
   timeoutMs: true,
   onFailure: true,
+  blockMessage: true,
   createdAt: true,
   updatedAt: true,
 } satisfies Prisma.BotSpecialistBindingSelect;
@@ -132,6 +133,7 @@ export class SpecialistBindingService {
       mode: input.mode,
       timeoutMs: input.timeoutMs,
       onFailure: input.onFailure,
+      blockMessage: input.blockMessage ?? null,
     };
     const binding = await this.prisma.botSpecialistBinding.upsert({
       where: { botConfigId_capability: { botConfigId: botId, capability } },

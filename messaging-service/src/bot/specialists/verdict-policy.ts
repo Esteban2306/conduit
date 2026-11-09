@@ -1,7 +1,9 @@
 import {
-  ExtractedFields,
+  Legibility,
   MAX_HUMAN_SUMMARY,
+  OutputSchemaDocument,
   RulesDocument,
+  Variables,
   Verdict,
 } from './contracts';
 import { EvaluationContext, evaluateRules } from './rule-evaluator';
@@ -12,12 +14,14 @@ export interface PolicyOutcome {
 }
 
 export interface PolicyInput {
-  fields: ExtractedFields;
+  variables: Variables;
+  legibility?: Legibility;
   isExpectedDocument?: boolean;
 }
 
 export function decideVerdict(
   input: PolicyInput,
+  schema: OutputSchemaDocument,
   rules: RulesDocument,
   context: EvaluationContext,
 ): PolicyOutcome {
@@ -28,13 +32,13 @@ export function decideVerdict(
     };
   }
 
-  switch (input.fields.legibility) {
+  switch (input.legibility) {
     case 'UNREADABLE':
       return { verdict: 'UNREADABLE', reasonCodes: ['IMAGE_UNREADABLE'] };
     case 'PARTIAL':
       return { verdict: 'NEEDS_REVIEW', reasonCodes: ['LEGIBILITY_PARTIAL'] };
     case 'CLEAR': {
-      const evaluation = evaluateRules(input.fields, rules, context);
+      const evaluation = evaluateRules(input.variables, schema, rules, context);
       if (evaluation.verdict === 'VALID' && context.requiredUnavailable) {
         return {
           verdict: 'NEEDS_REVIEW',
@@ -69,6 +73,8 @@ const SUMMARIES: Record<string, string> = {
   NO_MODEL: 'El especialista no tiene un modelo disponible.',
   PROVIDER_ERROR: 'El proveedor de IA falló.',
   RULES_INVALID: 'Las reglas del especialista no son válidas.',
+  OUTPUT_SCHEMA_INVALID:
+    'Las variables de salida del especialista no son válidas.',
   CONTEXT_SOURCES_INVALID:
     'Las fuentes de contexto del especialista no son válidas.',
   INTERNAL_ERROR: 'Ocurrió un error interno al analizar.',
@@ -76,31 +82,41 @@ const SUMMARIES: Record<string, string> = {
 
 const FALLBACK_SUMMARY = 'Resultado sin descripción.';
 
-const FIELD_LABELS: Record<string, string> = {
-  AMOUNT: 'monto',
-  CURRENCY: 'moneda',
-  DATE: 'fecha',
-  REFERENCE: 'referencia',
-  RECIPIENT: 'destinatario',
-  LEGIBILITY: 'legibilidad',
-};
+const MISSING_SUFFIX = '_MISSING';
+const FAILED_SUFFIX = /_(GTE|LTE|EQ|IN|WITHIN_DAYS|CONTAINS|FUZZY)_FAILED$/;
 
-function describe(code: string): string | undefined {
-  if (SUMMARIES[code]) return SUMMARIES[code];
-  const missing = /^([A-Z]+)_MISSING$/.exec(code);
-  if (missing && FIELD_LABELS[missing[1]]) {
-    return `No se pudo leer el dato "${FIELD_LABELS[missing[1]]}"; requiere revisión.`;
+function labelsOf(
+  schema: OutputSchemaDocument | undefined,
+): Map<string, string> {
+  const labels = new Map<string, string>();
+  for (const variable of schema?.variables ?? []) {
+    labels.set(variable.name.toUpperCase(), variable.label ?? variable.name);
   }
-  const failed =
-    /^([A-Z]+)_(GTE|LTE|EQ|WITHIN_DAYS|CONTAINS|FUZZY)_FAILED$/.exec(code);
-  if (failed && FIELD_LABELS[failed[1]]) {
-    return `El dato "${FIELD_LABELS[failed[1]]}" no cumple la regla configurada.`;
+  return labels;
+}
+
+function describe(
+  code: string,
+  labels: Map<string, string>,
+): string | undefined {
+  if (SUMMARIES[code]) return SUMMARIES[code];
+  if (code.endsWith(MISSING_SUFFIX)) {
+    const label = labels.get(code.slice(0, -MISSING_SUFFIX.length));
+    if (label) return `No se pudo leer el dato "${label}"; requiere revisión.`;
+  }
+  const failed = FAILED_SUFFIX.exec(code);
+  if (failed) {
+    const label = labels.get(code.slice(0, failed.index));
+    if (label) return `El dato "${label}" no cumple la regla configurada.`;
   }
   return undefined;
 }
 
-export function summarize(reasonCodes: string[]): string {
+export function summarize(
+  reasonCodes: string[],
+  schema?: OutputSchemaDocument,
+): string {
   const first = reasonCodes[0];
-  const text = (first && describe(first)) || FALLBACK_SUMMARY;
+  const text = (first && describe(first, labelsOf(schema))) || FALLBACK_SUMMARY;
   return text.slice(0, MAX_HUMAN_SUMMARY);
 }

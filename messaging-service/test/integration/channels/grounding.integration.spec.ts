@@ -16,6 +16,7 @@ import { ToolExecutorService } from 'src/bot/tools/ToolExecutor.service';
 import { SecretEncryptionService } from 'src/shared/security/secret-encryption.service';
 import { isolatedInfra } from '../../helpers/isolated-env';
 import { createTestPrisma } from '../../helpers/prisma.helper';
+import { LEGACY_IMAGE_OUTPUT_SCHEMA } from 'src/bot/specialists/backfill/backfill-specialists';
 
 const infra = isolatedInfra();
 const suite = infra ? describe : describe.skip;
@@ -55,11 +56,14 @@ suite(
     };
 
     const extraction = (fields: Record<string, unknown> = {}) =>
-      JSON.stringify({
-        version: 1,
-        confidence: 0.9,
-        isExpectedDocument: true,
-        fields: {
+      JSON.stringify(
+        (({ legibility = 'CLEAR', ...variables }) => ({
+          version: 2,
+          confidence: 0.9,
+          isExpectedDocument: true,
+          legibility,
+          variables,
+        }))({
           amount: 150000,
           currency: 'COP',
           date: '2026-11-08',
@@ -67,8 +71,8 @@ suite(
           recipient: 'Spa Demo S.A.S.',
           legibility: 'CLEAR',
           ...fields,
-        },
-      });
+        }),
+      );
 
     const encryption = new SecretEncryptionService({
       get: () => randomBytes(32).toString('hex'),
@@ -160,6 +164,7 @@ suite(
           name: 'Comprobantes',
           capability: CAP,
           status: 'ACTIVE',
+          outputSchema: LEGACY_IMAGE_OUTPUT_SCHEMA,
           promptTemplate: 'Comprobantes de anticipo.',
           rules: {
             version: 1,
@@ -404,6 +409,7 @@ suite(
           name: 'otro',
           capability: 'other-cap',
           status: 'ACTIVE',
+          outputSchema: LEGACY_IMAGE_OUTPUT_SCHEMA,
           promptTemplate: 'p',
           rules: {
             version: 1,

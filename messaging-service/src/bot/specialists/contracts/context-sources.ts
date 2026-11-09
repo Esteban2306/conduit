@@ -19,7 +19,7 @@ export const contextSourceSchema = z
       .max(120)
       .regex(
         /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)*$/,
-        'valuePath debe ser una ruta con puntos, por ejemplo data.anticipo.monto',
+        'valuePath debe ser una ruta con puntos, por ejemplo data.resumen.total',
       )
       .optional(),
     maxAgeSeconds: z
@@ -47,7 +47,7 @@ export const contextSourceSchema = z
         code: 'custom',
         path: ['name'],
         message:
-          'El nombre de un mapeo externo debe ser "<espacio>.<clave>", por ejemplo vars.anticipo',
+          'El nombre de un mapeo externo debe ser "<espacio>.<clave>", por ejemplo vars.minimo',
       });
     }
   });

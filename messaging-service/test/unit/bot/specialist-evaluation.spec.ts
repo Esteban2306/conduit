@@ -21,6 +21,8 @@ import {
   formatComparison,
   formatRun,
 } from 'src/bot/specialists/evaluation/eval-report';
+import { LEGACY_IMAGE_OUTPUT_SCHEMA } from 'src/bot/specialists/backfill/backfill-specialists';
+import { outputSchemaDocumentSchema } from 'src/bot/specialists/contracts';
 import { runEvaluation } from 'src/bot/specialists/evaluation/eval-run';
 import {
   compareFields,
@@ -43,6 +45,10 @@ const png = (seed: number) =>
   })
     .png()
     .toBuffer();
+
+const SCHEMA = outputSchemaDocumentSchema.parse(LEGACY_IMAGE_OUTPUT_SCHEMA);
+const variableOf = (name: string) =>
+  SCHEMA.variables.find((variable) => variable.name === name);
 
 let dir: string;
 beforeEach(async () => {
@@ -110,12 +116,12 @@ describe('banco de evaluación: carga y validación', () => {
     ['veredicto inexistente', JSON.stringify({ verdict: 'APROBADO' })],
     ['campo ajeno', JSON.stringify({ verdict: 'VALID', extra: 1 })],
     [
-      'campo esperado ajeno',
-      JSON.stringify({ verdict: 'VALID', fields: { iban: 'x' } }),
+      'nombre de campo inválido',
+      JSON.stringify({ verdict: 'VALID', fields: { 'Card No': 'x' } }),
     ],
     [
-      'monto no numérico',
-      JSON.stringify({ verdict: 'VALID', fields: { amount: '5' } }),
+      'valor anidado',
+      JSON.stringify({ verdict: 'VALID', fields: { amount: { a: 1 } } }),
     ],
     ['sin veredicto', JSON.stringify({ fields: {} })],
   ])('rechaza un esperado inválido: %s', async (_name, content) => {
@@ -192,13 +198,17 @@ describe('banco de evaluación: carga y validación', () => {
 
 describe('puntaje', () => {
   it('compara montos como números y textos sin importar mayúsculas ni espacios', () => {
-    expect(fieldEquals('amount', 150000, 150000)).toBe(true);
-    expect(fieldEquals('amount', 150000, 150001)).toBe(false);
-    expect(fieldEquals('reference', 'TRX 123', '  trx   123 ')).toBe(true);
-    expect(fieldEquals('reference', 'TRX 123', 'TRX 124')).toBe(false);
-    expect(fieldEquals('recipient', null, null)).toBe(true);
-    expect(fieldEquals('recipient', null, 'Alguien')).toBe(false);
-    expect(fieldEquals('recipient', 'Alguien', null)).toBe(false);
+    expect(fieldEquals(variableOf('amount'), 150000, 150000)).toBe(true);
+    expect(fieldEquals(variableOf('amount'), 150000, 150001)).toBe(false);
+    expect(
+      fieldEquals(variableOf('reference'), 'TRX 123', '  trx   123 '),
+    ).toBe(true);
+    expect(fieldEquals(variableOf('reference'), 'TRX 123', 'TRX 124')).toBe(
+      false,
+    );
+    expect(fieldEquals(variableOf('recipient'), null, null)).toBe(true);
+    expect(fieldEquals(variableOf('recipient'), null, 'Alguien')).toBe(false);
+    expect(fieldEquals(variableOf('recipient'), 'Alguien', null)).toBe(false);
   });
 
   it('solo revisa los campos que el banco espera', () => {
@@ -206,9 +216,10 @@ describe('puntaje', () => {
       compareFields(
         { amount: 1, reference: 'A' },
         { amount: 1, reference: 'B', date: 'x' },
+        SCHEMA,
       ),
     ).toEqual(['reference']);
-    expect(compareFields(undefined, { amount: 9 })).toEqual([]);
+    expect(compareFields(undefined, { amount: 9 }, SCHEMA)).toEqual([]);
   });
 
   const base = { id: 'c', imageSha256: 'h' };
@@ -224,6 +235,7 @@ describe('puntaje', () => {
     expect(
       scoreCase(
         { ...base, expected: { verdict: 'INVALID' } },
+        SCHEMA,
         outcome('VALID'),
       ),
     ).toMatchObject({
@@ -234,17 +246,23 @@ describe('puntaje', () => {
     expect(
       scoreCase(
         { ...base, expected: { verdict: 'NEEDS_REVIEW' } },
+        SCHEMA,
         outcome('VALID'),
       ),
     ).toMatchObject({ falseValid: true });
     expect(
       scoreCase(
         { ...base, expected: { verdict: 'VALID' } },
+        SCHEMA,
         outcome('INVALID'),
       ),
     ).toMatchObject({ falseValid: false, falseReject: true });
     expect(
-      scoreCase({ ...base, expected: { verdict: 'VALID' } }, outcome('VALID')),
+      scoreCase(
+        { ...base, expected: { verdict: 'VALID' } },
+        SCHEMA,
+        outcome('VALID'),
+      ),
     ).toMatchObject({
       falseValid: false,
       falseReject: false,
@@ -267,10 +285,12 @@ describe('puntaje', () => {
           id: 'a',
           expected: { verdict: 'VALID', fields: { amount: 1 } },
         },
+        SCHEMA,
         outcome('VALID', { amount: 1 }),
       ),
       scoreCase(
         { ...base, id: 'b', expected: { verdict: 'INVALID' } },
+        SCHEMA,
         outcome('VALID'),
       ),
       scoreCase(
@@ -279,6 +299,7 @@ describe('puntaje', () => {
           id: 'c',
           expected: { verdict: 'VALID', fields: { amount: 1 } },
         },
+        SCHEMA,
         {
           ...outcome('ERROR'),
           modelUsed: null,
@@ -332,6 +353,7 @@ describe('ejecución', () => {
     version: 4,
     capability: 'payment-proof',
     promptTemplate: 'prompt',
+    outputSchema: LEGACY_IMAGE_OUTPUT_SCHEMA,
     rules: { version: 1, rules: [] },
     contextSources: { version: 1, sources: [] },
   };
@@ -506,15 +528,15 @@ describe('ejecución', () => {
       analyzeImageForSpecialist: jest.fn(() =>
         Promise.resolve({
           content: JSON.stringify({
-            version: 1,
+            version: 2,
             confidence: 0.8,
-            fields: {
+            legibility: 'CLEAR',
+            variables: {
               amount: 90000,
               currency: 'COP',
               date: '2026-11-08',
               reference: 'REF-1',
               recipient: 'Spa',
-              legibility: 'CLEAR',
             },
           }),
           tokensUsed: 1100,
@@ -540,8 +562,8 @@ describe('ejecución', () => {
     );
     const result = await runEvaluation({
       ...(await options()),
-      dryRun: (i: never) => runtime.dryRun(i),
-    });
+      dryRun: (i) => runtime.dryRun(i),
+    } as never);
     expect(result.summary).toMatchObject({ evaluated: 1, verdictAccuracy: 1 });
     expect(result.cases[0].fieldMismatches).toEqual([]);
     expect(prisma.verificationRecord.create).not.toHaveBeenCalled();
@@ -555,6 +577,7 @@ describe('comparación de corridas', () => {
     version: 1,
     capability: 'payment-proof',
     promptTemplate: 'p',
+    outputSchema: LEGACY_IMAGE_OUTPUT_SCHEMA,
     rules: {},
     contextSources: {},
   };

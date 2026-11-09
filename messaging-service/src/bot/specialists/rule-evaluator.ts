@@ -1,11 +1,14 @@
 import { ZonedClock } from 'src/channels/whatsapp/utils/zoned-clock';
 import {
   DEFAULT_FUZZY_THRESHOLD,
-  ExtractedFields,
+  OutputSchemaDocument,
   isRealCalendarDate,
   MAX_REASON_CODES,
   Rule,
   RulesDocument,
+  Variable,
+  Variables,
+  findVariable,
 } from './contracts';
 import { containsTokens, fuzzySimilarity, normalizeText } from './text-match';
 
@@ -46,11 +49,11 @@ const SEVERITY: Record<EvaluationVerdict, number> = {
   INVALID: 2,
 };
 
-const AMOUNT_TOLERANCE = 0.005;
+const EXACT_EPSILON = 1e-9;
 const DAY_MS = 86_400_000;
 const FUTURE_TOLERANCE_DAYS = 1;
 
-type Operand = string | number;
+type Operand = string | number | boolean | string[];
 
 function resolveOperand(
   rule: Rule,
@@ -59,7 +62,6 @@ function resolveOperand(
   if (typeof rule.ref === 'object') return rule.ref.literal;
   const value = grounding[rule.ref.slice('grounding.'.length)];
   if (value === undefined || value === null) return null;
-  if (typeof value === 'boolean') return null;
   return value;
 }
 
@@ -79,14 +81,15 @@ function dayNumber(dateKey: string): number | null {
 
 function compare(
   rule: Rule,
-  fieldValue: string | number | boolean,
+  variable: Variable,
+  value: string | number | boolean,
   operand: Operand,
   context: EvaluationContext,
 ): 'PASS' | 'FAIL' | 'INVALID_OPERAND' {
   switch (rule.op) {
     case 'gte':
     case 'lte': {
-      const left = toNumber(fieldValue);
+      const left = toNumber(value);
       const right = toNumber(operand);
       if (left === null || right === null) return 'INVALID_OPERAND';
       return (rule.op === 'gte' ? left >= right : left <= right)
@@ -94,36 +97,60 @@ function compare(
         : 'FAIL';
     }
     case 'eq': {
-      if (rule.field === 'amount') {
-        const left = toNumber(fieldValue);
+      if (variable.type === 'number') {
+        const left = toNumber(value);
         const right = toNumber(operand);
         if (left === null || right === null) return 'INVALID_OPERAND';
-        return Math.abs(left - right) < AMOUNT_TOLERANCE ? 'PASS' : 'FAIL';
+        const tolerance = variable.tolerance ?? 0;
+        return Math.abs(left - right) <= tolerance + EXACT_EPSILON
+          ? 'PASS'
+          : 'FAIL';
       }
-      return normalizeText(String(fieldValue)) ===
-        normalizeText(String(operand))
+      if (variable.type === 'boolean') {
+        if (typeof operand !== 'boolean') return 'INVALID_OPERAND';
+        return value === operand ? 'PASS' : 'FAIL';
+      }
+      if (variable.type === 'date') {
+        if (typeof operand !== 'string' || !isRealCalendarDate(operand)) {
+          return 'INVALID_OPERAND';
+        }
+        return value === operand ? 'PASS' : 'FAIL';
+      }
+      if (typeof operand !== 'string') return 'INVALID_OPERAND';
+      if (variable.type === 'enum') return value === operand ? 'PASS' : 'FAIL';
+      return normalizeText(String(value)) === normalizeText(operand)
+        ? 'PASS'
+        : 'FAIL';
+    }
+    case 'in': {
+      if (!Array.isArray(operand)) return 'INVALID_OPERAND';
+      if (variable.type === 'enum') {
+        return operand.includes(String(value)) ? 'PASS' : 'FAIL';
+      }
+      const wanted = normalizeText(String(value));
+      return operand.some((item) => normalizeText(item) === wanted)
         ? 'PASS'
         : 'FAIL';
     }
     case 'within_days': {
       const days = toNumber(operand);
-      const paid = dayNumber(String(fieldValue));
+      const when = dayNumber(String(value));
       const today = dayNumber(
         new ZonedClock(context.timeZone).at(context.now).dateKey,
       );
-      if (days === null || days < 0 || paid === null || today === null) {
+      if (days === null || days < 0 || when === null || today === null) {
         return 'INVALID_OPERAND';
       }
-      const age = today - paid;
+      const age = today - when;
       return age >= -FUTURE_TOLERANCE_DAYS && age <= days ? 'PASS' : 'FAIL';
     }
     case 'contains':
-      return containsTokens(String(fieldValue), String(operand))
-        ? 'PASS'
-        : 'FAIL';
+      if (typeof operand !== 'string') return 'INVALID_OPERAND';
+      return containsTokens(String(value), operand) ? 'PASS' : 'FAIL';
     case 'fuzzy': {
+      if (typeof operand !== 'string') return 'INVALID_OPERAND';
       const threshold = rule.threshold ?? DEFAULT_FUZZY_THRESHOLD;
-      return fuzzySimilarity(String(fieldValue), String(operand)) >= threshold
+      return fuzzySimilarity(String(value), operand) >= threshold
         ? 'PASS'
         : 'FAIL';
     }
@@ -133,7 +160,8 @@ function compare(
 function evaluateRule(
   rule: Rule,
   index: number,
-  fields: ExtractedFields,
+  variables: Variables,
+  schema: OutputSchemaDocument,
   context: EvaluationContext,
 ): { result: RuleResult; severity: EvaluationVerdict } {
   const code = (suffix: string) => `${rule.field}_${suffix}`.toUpperCase();
@@ -143,7 +171,12 @@ function evaluateRule(
     reasonCode: string | null,
   ) => ({ result: { index, status, reasonCode }, severity });
 
-  const fieldValue = fields[rule.field];
+  const variable = findVariable(schema, rule.field);
+  if (!variable) {
+    return outcome('INVALID_OPERAND', 'NEEDS_REVIEW', 'RULE_OPERAND_INVALID');
+  }
+
+  const fieldValue = variables[rule.field];
   if (fieldValue === undefined || fieldValue === null) {
     return outcome('MISSING_FIELD', 'NEEDS_REVIEW', code('MISSING'));
   }
@@ -157,7 +190,7 @@ function evaluateRule(
     );
   }
 
-  const status = compare(rule, fieldValue, operand, context);
+  const status = compare(rule, variable, fieldValue, operand, context);
   if (status === 'INVALID_OPERAND') {
     return outcome('INVALID_OPERAND', 'NEEDS_REVIEW', 'RULE_OPERAND_INVALID');
   }
@@ -166,7 +199,8 @@ function evaluateRule(
 }
 
 export function evaluateRules(
-  fields: ExtractedFields,
+  variables: Variables,
+  schema: OutputSchemaDocument,
   rules: RulesDocument,
   context: EvaluationContext,
 ): Evaluation {
@@ -179,7 +213,7 @@ export function evaluateRules(
   }
 
   const evaluated = rules.rules.map((rule, index) =>
-    evaluateRule(rule, index, fields, context),
+    evaluateRule(rule, index, variables, schema, context),
   );
 
   let verdict: EvaluationVerdict = 'VALID';

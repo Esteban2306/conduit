@@ -12,7 +12,10 @@ import {
   EMPTY_CONTEXT_SOURCES,
   EMPTY_RULES,
   contextSourcesDocumentSchema,
+  declaredOutputSchemaSchema,
+  outputSchemaDocumentSchema,
   rulesDocumentSchema,
+  validateRulesAgainst,
 } from '../contracts';
 import { undeclaredGroundingKeys } from '../grounding-config';
 import {
@@ -27,6 +30,7 @@ const INITIAL_NOTE = 'Versión inicial';
 
 interface Content {
   promptTemplate: string;
+  outputSchema: unknown;
   rules: unknown;
   contextSources: unknown;
 }
@@ -38,6 +42,7 @@ const FULL_SELECT = {
   capability: true,
   status: true,
   promptTemplate: true,
+  outputSchema: true,
   rules: true,
   contextSources: true,
   outputVersion: true,
@@ -62,7 +67,7 @@ export class SpecialistAdminService {
     const input = parseOrThrow(createSpecialistSchema, body);
     const rules = input.rules ?? EMPTY_RULES;
     const contextSources = input.contextSources ?? EMPTY_CONTEXT_SOURCES;
-    this.assertCoherent(rules, contextSources);
+    this.assertCoherent(input.outputSchema, rules, contextSources);
 
     const key = input.key
       ? await this.assertKeyFree(tenantId, input.key)
@@ -83,6 +88,7 @@ export class SpecialistAdminService {
             name: input.name,
             capability: input.capability,
             promptTemplate: input.promptTemplate,
+            outputSchema: input.outputSchema,
             rules: rules,
             contextSources: contextSources,
           },
@@ -95,6 +101,7 @@ export class SpecialistAdminService {
             capability: input.capability,
             version: 1,
             promptTemplate: input.promptTemplate,
+            outputSchema: input.outputSchema,
             rules: rules,
             contextSources: contextSources,
             changeNote: input.changeNote ?? INITIAL_NOTE,
@@ -158,10 +165,11 @@ export class SpecialistAdminService {
 
     const next: Content = {
       promptTemplate: input.promptTemplate ?? current.promptTemplate,
+      outputSchema: input.outputSchema ?? current.outputSchema,
       rules: input.rules ?? current.rules,
       contextSources: input.contextSources ?? current.contextSources,
     };
-    this.assertCoherent(next.rules, next.contextSources);
+    this.assertCoherent(next.outputSchema, next.rules, next.contextSources);
 
     return this.apply({
       tenantId,
@@ -223,6 +231,7 @@ export class SpecialistAdminService {
       select: {
         ...VERSION_META_SELECT,
         promptTemplate: true,
+        outputSchema: true,
         rules: true,
         contextSources: true,
       },
@@ -243,19 +252,23 @@ export class SpecialistAdminService {
     this.assertNotArchived(current);
     const snapshot = await this.getVersion(tenantId, id, version);
 
+    const outputSchema = declaredOutputSchemaSchema.safeParse(
+      snapshot.outputSchema,
+    );
     const rules = rulesDocumentSchema.safeParse(snapshot.rules);
     const sources = contextSourcesDocumentSchema.safeParse(
       snapshot.contextSources,
     );
-    if (!rules.success || !sources.success) {
+    if (!outputSchema.success || !rules.success || !sources.success) {
       throw new BadRequestException(
         'La versión guardada ya no cumple los contratos actuales y no se puede restaurar.',
       );
     }
-    this.assertCoherent(rules.data, sources.data);
+    this.assertCoherent(outputSchema.data, rules.data, sources.data);
 
     const next: Content = {
       promptTemplate: snapshot.promptTemplate,
+      outputSchema: outputSchema.data,
       rules: rules.data,
       contextSources: sources.data,
     };
@@ -301,6 +314,7 @@ export class SpecialistAdminService {
       ...(contentChanged
         ? {
             promptTemplate: next.promptTemplate,
+            outputSchema: next.outputSchema as Prisma.InputJsonValue,
             rules: next.rules as Prisma.InputJsonValue,
             contextSources: next.contextSources as Prisma.InputJsonValue,
             version: { increment: 1 },
@@ -331,6 +345,7 @@ export class SpecialistAdminService {
               capability: current.capability,
               version: current.version + 1,
               promptTemplate: next.promptTemplate,
+              outputSchema: next.outputSchema as Prisma.InputJsonValue,
               rules: next.rules as Prisma.InputJsonValue,
               contextSources: next.contextSources as Prisma.InputJsonValue,
               changeNote: args.changeNote ?? null,
@@ -350,20 +365,41 @@ export class SpecialistAdminService {
   private sameContent(current: Content, next: Content): boolean {
     return (
       current.promptTemplate === next.promptTemplate &&
+      canonicalJson(current.outputSchema) ===
+        canonicalJson(next.outputSchema) &&
       canonicalJson(current.rules) === canonicalJson(next.rules) &&
       canonicalJson(current.contextSources) ===
         canonicalJson(next.contextSources)
     );
   }
 
-  private assertCoherent(rules: unknown, contextSources: unknown): void {
+  private assertCoherent(
+    outputSchema: unknown,
+    rules: unknown,
+    contextSources: unknown,
+  ): void {
+    const parsedSchema = outputSchemaDocumentSchema.safeParse(outputSchema);
     const parsedRules = rulesDocumentSchema.safeParse(rules);
     const parsedSources =
       contextSourcesDocumentSchema.safeParse(contextSources);
-    if (!parsedRules.success || !parsedSources.success) {
+    if (
+      !parsedSchema.success ||
+      !parsedRules.success ||
+      !parsedSources.success
+    ) {
       throw new BadRequestException(
-        'Las reglas o las fuentes de contexto no son válidas.',
+        'Las variables de salida, las reglas o las fuentes de contexto no son válidas.',
       );
+    }
+    const ruleIssues = validateRulesAgainst(
+      parsedSchema.data,
+      parsedRules.data,
+    );
+    if (ruleIssues.length > 0) {
+      throw new BadRequestException({
+        message: 'Hay reglas incompatibles con las variables declaradas.',
+        details: { ruleIssues },
+      });
     }
     const undeclared = undeclaredGroundingKeys(
       parsedRules.data,

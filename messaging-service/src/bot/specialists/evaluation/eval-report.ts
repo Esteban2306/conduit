@@ -13,7 +13,7 @@ export function formatRun(run: EvalRunResult): string {
   const s = run.summary;
   const lines: string[] = [
     `Especialista: ${run.specialist.key} (v${run.specialist.version}, ${run.specialist.capability})`,
-    `Borrador usado: prompt=${run.draftUsed.promptTemplate} reglas=${run.draftUsed.rules} contexto=${run.draftUsed.contextSources}`,
+    `Borrador usado: prompt=${run.draftUsed.promptTemplate} variables=${run.draftUsed.outputSchema} reglas=${run.draftUsed.rules} contexto=${run.draftUsed.contextSources}`,
     `Modelos: ${run.models.join(', ') || '(ninguno)'}`,
     `Casos: ${s.cases} | evaluados: ${s.evaluated} | omitidos por presupuesto: ${s.skipped}`,
     '',

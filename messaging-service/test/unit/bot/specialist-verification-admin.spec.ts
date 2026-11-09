@@ -38,6 +38,7 @@ import {
   priceFor,
 } from 'src/bot/specialists/pricing';
 import { SpecialistRuntime } from 'src/bot/specialists/SpecialistRuntime';
+import { LEGACY_IMAGE_OUTPUT_SCHEMA } from 'src/bot/specialists/backfill/backfill-specialists';
 
 const analyzeInput = {
   prompt: 'p',
@@ -227,6 +228,7 @@ function buildService(
           version: 3,
           promptTemplate: 'prompt guardado',
           rules: { version: 1, rules: [] },
+          outputSchema: LEGACY_IMAGE_OUTPUT_SCHEMA,
           contextSources: { version: 1, sources: [] },
         }
       : options.specialist;
@@ -286,7 +288,12 @@ describe('SpecialistVerificationService.dryRun', () => {
       verdict: 'VALID',
       tokens: { total: 1100, input: 1000, output: 100 },
       latencyMs: 800,
-      usedDraft: { promptTemplate: false, rules: false, contextSources: false },
+      usedDraft: {
+        promptTemplate: false,
+        outputSchema: false,
+        rules: false,
+        contextSources: false,
+      },
     });
     expect(out.estimatedCostUsd).toBeCloseTo(0.0015, 6);
     expect(prisma.verificationRecord.create).not.toHaveBeenCalled();
@@ -342,6 +349,7 @@ describe('SpecialistVerificationService.dryRun', () => {
     expect(args.rules).toEqual(rules);
     expect(out.usedDraft).toEqual({
       promptTemplate: true,
+      outputSchema: false,
       rules: true,
       contextSources: false,
     });
@@ -584,15 +592,15 @@ describe('permisos de verificaciones y dry-run', () => {
 
 describe('SpecialistRuntime: tokens y dry-run', () => {
   const extraction = JSON.stringify({
-    version: 1,
+    version: 2,
     confidence: 0.8,
-    fields: {
+    legibility: 'CLEAR',
+    variables: {
       amount: 150000,
       currency: 'COP',
       date: '2026-11-08',
       reference: 'AB-1',
       recipient: 'Spa Demo',
-      legibility: 'CLEAR',
     },
   });
 
@@ -609,6 +617,7 @@ describe('SpecialistRuntime: tokens y dry-run', () => {
               status: 'ACTIVE',
               version: 2,
               promptTemplate: 'guardado',
+              outputSchema: LEGACY_IMAGE_OUTPUT_SCHEMA,
               contextSources: { version: 1, sources: [] },
               rules: { version: 1, rules: [] },
             },
@@ -745,6 +754,7 @@ describe('SpecialistRuntime: tokens y dry-run', () => {
       capability: 'payment-proof',
       promptTemplate: 'borrador de prueba',
       rules: { version: 1, rules: [] },
+      outputSchema: LEGACY_IMAGE_OUTPUT_SCHEMA,
       contextSources: { version: 1, sources: [] },
       image,
     });
@@ -787,6 +797,7 @@ describe('SpecialistRuntime: tokens y dry-run', () => {
           },
         ],
       },
+      outputSchema: LEGACY_IMAGE_OUTPUT_SCHEMA,
       contextSources: {
         version: 1,
         sources: [

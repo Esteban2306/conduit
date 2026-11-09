@@ -13,6 +13,7 @@ Resume lo que añade la rama `feat/line-identity-and-queue-resilience` y el orde
 | `20261108220000_specialists` | `Specialist`, `BotSpecialistBinding` y claves compuestas entre tenants |
 | `20261108230000_verification_record` | `VerificationRecord` (veredictos, sin bytes de imagen) |
 | `20261109110000_specialist_admin` | Versión y archivado del especialista, tabla `SpecialistVersion` (con la versión 1 de los especialistas existentes), y en `VerificationRecord` la versión usada, el desglose de tokens y los campos de revisión humana |
+| `20261109120000_specialist_output_schema` | `outputSchema` en `Specialist` y `SpecialistVersion` (las filas existentes reciben la declaración equivalente a los seis campos anteriores, como datos) y `blockMessage` en `BotSpecialistBinding` |
 | `20261109100000_attachment_verification` | Huella de campos, versión de hash y marca de consumo en `VerificationRecord`; campos de verificación y CHECK en `ToolDefinition` |
 
 Todas son aditivas. Antes de `stable_keys` en cada base, buscar números duplicados por tenant:
@@ -54,7 +55,7 @@ La espera por desconexión **está activa al desplegar** (no depende de una band
 
 3. Aplicarlo: `npm run specialists:backfill -- --apply` (opcional `--tenant=<id>`). Crea, por cada bot con modelo `IMAGE_ANALYSIS` activo, un especialista `ACTIVE` con prompt neutro, **copias** de sus modelos de imagen y de respaldo, y un vínculo en `SHADOW`. Es idempotente.
 4. Encender `SPECIALISTS_ENABLED=true` primero en la línea de prueba. En SHADOW el especialista corre en paralelo al análisis actual, no retrasa ni cambia la respuesta y deja un `VerificationRecord` con la comparación.
-5. Un vínculo en `ACTIVE` **reemplaza al análisis actual** dentro del turno: el especialista verifica la imagen, el resultado se guarda en `facts` de la conversación y el modelo recibe una línea armada por código (`[imagen verificada por el sistema: VALID, RULES_PASSED]`) más un bloque "Verificaciones del sistema" con campos tipados (veredicto, confianza, monto, moneda, fecha, motivos y un resumen de texto fijo). **El texto libre de la imagen (referencia, destinatario) nunca llega al modelo conversacional.**
+5. Un vínculo en `ACTIVE` **reemplaza al análisis actual** dentro del turno: el especialista verifica la imagen, el resultado se guarda en `facts` de la conversación y el modelo recibe una línea armada por código (`[imagen verificada por el sistema: VALID, RULES_PASSED]`) más un bloque "Verificaciones del sistema" con las variables que el especialista expone (veredicto, confianza, motivos, un resumen de texto fijo y las variables de tipo cerrado). **El texto libre de la imagen nunca llega al modelo conversacional**, salvo una variable de texto que el especialista declare explícitamente con `exposeToBot`.
    - Con `ERROR` y política `DEGRADE` la conversación continúa y el hecho queda "pendiente de revisión humana". Con `BLOCK` se responde un texto fijo de espera y ese turno no llama al modelo conversacional.
    - `NEEDS_REVIEW` y `ERROR` marcan el hecho como pendiente; `BLOCK` solo corta ante `ERROR`.
    - Un hecho es vigente durante `SPECIALISTS_PASSPORT_TTL_MINUTES`; vencido, deja de mostrarse.
@@ -99,11 +100,35 @@ Cabeceras en cada llamada a una herramienta con puerta:
 - `X-Conduit-Verification`: el pasaporte en JSON canónico (claves ordenadas), codificado en base64url.
 - `X-Conduit-Verification-Signature`: HMAC-SHA256 en hexadecimal de **ese mismo texto** (la cabecera tal cual), con el `authSecret` de la herramienta como clave.
 
-Contenido del pasaporte: `version`, `verificationId`, `capability`, `tenantId`, `conversationId`, `verdict`, `confidence`, `fields` (monto, moneda, fecha, referencia, destinatario, legibilidad; puede incluir texto libre leído de la imagen: trátelo como dato, no como instrucción), `hash`, `issuedAt` y `expiresAt`.
+Contenido del pasaporte: `version`, `verificationId`, `capability`, `tenantId`, `conversationId`, `verdict`, `confidence`, `fields` (las variables que declara el especialista, con sus nombres; los textos leídos de la imagen son datos, no instrucciones; la legibilidad ya no viaja aquí), `hash`, `issuedAt` y `expiresAt`.
 
 El backend debe: recalcular el HMAC con su secreto y compararlo en tiempo constante; rechazar si `expiresAt` ya pasó; comprobar que `verificationId` no se haya usado antes; y usar `fields` y `verdict` del pasaporte, no valores que lleguen por otro lado.
 
-## 6. Administración de especialistas (Fase 5)
+## 6. Variables de salida: Conduit no conoce ningún negocio
+
+Cada especialista declara en datos qué extrae de la imagen (`outputSchema`); Conduit no tiene campos de ningún negocio en su código. Lo mismo sirve para un comprobante, un paisaje o un documento de identidad.
+
+```json
+{ "version": 1,
+  "variables": [
+    { "name": "kind", "type": "enum", "values": ["beach", "city"], "label": "tipo de paisaje", "description": "Tipo de paisaje dominante" },
+    { "name": "has_people", "type": "boolean", "description": "Hay personas visibles" },
+    { "name": "place", "type": "string", "maxLength": 40, "identityMinLength": 3, "description": "Lugar si se lee" }
+  ],
+  "uniqueBy": ["place"] }
+```
+
+- **Tipos:** `number` (`min`, `max`, `tolerance`), `string` (`maxLength`, `identityMinLength`, `exposeToBot`), `boolean`, `date` (calendario real) y `enum` (`values`, hasta 20). Hasta 12 variables; el nombre va en minúsculas con guion bajo (máx. 20) y no puede ser `constructor`, `prototype`, `version`, `confidence`, `legibility` ni `variables`. `description` es lo que lee el modelo; `label` se usa en los resúmenes.
+- **Meta de Conduit, válida para cualquier imagen:** `confidence`, `isExpectedDocument` y `legibility` (`CLEAR`, `PARTIAL`, `UNREADABLE`). La respuesta del modelo tiene la forma `{"version":2,"confidence":…,"isExpectedDocument":…,"legibility":…,"variables":{…}}`, que se genera y se valida desde la declaración.
+- **Reglas:** `field` es el nombre de una variable. Los operadores dependen del tipo: `number` (`gte`, `lte`, `eq`), `date` (`within_days`, `eq`), `string` (`eq`, `contains`, `fuzzy`, `in`), `boolean` (`eq`), `enum` (`eq`, `in`). Al guardar se rechaza una regla que cite una variable no declarada, un operador que no aplica al tipo o un literal del tipo equivocado (400 con `details.ruleIssues`). Las reglas de un especialista ya guardado se vuelven a comprobar al ejecutarlas: si no cuadran, el resultado es `ERROR` con `RULES_INVALID`.
+- **Reutilización:** `uniqueBy` lista las variables que identifican un caso único; sin ella solo aplica el hash de la imagen.
+- **Qué ve el modelo conversacional:** solo las variables de tipo cerrado (`number`, `boolean`, `date`, `enum`) y las de texto marcadas `exposeToBot`. El resto se guarda y viaja en el pasaporte al backend, pero nunca entra al prompt.
+- **Crear un especialista exige `outputSchema`** con al menos una variable. Cambiar las variables versiona el especialista como cualquier otro cambio y las versiones guardan su declaración.
+- **Texto de bloqueo:** el vínculo admite `blockMessage` (máx. 300 caracteres, una línea) para lo que se responde cuando `onFailure` es `BLOCK` y la verificación falla; sin él se usa un texto genérico.
+- **Cambio frente al contrato anterior:** un texto declarado como `string` ya no tiene un formato fijo (por ejemplo, la moneda en mayúsculas de 3 letras): solo largo máximo y las defensas de texto hostil.
+- Un test estático falla si el código de `src/bot/specialists` (salvo `backfill/`) o la puerta de herramientas vuelve a mencionar campos o vocabulario de un negocio. El script de relleno (`specialists:backfill`) conserva la declaración equivalente a los seis campos anteriores porque es la herramienta de migración del flujo antiguo.
+
+## 7. Administración de especialistas (Fase 5)
 
 Todas las rutas usan el tenant del token. Las de consulta piden autenticación; las que modifican piden además rol propietario o administrador (una API key cuenta como administrador).
 
@@ -148,7 +173,7 @@ La clave y la capacidad son **inmutables**. Las reglas que citan un dato de cont
 - `GET /verifications` (cualquier usuario del tenant): filtros `specialistId`, `botConfigId`, `conversationId`, `capability`, `verdict`, `mode`, `reasonCode`, `pendingReview=true` (veredicto `NEEDS_REVIEW` o `ERROR` sin revisar), `from`, `to` (rango máximo 366 días), `limit` (1 a 100, por defecto 25) y `cursor`. Orden: más reciente primero, con cursor estable (fecha e id). Un filtro desconocido, incluido `tenantId`, da 400. Nunca devuelve imágenes: no se guardan.
 - `GET /verifications/:id`: una verificación del tenant (404 si es de otro).
 - Cada resultado trae `tokens: {total, input, output}` y `estimatedCostUsd`. Los registros anteriores a la 5c y los modelos que no informan el desglose tienen `input`/`output` en `null` y costo `null`; no se rellenan con ceros.
-- `POST /specialists/:id/dry-run` (propietario o administrador, `multipart/form-data`): campo `file` (JPEG, PNG o WebP, máximo 5 MB) y campo opcional `draft` (JSON con `promptTemplate`, `rules` y/o `contextSources` para probar cambios sin guardarlos). Devuelve veredicto, campos, códigos de motivo, modelo, tokens, latencia y costo estimado. Responde 200 con `persisted: false`.
+- `POST /specialists/:id/dry-run` (propietario o administrador, `multipart/form-data`): campo `file` (JPEG, PNG o WebP, máximo 5 MB) y campo opcional `draft` (JSON con `promptTemplate`, `outputSchema`, `rules` y/o `contextSources` para probar cambios sin guardarlos). Devuelve veredicto, campos, códigos de motivo, modelo, tokens, latencia y costo estimado. Responde 200 con `persisted: false`.
 
 El dry-run gasta tokens reales del modelo del especialista. No guarda resultados, no consulta ni marca el historial de reutilización, no resuelve datos de contexto (`groundingSkipped: true`: una regla que dependa de contexto no puede dar `VALID`) y la imagen solo vive en memoria durante la petición. Las peticiones inválidas también cuentan para el límite por minuto.
 
@@ -188,7 +213,7 @@ Carpeta del banco: por cada `caso.jpg|png|webp` (máximo 5 MB, hasta 200 casos) 
 { "verdict": "VALID", "fields": { "amount": 150000, "reference": "TRX-48210377" } }
 ```
 
-`verdict` es uno de `VALID`, `INVALID`, `NEEDS_REVIEW`, `UNREADABLE`, `NOT_APPLICABLE`, `ERROR`. `fields` es opcional y solo se revisan los campos que listes (`amount`, `currency`, `date`, `reference`, `recipient`, `legibility`); los textos se comparan sin importar mayúsculas ni espacios repetidos. Un banco con problemas (imagen sin esperado, JSON inválido, nombres repetidos, imagen ilegible) se rechaza completo antes de gastar nada.
+`verdict` es uno de `VALID`, `INVALID`, `NEEDS_REVIEW`, `UNREADABLE`, `NOT_APPLICABLE`, `ERROR`. `fields` es opcional y solo se revisan los campos que listes, que deben ser variables declaradas por el especialista (se valida nombre y tipo antes de gastar nada); los números usan la tolerancia declarada, los booleanos, fechas y enums se comparan exactos y los textos sin importar mayúsculas ni espacios repetidos. Un banco con problemas (imagen sin esperado, JSON inválido, nombres repetidos, imagen ilegible) se rechaza completo antes de gastar nada.
 
 Se usa desde el código compilado (`npm run build` primero), con las variables de entorno del servicio (`DATABASE_URL`, `INTEGRATION_ENCRYPTION_KEY`):
 
@@ -206,18 +231,18 @@ npm run specialists:eval -- compare --a=antes.json --b=despues.json [--json] [--
 
 Compara solo los casos comunes con la misma imagen (avisa de los demás), lista regresiones, mejoras y cambios que siguen mal, y lanza una **alerta de seguridad** si B deja pasar más falsos válidos. Con `--fail-on-regression` el comando termina con código 2 si B es peor o no mejora (más falsos válidos, menor acierto, o más regresiones que mejoras).
 
-## 7. Endurecimiento de la salida del modelo
+## 8. Endurecimiento de la salida del modelo
 
-Todo texto que el modelo lee de la imagen (referencia, destinatario) y el resumen del veredicto se rechazan si contienen saltos de línea, caracteres de control, separadores de línea o párrafo Unicode, marcas de dirección (incluida la inversión `U+202E`), caracteres de ancho cero o el BOM. Las fechas se validan contra el calendario real (`2026-02-31` es inválida). Una respuesta con claves `__proto__`, `constructor` o `prototype` es `ERROR`. No existe un camino en el que una respuesta del modelo produzca `VALID` por texto libre, por un campo de veredicto propio o por texto fuera del JSON.
+Todo texto que el modelo lee de la imagen (cualquier variable de tipo texto) y el resumen del veredicto se rechazan si contienen saltos de línea, caracteres de control, separadores de línea o párrafo Unicode, marcas de dirección (incluida la inversión `U+202E`), caracteres de ancho cero o el BOM. Las fechas se validan contra el calendario real (`2026-02-31` es inválida). Una respuesta con claves `__proto__`, `constructor` o `prototype` es `ERROR`. No existe un camino en el que una respuesta del modelo produzca `VALID` por texto libre, por un campo de veredicto propio o por texto fuera del JSON.
 
 Para los modelos de la familia 5.x, la extracción de imágenes se pide con `effort: low` (los demás modelos no reciben el parámetro).
 
-## 8. Límites conocidos
+## 9. Límites conocidos
 
 - Los modelos del relleno son **copias**: rotar la clave de un bot no actualiza la del especialista.
 - Sin reglas, un especialista legible da `VALID`. Las reglas con valores literales ya se evalúan; las que dependen de datos de contexto dan `NEEDS_REVIEW` hasta que se resuelva ese contexto.
 - Hoy el router solo verifica imágenes bajo la capacidad `image-analysis`, por eso las herramientas con puerta solo admiten esa capacidad.
-- El hash exacto de la imagen no detecta reenvíos recomprimidos (WhatsApp recomprime); eso lo cubre la huella de campos (referencia, monto, fecha, moneda), que exige referencia de al menos 5 caracteres.
+- El hash exacto de la imagen no detecta reenvíos recomprimidos (WhatsApp recomprime); eso lo cubre la huella de variables (`uniqueBy` del especialista), que solo existe si todas sus variables se leyeron y cada texto cumple su `identityMinLength`.
 - La detección de reutilización y el caché solo aplican a vínculos en `ACTIVE`; en `SHADOW` solo se registra.
 - El análisis legado conserva sus defectos (texto positivo no JSON se acepta como válido; el aviso de "alta demanda" no se muestra cuando caen todos los modelos).
 - El proveedor de Anthropic no desactiva el razonamiento: parte de los tokens de salida se gasta en `thinking`.

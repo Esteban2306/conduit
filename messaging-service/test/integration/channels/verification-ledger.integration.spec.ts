@@ -11,6 +11,7 @@ import { SpecialistRuntime } from 'src/bot/specialists/SpecialistRuntime';
 import { VerificationLedger } from 'src/bot/specialists/VerificationLedger';
 import { isolatedInfra } from '../../helpers/isolated-env';
 import { createTestPrisma } from '../../helpers/prisma.helper';
+import { LEGACY_IMAGE_OUTPUT_SCHEMA } from 'src/bot/specialists/backfill/backfill-specialists';
 
 const infra = isolatedInfra();
 const suite = infra ? describe : describe.skip;
@@ -131,6 +132,7 @@ suite('VerificationLedger y reutilización contra la base aislada', () => {
             name: 'c',
             capability: CAP,
             status: 'ACTIVE',
+            outputSchema: LEGACY_IMAGE_OUTPUT_SCHEMA,
             promptTemplate: 'p',
           },
         })
@@ -393,16 +395,16 @@ suite('VerificationLedger y reutilización contra la base aislada', () => {
   describe('flujo completo con el runtime en ACTIVE', () => {
     const response = {
       content: JSON.stringify({
-        version: 1,
+        version: 2,
         confidence: 0.8,
         isExpectedDocument: true,
-        fields: {
+        legibility: 'CLEAR',
+        variables: {
           amount: 150000,
           currency: 'COP',
           date: '2026-11-08',
           reference: 'TRX-48210377',
           recipient: 'Spa Demo',
-          legibility: 'CLEAR',
         },
       }),
       tokensUsed: 10,
@@ -452,6 +454,7 @@ suite('VerificationLedger y reutilización contra la base aislada', () => {
           name: 'flujo',
           capability: 'flow-cap',
           status: 'ACTIVE',
+          outputSchema: LEGACY_IMAGE_OUTPUT_SCHEMA,
           promptTemplate: 'p',
         },
       });

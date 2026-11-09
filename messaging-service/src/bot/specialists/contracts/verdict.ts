@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { extractedFieldsSchema } from './extraction';
+import { variablesRecordSchema } from './extraction';
 import { safeText } from './keys';
 
 export const VERDICTS = [
@@ -24,7 +24,7 @@ export const verificationResultSchema = z
     version: z.literal(VERDICT_VERSION),
     verdict: verdictSchema,
     confidence: z.number().min(0).max(1),
-    fields: extractedFieldsSchema,
+    fields: variablesRecordSchema,
     reasonCodes: z.array(reasonCodeSchema).max(MAX_REASON_CODES),
     humanSummary: safeText(MAX_HUMAN_SUMMARY),
   })

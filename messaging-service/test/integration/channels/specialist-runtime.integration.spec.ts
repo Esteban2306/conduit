@@ -10,21 +10,22 @@ import { SpecialistRuntime } from 'src/bot/specialists/SpecialistRuntime';
 import { VerificationLedger } from 'src/bot/specialists/VerificationLedger';
 import { isolatedInfra } from '../../helpers/isolated-env';
 import { createTestPrisma } from '../../helpers/prisma.helper';
+import { LEGACY_IMAGE_OUTPUT_SCHEMA } from 'src/bot/specialists/backfill/backfill-specialists';
 
 const infra = isolatedInfra();
 const suite = infra ? describe : describe.skip;
 
 const output = (fields: Record<string, unknown> = {}) =>
   JSON.stringify({
-    version: 1,
+    version: 2,
     confidence: 0.7,
-    fields: {
+    legibility: 'CLEAR',
+    variables: {
       amount: 90000,
       currency: 'COP',
       date: '2026-11-08',
       reference: 'REF-1',
       recipient: 'Spa Demo',
-      legibility: 'CLEAR',
       ...fields,
     },
   });
@@ -113,6 +114,7 @@ suite('SpecialistRuntime contra la base aislada', () => {
           name: 'Comprobantes',
           capability: 'payment-proof',
           status: 'ACTIVE',
+          outputSchema: LEGACY_IMAGE_OUTPUT_SCHEMA,
           promptTemplate: 'Comprobantes de pago.',
         },
       })
@@ -171,7 +173,7 @@ suite('SpecialistRuntime contra la base aislada', () => {
       reasonCodes: ['NO_RULES_CONFIGURED'],
       specialistVersion: 1,
     });
-    expect(saved.fields).toMatchObject({ amount: 90000, legibility: 'CLEAR' });
+    expect(saved.fields).toMatchObject({ amount: 90000, currency: 'COP' });
     expect(saved.comparison).toEqual({
       legacyValid: true,
       legacyConfidence: 'HIGH',

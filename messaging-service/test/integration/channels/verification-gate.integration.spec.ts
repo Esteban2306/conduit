@@ -21,6 +21,7 @@ import {
 import { SecretEncryptionService } from 'src/shared/security/secret-encryption.service';
 import { isolatedInfra } from '../../helpers/isolated-env';
 import { createTestPrisma } from '../../helpers/prisma.helper';
+import { LEGACY_IMAGE_OUTPUT_SCHEMA } from 'src/bot/specialists/backfill/backfill-specialists';
 
 const infra = isolatedInfra();
 const suite = infra ? describe : describe.skip;
@@ -188,6 +189,7 @@ suite(
               name: 'imagen',
               capability: CAP,
               status: 'ACTIVE',
+              outputSchema: LEGACY_IMAGE_OUTPUT_SCHEMA,
               promptTemplate: 'Comprobantes.',
             },
           })
@@ -535,16 +537,16 @@ suite(
       let reference = 'TRX-00000000';
       const extraction = () =>
         JSON.stringify({
-          version: 1,
+          version: 2,
           confidence: 0.9,
           isExpectedDocument: true,
-          fields: {
+          legibility: 'CLEAR',
+          variables: {
             amount: 150000,
             currency: 'COP',
             date: '2026-11-08',
             reference,
             recipient: 'Spa Demo',
-            legibility: 'CLEAR',
           },
         });
       const orchestrator = {

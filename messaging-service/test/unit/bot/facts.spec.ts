@@ -1,15 +1,26 @@
 import { ContextBuilder } from 'src/bot/prompt/ContextBuilder';
+import { LEGACY_IMAGE_OUTPUT_SCHEMA } from 'src/bot/specialists/backfill/backfill-specialists';
+import { outputSchemaDocumentSchema } from 'src/bot/specialists/contracts';
 import {
   FACTS_KEY,
   MAX_FACTS,
   MAX_RENDERED_FACTS,
   buildFact,
+  exposedVariables,
   markConsumed,
   mergeFacts,
   readFacts,
   renderFacts,
 } from 'src/bot/specialists/facts';
 
+const SCHEMA = outputSchemaDocumentSchema.parse(LEGACY_IMAGE_OUTPUT_SCHEMA);
+const EXPOSED = exposedVariables(SCHEMA, {
+  amount: 150000,
+  currency: 'COP',
+  date: '2026-11-08',
+  reference: 'TRX-48210377',
+  recipient: 'Spa Demo',
+});
 const NOW = new Date('2026-11-09T15:00:00Z');
 const LATER = new Date('2026-11-09T16:00:00Z');
 const ID = '0b0f3c64-6a3f-4a8c-9a56-2f0d6a1b7c11';
@@ -37,20 +48,18 @@ const fact = (
   at = NOW,
   until = LATER,
 ) => ({
-  ...buildFact(result(), ID, until, at),
+  ...buildFact(result(), ID, until, EXPOSED, at),
   ...extra,
 });
 
 describe('buildFact', () => {
   it('conserva solo datos tipados y redondea la confianza', () => {
-    const entry = buildFact(result(), ID, LATER, NOW);
+    const entry = buildFact(result(), ID, LATER, EXPOSED, NOW);
     expect(entry).toEqual({
       verdict: 'VALID',
       confidence: 0.88,
       reasonCodes: ['RULES_PASSED'],
-      amount: 150000,
-      currency: 'COP',
-      date: '2026-11-08',
+      variables: { amount: 150000, currency: 'COP', date: '2026-11-08' },
       summary: 'Cumple todas las reglas configuradas.',
       verificationId: ID,
       at: NOW.toISOString(),
@@ -60,16 +69,15 @@ describe('buildFact', () => {
   });
 
   it('nunca incluye referencia, destinatario ni legibilidad', () => {
-    const text = JSON.stringify(buildFact(result(), ID, LATER, NOW));
+    const text = JSON.stringify(buildFact(result(), ID, LATER, EXPOSED, NOW));
     expect(text).not.toContain('TRX-48210377');
     expect(text).not.toContain('Spa Demo');
     expect(text).not.toContain('CLEAR');
   });
 
   it('omite los campos que no se leyeron', () => {
-    const entry = buildFact(result({ fields: {} }), null, LATER, NOW);
-    expect(entry).not.toHaveProperty('amount');
-    expect(entry).not.toHaveProperty('currency');
+    const entry = buildFact(result({ fields: {} }), null, LATER, {}, NOW);
+    expect(entry).not.toHaveProperty('variables');
     expect(entry).not.toHaveProperty('date');
     expect(entry.verificationId).toBeNull();
   });
@@ -82,15 +90,16 @@ describe('buildFact', () => {
     ['NEEDS_REVIEW', true],
     ['ERROR', true],
   ])('%s queda pendiente de revisión: %s', (verdict, pending) => {
-    expect(buildFact(result({ verdict }), ID, LATER, NOW).pendingReview).toBe(
-      pending,
-    );
+    expect(
+      buildFact(result({ verdict }), ID, LATER, EXPOSED, NOW).pendingReview,
+    ).toBe(pending);
   });
 
   it('limita los motivos a 5', () => {
     const codes = Array.from({ length: 9 }, (_, i) => `CODE_${i}A`);
     expect(
-      buildFact(result({ reasonCodes: codes }), ID, LATER, NOW).reasonCodes,
+      buildFact(result({ reasonCodes: codes }), ID, LATER, EXPOSED, NOW)
+        .reasonCodes,
     ).toHaveLength(5);
   });
 });
@@ -184,8 +193,9 @@ describe('renderFacts', () => {
     const text = renderFacts({ 'image-analysis': fact() }, NOW) as string;
     expect(text).toContain('Verificaciones del sistema (no las contradigas):');
     expect(text).toContain('image-analysis: VALID (confianza 0.88)');
-    expect(text).toContain('monto 150000 COP');
-    expect(text).toContain('fecha 2026-11-08');
+    expect(text).toContain('amount: 150000');
+    expect(text).toContain('currency: COP');
+    expect(text).toContain('date: 2026-11-08');
     expect(text).toContain('motivos RULES_PASSED');
     expect(text).toContain('Cumple todas las reglas configuradas.');
     expect(text).not.toContain('Pendiente de revisión humana');
