@@ -16,6 +16,12 @@ export const configValidationSchema = Joi.object({
   ALLOW_PUBLIC_REGISTRATION: Joi.boolean().default(false),
   REGISTRATION_TOKEN: Joi.string().min(24).optional(),
   LINE_AUTO_ADOPT: Joi.boolean().default(false),
+  SPECIALISTS_ENABLED: Joi.boolean().default(false),
+  SPECIALISTS_RETENTION_DAYS: Joi.number()
+    .integer()
+    .min(1)
+    .max(3650)
+    .default(90),
   QUEUE_DISCONNECT_WAIT_MS: Joi.number().integer().min(0).default(21600000),
   QUEUE_DISCONNECT_POLL_MS: Joi.number().integer().min(100).default(30000),
 
@@ -81,6 +87,10 @@ export interface AppConfig {
   };
   channels: {
     lineAutoAdopt: boolean;
+  };
+  specialists: {
+    enabled: boolean;
+    retentionDays: number;
   };
   database: {
     url: string;
@@ -148,6 +158,10 @@ export const configFactory = (): AppConfig => ({
   },
   channels: {
     lineAutoAdopt: process.env.LINE_AUTO_ADOPT === 'true',
+  },
+  specialists: {
+    enabled: process.env.SPECIALISTS_ENABLED === 'true',
+    retentionDays: parseInt(process.env.SPECIALISTS_RETENTION_DAYS ?? '90', 10),
   },
   database: {
     url: process.env.DATABASE_URL ?? '',
