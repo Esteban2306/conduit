@@ -1,3 +1,4 @@
+import { WebhookModule } from 'src/webhooks/webhook.module';
 import { Module } from '@nestjs/common';
 import { BotConfigModule } from './config/BotConfig.module';
 import { AiModelSelectorService } from './ai/AiModelSelectorService';
@@ -63,6 +64,7 @@ import { SystemPauseService } from './pause/SystemPause.service';
     SecurityModule,
     OrchestratorModule,
     WhatsAppContactModule,
+    WebhookModule,
   ],
   controllers: [
     AiModelController,

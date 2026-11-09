@@ -215,6 +215,21 @@ El costo es una estimación: la tabla base cubre por familia (`claude-haiku`, `c
 
 Los resultados guardados en `ACTIVE` por reutilización (`ALREADY_USED`, `REUSED_OTHER_CONTACT`) cuentan en los veredictos pero no en latencia ni tokens. Los retenidos más allá de `SPECIALISTS_RETENTION_DAYS` ya no existen, así que un rango mayor a la retención muestra solo lo que quedó.
 
+### Webhooks de resultados (reacciones del backend)
+
+Cada resultado de un vínculo `ACTIVE` se avisa a los endpoints del tenant con el sistema de webhooks existente (cuerpo congelado y firmado con el secreto del endpoint, `X-Conduit-Event-Id` para deduplicar, hasta 8 reintentos). Se suscribe con la lista `events` del endpoint, o con `*`:
+
+| Evento | Cuándo |
+|---|---|
+| `verification.valid` / `.invalid` / `.needs_review` / `.unreadable` / `.not_applicable` / `.error` | Tras guardar un análisis nuevo con ese veredicto |
+| `verification.reviewed` | Cuando una persona decide una verificación dudosa o con error |
+
+- **Contenido:** `verificationId`, `conversationId`, `botConfigId`, `specialistId`, `capability`, `mode`, `verdict`, `confidence`, `reasonCodes`, `humanSummary` y `variables` (todas las leídas, incluidos los textos libres; `exposeToBot` solo protege al modelo conversacional). La revisión lleva `reviewDecision`, `reviewNote` y `reviewedAt`, sin el usuario que revisó. Nunca va la imagen.
+- **No se avisa** desde `SHADOW`, ni cuando se reutiliza un veredicto ya registrado (mismo reenvío), ni si el registro no se pudo guardar.
+- No consume el veredicto ni usa la puerta de las herramientas: es solo una notificación. Entrega al menos una vez; el receptor debe deduplicar por `X-Conduit-Event-Id`.
+- No espera la entrega ni puede fallar la respuesta al cliente: un problema registrando el webhook queda en el log.
+- Costo: cero tokens (una fila y un trabajo en cola por endpoint suscrito).
+
 ### Imágenes pendientes de revisión
 
 Cuando un vínculo en `ACTIVE` produce `NEEDS_REVIEW` o `ERROR` (incluidos los casos de reutilización con otro contacto), el bot avisa a los contactos de escalamiento del bot. Es un disparador nuevo, **`VERIFICATION_REVIEW`**, que es **opt-in**: los contactos existentes solo reciben `TECHNICAL_ERROR` y no recibirán nada hasta que se les agregue (`POST /bots/:botId/escalation-contacts` con `"notifyOn": ["VERIFICATION_REVIEW"]`). No hay migración: `notifyOn` ya es JSON.
@@ -275,4 +290,6 @@ Para los modelos de la familia 5.x, la extracción de imágenes se pide con `eff
 - El límite de dry-run vive en memoria del proceso y se reinicia al reiniciar; con una sola réplica es correcto.
 - El banco de evaluación mide la extracción y las reglas con los datos del banco, pero no el contexto externo (grounding); las reglas que lo necesiten no se pueden evaluar ahí.
 - La ventana de los avisos de revisión vive en memoria del proceso: al reiniciar se pierde y puede repetirse un aviso.
+- Los cuerpos de `WebhookDelivery` se guardan en la base con las variables del resultado (datos del negocio). No hay una limpieza automática de esa tabla: definir una retención antes de usar estos eventos con datos sensibles.
+- El aviso se registra después de guardar el resultado, sin outbox transaccional: si el proceso se cae en esa ventana, ese aviso se pierde.
 - Conduit corre en una sola réplica; no escalar horizontalmente.

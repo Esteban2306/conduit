@@ -1,7 +1,11 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from 'src/shared/prisma.service';
+import {
+  VERIFICATION_VERDICT_EVENTS,
+  WebhookDispatcher,
+} from 'src/webhooks/WebhookDispatcher';
 import { AiOrchestrator } from '../ai/AiOrchestrator';
 import { BudgetExceededError, TurnBudget } from '../ai/turn-budget';
 import { ImageOptimizer } from '../helper/ImageOptimizer';
@@ -149,6 +153,7 @@ export class SpecialistRuntime {
     private readonly eventBus: EventBusService,
     private readonly ledger: VerificationLedger,
     private readonly grounding: GroundingResolver,
+    @Optional() private readonly webhooks?: WebhookDispatcher,
   ) {}
 
   isEnabled(): boolean {
@@ -269,6 +274,7 @@ export class SpecialistRuntime {
     });
 
     this.publish(input, binding, result, mode, latencyMs, analysis.tokens);
+    this.notifyTenant(input, binding, result, mode, recordId);
 
     return {
       executed: true,
@@ -380,6 +386,7 @@ export class SpecialistRuntime {
       tokens: 0,
     });
     this.publish(input, binding, result, 'ACTIVE', latencyMs, 0);
+    this.notifyTenant(input, binding, result, 'ACTIVE', recordId);
     return {
       executed: true,
       mode: 'ACTIVE',
@@ -467,6 +474,50 @@ export class SpecialistRuntime {
       );
       return { kind: 'NONE' };
     }
+  }
+
+  /**
+   * Webhook del tenant con el resultado. Solo vínculos ACTIVE (SHADOW es
+   * observación) y solo análisis nuevos: reutilizar un veredicto ya
+   * registrado no vuelve a avisar. No espera la entrega ni puede fallar.
+   */
+  private notifyTenant(
+    input: SpecialistRunInput,
+    binding: ResolvedBinding,
+    result: VerificationResult,
+    mode: 'SHADOW' | 'ACTIVE',
+    recordId: string | null,
+  ): void {
+    if (mode !== 'ACTIVE' || !recordId || !this.webhooks) return;
+    try {
+      void this.webhooks
+        .dispatchSystem(
+          input.tenantId,
+          VERIFICATION_VERDICT_EVENTS[result.verdict],
+          {
+            verificationId: recordId,
+            conversationId: input.conversationId,
+            botConfigId: input.botConfigId,
+            specialistId: binding.specialist.id,
+            capability: input.capability,
+            mode,
+            verdict: result.verdict,
+            confidence: result.confidence,
+            reasonCodes: result.reasonCodes,
+            humanSummary: result.humanSummary,
+            variables: result.fields,
+          },
+        )
+        .catch((error: unknown) => this.logWebhookFailure(error));
+    } catch (error) {
+      this.logWebhookFailure(error);
+    }
+  }
+
+  private logWebhookFailure(error: unknown): void {
+    this.logger.warn(
+      `No se pudo registrar el webhook de verificación: ${this.describe(error)}`,
+    );
   }
 
   private publish(

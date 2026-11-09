@@ -25,7 +25,26 @@ const EVENT_STATUS: Record<WebhookEvent, MessageStatus> = {
 };
 
 /** Eventos del sistema (no ligados a un mensaje): alertas operativas. */
-export type SystemWebhookEvent = 'ops.alert';
+export type SystemWebhookEvent = 'ops.alert' | VerificationWebhookEvent;
+
+/**
+ * Resultado de un especialista (solo vínculos ACTIVE): un evento por
+ * veredicto, para que cada tenant elija a cuáles suscribirse, más el cierre
+ * de una revisión humana.
+ */
+export const VERIFICATION_VERDICT_EVENTS = {
+  VALID: 'verification.valid',
+  INVALID: 'verification.invalid',
+  NEEDS_REVIEW: 'verification.needs_review',
+  UNREADABLE: 'verification.unreadable',
+  NOT_APPLICABLE: 'verification.not_applicable',
+  ERROR: 'verification.error',
+} as const;
+export const VERIFICATION_REVIEWED_EVENT = 'verification.reviewed' as const;
+
+export type VerificationWebhookEvent =
+  | (typeof VERIFICATION_VERDICT_EVENTS)[keyof typeof VERIFICATION_VERDICT_EVENTS]
+  | typeof VERIFICATION_REVIEWED_EVENT;
 
 export interface WebhookPayload {
   event: WebhookEvent;

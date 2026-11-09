@@ -58,6 +58,7 @@ interface Options {
   fingerprintFinding?: Record<string, unknown> | Error;
   image?: Buffer;
   grounding?: Record<string, unknown> | Error;
+  webhooks?: { dispatchSystem: jest.Mock };
 }
 
 function build(options: Options = {}) {
@@ -146,6 +147,7 @@ function build(options: Options = {}) {
     eventBus as never,
     ledger as never,
     grounding as never,
+    options.webhooks as never,
   );
   const logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
   (runtime as unknown as { logger: object }).logger = logger;
@@ -1641,5 +1643,150 @@ describe('SpecialistRuntime: claves prohibidas en la respuesta del modelo', () =
 
   it('una respuesta legítima no se ve afectada', async () => {
     expect((await run(extraction({})))?.verdict).toBe('VALID');
+  });
+});
+
+describe('SpecialistRuntime: webhook del resultado al tenant', () => {
+  const binding = (mode: 'SHADOW' | 'ACTIVE') => ({
+    mode,
+    timeoutMs: 12000,
+    specialist: {
+      id: 'esp-1',
+      status: 'ACTIVE',
+      promptTemplate: 'p',
+      outputSchema: LEGACY_IMAGE_OUTPUT_SCHEMA,
+      contextSources: { version: 1, sources: [] },
+      rules: { version: 1, rules: [] },
+    },
+  });
+  const hook = () => ({
+    dispatchSystem: jest.fn().mockResolvedValue(1),
+  });
+  const FULL = extraction({ reference: 'TRX-48210377' });
+
+  it('un análisis ACTIVE nuevo avisa con el evento de su veredicto y las variables', async () => {
+    const webhooks = hook();
+    const w = build({ binding: binding('ACTIVE'), response: FULL, webhooks });
+    await w.run();
+
+    expect(webhooks.dispatchSystem).toHaveBeenCalledTimes(1);
+    const [tenant, event, data] = webhooks.dispatchSystem.mock.calls[0];
+    expect(tenant).toBe(TENANT);
+    expect(event).toBe('verification.valid');
+    expect(data).toMatchObject({
+      verificationId: 'rec-1',
+      conversationId: 'conv-1',
+      botConfigId: BOT,
+      specialistId: 'esp-1',
+      capability: CAP,
+      mode: 'ACTIVE',
+      verdict: 'VALID',
+      variables: { amount: 150000, reference: 'TRX-48210377' },
+    });
+    expect(Object.keys(data)).not.toContain('image');
+  });
+
+  it('cada veredicto usa su propio evento', async () => {
+    const webhooks = hook();
+    const w = build({
+      binding: binding('ACTIVE'),
+      response: extraction({}, { legibility: 'UNREADABLE' } as never),
+      webhooks,
+    });
+    await w.run();
+    expect(webhooks.dispatchSystem.mock.calls[0][1]).toBe(
+      'verification.unreadable',
+    );
+  });
+
+  it('SHADOW no avisa', async () => {
+    const webhooks = hook();
+    const w = build({ binding: binding('SHADOW'), response: FULL, webhooks });
+    await w.run();
+    expect(webhooks.dispatchSystem).not.toHaveBeenCalled();
+  });
+
+  it('reutilizar un veredicto ya registrado no vuelve a avisar', async () => {
+    const webhooks = hook();
+    const w = build({
+      binding: binding('ACTIVE'),
+      response: FULL,
+      webhooks,
+      hashFinding: {
+        kind: 'CACHED',
+        record: {
+          id: 'prev-1',
+          conversationId: 'conv-1',
+          verdict: 'VALID',
+          confidence: 0.9,
+          fields: { amount: 1 },
+          reasonCodes: ['RULES_PASSED'],
+          createdAt: new Date(),
+        },
+      },
+    });
+    await w.run();
+    expect(webhooks.dispatchSystem).not.toHaveBeenCalled();
+  });
+
+  it('un comprobante ya usado, que sí se registra, avisa como inválido', async () => {
+    const webhooks = hook();
+    const w = build({
+      binding: binding('ACTIVE'),
+      response: FULL,
+      webhooks,
+      hashFinding: {
+        kind: 'ALREADY_USED',
+        record: {
+          id: 'prev-1',
+          conversationId: 'conv-1',
+          verdict: 'VALID',
+          confidence: 0.9,
+          fields: { amount: 1 },
+          reasonCodes: ['RULES_PASSED'],
+          consumedAt: new Date(),
+          createdAt: new Date(),
+        },
+      },
+    });
+    await w.run();
+    expect(webhooks.dispatchSystem.mock.calls[0][1]).toBe(
+      'verification.invalid',
+    );
+  });
+
+  it('si el registro no se pudo guardar no hay id que anunciar', async () => {
+    const webhooks = hook();
+    const w = build({
+      binding: binding('ACTIVE'),
+      response: FULL,
+      webhooks,
+      createFails: true,
+    });
+    await w.run();
+    expect(webhooks.dispatchSystem).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['rechaza', () => jest.fn().mockRejectedValue(new Error('cola caída'))],
+    [
+      'lanza de inmediato',
+      () =>
+        jest.fn(() => {
+          throw new Error('boom');
+        }),
+    ],
+  ])('si el aviso %s, el resultado no cambia', async (_n, make) => {
+    const webhooks = { dispatchSystem: make() };
+    const w = build({ binding: binding('ACTIVE'), response: FULL, webhooks });
+    const outcome = await w.run();
+    await realDelay(5);
+    expect(outcome).toMatchObject({ executed: true, mode: 'ACTIVE' });
+    expect(w.logger.warn).toHaveBeenCalled();
+  });
+
+  it('sin dispatcher configurado todo funciona igual', async () => {
+    const w = build({ binding: binding('ACTIVE'), response: FULL });
+    expect(await w.run()).toMatchObject({ executed: true });
   });
 });

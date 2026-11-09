@@ -4,12 +4,18 @@ import {
   HttpException,
   HttpStatus,
   Injectable,
+  Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import sharp from 'sharp';
 import { PrismaService } from 'src/shared/prisma.service';
+import {
+  VERIFICATION_REVIEWED_EVENT,
+  WebhookDispatcher,
+} from 'src/webhooks/WebhookDispatcher';
 import {
   contextSourcesDocumentSchema,
   outputSchemaDocumentSchema,
@@ -84,6 +90,7 @@ export class SpecialistVerificationService {
     private readonly prisma: PrismaService,
     private readonly runtime: SpecialistRuntime,
     private readonly config: ConfigService,
+    @Optional() private readonly webhooks?: WebhookDispatcher,
   ) {
     this.prices = buildPriceTable(
       this.config.get<string>('specialists.priceTable'),
@@ -168,7 +175,7 @@ export class SpecialistVerificationService {
     const input = parseOrThrow(reviewVerificationSchema, body);
     const found = await this.prisma.verificationRecord.findFirst({
       where: { id, tenantId },
-      select: { verdict: true, reviewedAt: true },
+      select: { verdict: true, reviewedAt: true, mode: true },
     });
     if (!found) throw new NotFoundException('Verificación no encontrada');
     if (!(REVIEWABLE_VERDICTS as readonly string[]).includes(found.verdict)) {
@@ -198,7 +205,42 @@ export class SpecialistVerificationService {
         details: { code: 'ALREADY_REVIEWED' },
       });
     }
-    return this.get(tenantId, id);
+    const reviewed = await this.get(tenantId, id);
+    if (found.mode === 'ACTIVE') this.notifyReviewed(tenantId, reviewed);
+    return reviewed;
+  }
+
+  /** Cierra el ciclo con el backend del tenant; nunca falla la revisión. */
+  private notifyReviewed(
+    tenantId: string,
+    record: Awaited<ReturnType<SpecialistVerificationService['get']>>,
+  ): void {
+    if (!this.webhooks) return;
+    const r = record as unknown as Record<string, unknown>;
+    try {
+      void this.webhooks
+        .dispatchSystem(tenantId, VERIFICATION_REVIEWED_EVENT, {
+          verificationId: r.id,
+          conversationId: r.conversationId,
+          botConfigId: r.botConfigId,
+          specialistId: r.specialistId,
+          capability: r.capability,
+          verdict: r.verdict,
+          variables: r.fields,
+          reviewDecision: r.reviewDecision,
+          reviewNote: r.reviewNote ?? null,
+          reviewedAt: r.reviewedAt,
+        })
+        .catch((error: unknown) => this.logFailure(error));
+    } catch (error) {
+      this.logFailure(error);
+    }
+  }
+
+  private logFailure(error: unknown): void {
+    new Logger(SpecialistVerificationService.name).warn(
+      `No se pudo registrar el webhook de revisión: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 
   async dryRun(

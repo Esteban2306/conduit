@@ -7,6 +7,7 @@ jest.mock('@whiskeysockets/baileys', () => ({
 import { randomUUID } from 'crypto';
 import { PrismaClient } from '@prisma/client';
 import { SpecialistVerificationService } from 'src/bot/specialists/admin/SpecialistVerificationService';
+import { WebhookDispatcher } from 'src/webhooks/WebhookDispatcher';
 import { isolatedInfra } from '../../helpers/isolated-env';
 import { createTestPrisma } from '../../helpers/prisma.helper';
 
@@ -459,6 +460,128 @@ suite('Consulta de verificaciones contra la base aislada', () => {
         where: { id },
       });
       expect(saved.reviewedAt).toBeNull();
+    });
+  });
+
+  describe('webhook al revisar', () => {
+    const withHook = (dispatchSystem: jest.Mock) =>
+      new SpecialistVerificationService(
+        prisma as never,
+        {} as never,
+        config as never,
+        { dispatchSystem } as never,
+      );
+
+    it('una revisión ACTIVE avisa una sola vez con la decisión, aunque dos personas compitan', async () => {
+      const id = await make({
+        verdict: 'NEEDS_REVIEW',
+        conversationId: 'conv-hook',
+        minute: 90,
+      });
+      const dispatchSystem = jest.fn().mockResolvedValue(1);
+      const svc = withHook(dispatchSystem);
+      const results = await Promise.allSettled([
+        svc.review(tenantA, 'u1', id, {
+          decision: 'APPROVED',
+          note: 'ok',
+        }),
+        svc.review(tenantA, 'u2', id, { decision: 'REJECTED' }),
+      ]);
+      expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+      expect(dispatchSystem).toHaveBeenCalledTimes(1);
+      const [tenant, event, data] = dispatchSystem.mock.calls[0];
+      expect(tenant).toBe(tenantA);
+      expect(event).toBe('verification.reviewed');
+      expect(data).toMatchObject({
+        verificationId: id,
+        conversationId: 'conv-hook',
+        capability: 'payment-proof',
+        verdict: 'NEEDS_REVIEW',
+      });
+      expect(['APPROVED', 'REJECTED']).toContain(data.reviewDecision);
+      expect(data).not.toHaveProperty('reviewedBy');
+    });
+
+    it('una revisión de SHADOW no avisa', async () => {
+      const id = await make({
+        verdict: 'NEEDS_REVIEW',
+        mode: 'SHADOW',
+        conversationId: 'conv-hook2',
+        minute: 91,
+      });
+      const dispatchSystem = jest.fn();
+      await withHook(dispatchSystem).review(tenantA, 'u1', id, {
+        decision: 'APPROVED',
+      });
+      expect(dispatchSystem).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['rechaza', () => jest.fn().mockRejectedValue(new Error('cola'))],
+      [
+        'lanza',
+        () =>
+          jest.fn(() => {
+            throw new Error('boom');
+          }),
+      ],
+    ])(
+      'si el aviso %s, la revisión igual queda guardada',
+      async (_n, make2) => {
+        const id = await make({
+          verdict: 'ERROR',
+          conversationId: 'conv-hook3',
+          minute: 92,
+        });
+        const out = await withHook(make2()).review(tenantA, 'u1', id, {
+          decision: 'APPROVED',
+        });
+        expect(out.reviewDecision).toBe('APPROVED');
+      },
+    );
+  });
+
+  describe('entrega real a los endpoints suscritos', () => {
+    it('solo reciben el evento los endpoints suscritos a ese veredicto o a *', async () => {
+      const make3 = (events: string[], tenantId = tenantA) =>
+        prisma.webhookEndpoint
+          .create({
+            data: { tenantId, url: 'https://r.test/h', secret: 's', events },
+          })
+          .then((e) => e.id);
+      const wanted = await make3(['verification.valid']);
+      const star = await make3(['*']);
+      const other = await make3(['verification.invalid']);
+      const foreign = await make3(['*'], tenantB);
+      const queue = { add: jest.fn().mockResolvedValue(undefined) };
+      const dispatcher = new WebhookDispatcher(prisma as never, queue as never);
+
+      const count = await dispatcher.dispatchSystem(
+        tenantA,
+        'verification.valid',
+        { verificationId: 'v1', variables: { amount: 5 } },
+      );
+
+      expect(count).toBe(2);
+      const rows = await prisma.webhookDelivery.findMany({
+        where: { webhookId: { in: [wanted, star, other, foreign] } },
+      });
+      expect(rows.map((r) => r.webhookId).sort()).toEqual(
+        [wanted, star].sort(),
+      );
+      expect(rows[0].eventType).toBe('verification.valid');
+      expect(rows[0].payload).toMatchObject({
+        event: 'verification.valid',
+        data: { verificationId: 'v1', variables: { amount: 5 } },
+      });
+      expect(queue.add).toHaveBeenCalledTimes(2);
+
+      await prisma.webhookDelivery.deleteMany({
+        where: { webhookId: { in: [wanted, star, other, foreign] } },
+      });
+      await prisma.webhookEndpoint.deleteMany({
+        where: { id: { in: [wanted, star, other, foreign] } },
+      });
     });
   });
 });
