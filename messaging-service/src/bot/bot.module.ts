@@ -18,6 +18,7 @@ import { ChannelsModule } from 'src/channels/channels.module';
 import { forwardRef } from '@nestjs/common';
 import { ImageAnalysisService } from './ai/ImageAnalysisService';
 import { SpecialistRuntime } from './specialists/SpecialistRuntime';
+import { VerificationLedger } from './specialists/VerificationLedger';
 import { MessageDebouncer } from './router/MessageDebouncer';
 import { ReplyMetricsService } from './router/reply-metrics.service';
 import { OpenRouterProvider } from './ai/providers/OpenRouterProvider';
@@ -77,6 +78,7 @@ import { SystemPauseService } from './pause/SystemPause.service';
     CustomProvider,
     ImageAnalysisService,
     SpecialistRuntime,
+    VerificationLedger,
     MessageDebouncer,
     ReplyMetricsService,
     ToolDefinitionService,
@@ -99,6 +101,7 @@ import { SystemPauseService } from './pause/SystemPause.service';
     AiOrchestrator,
     AiModelSelectorService,
     SpecialistRuntime,
+    VerificationLedger,
     MessageDebouncer,
     ReplyMetricsService,
     IntentMetricsService,

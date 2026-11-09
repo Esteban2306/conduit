@@ -1,6 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { createHash } from 'crypto';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from 'src/shared/prisma.service';
 import { AiOrchestrator } from '../ai/AiOrchestrator';
@@ -11,11 +10,13 @@ import { EVENT_TYPES } from 'src/infra/events/constants/event.types';
 import { maskSecrets } from 'src/shared/security/mask-secrets';
 import {
   ExtractedFields,
+  MAX_REASON_CODES,
   MAX_TIMEOUT_MS,
   MIN_TIMEOUT_MS,
   VERDICT_VERSION,
   Verdict,
   VerificationResult,
+  extractedFieldsSchema,
   rulesDocumentSchema,
   verificationResultSchema,
 } from './contracts';
@@ -25,6 +26,13 @@ import {
   parseExtraction,
 } from './extraction-prompt';
 import { decideVerdict, summarize } from './verdict-policy';
+import { fieldsFingerprint } from './fingerprint';
+import { ImageHash, hashImage } from './image-hash';
+import {
+  PriorRecord,
+  ReuseFinding,
+  VerificationLedger,
+} from './VerificationLedger';
 
 const MAX_OUTPUT_TOKENS = 1024;
 const DAY_MS = 86_400_000;
@@ -58,6 +66,7 @@ export type SpecialistRunOutcome =
       specialistId: string;
       result: VerificationResult;
       recordId: string | null;
+      reuse?: 'CACHED' | 'ALREADY_USED' | 'OTHER_CONTACT' | 'RESENT';
     };
 
 interface ResolvedBinding {
@@ -80,6 +89,7 @@ export class SpecialistRuntime {
     private readonly prisma: PrismaService,
     private readonly orchestrator: AiOrchestrator,
     private readonly eventBus: EventBusService,
+    private readonly ledger: VerificationLedger,
   ) {}
 
   isEnabled(): boolean {
@@ -126,15 +136,43 @@ export class SpecialistRuntime {
     }
 
     const startedAt = Date.now();
-    const subjectHash = createHash('sha256').update(input.image).digest('hex');
+    const hash = await hashImage(input.image);
     const mode = binding.mode;
+    const reuseQuery = {
+      tenantId: input.tenantId,
+      capability: input.capability,
+      conversationId: input.conversationId,
+    };
+
+    if (mode === 'ACTIVE') {
+      const early = await this.strongestFinding(
+        reuseQuery,
+        await this.safeFinding(() =>
+          this.ledger.checkByHash({ ...reuseQuery, hash }),
+        ),
+      );
+      if (early.kind !== 'NONE') {
+        return this.finishEarly(input, binding, hash, early, startedAt);
+      }
+    }
 
     const analysis = await this.analyze(binding, input.image);
-    const latencyMs = Date.now() - startedAt;
+    const fingerprint = fieldsFingerprint(analysis.fields);
 
+    let reuse: ReuseFinding['kind'] = 'NONE';
+    if (mode === 'ACTIVE' && fingerprint && analysis.verdict !== 'ERROR') {
+      const later = await this.safeFinding(() =>
+        this.ledger.checkByFingerprint({ ...reuseQuery, fingerprint }),
+      );
+      reuse = later.kind;
+      this.applyReuse(analysis, later);
+    }
+
+    const latencyMs = Date.now() - startedAt;
     const result = this.buildResult(analysis);
     const recordId = await this.persist(input, binding, {
-      subjectHash,
+      hash,
+      fingerprint,
       result,
       mode,
       latencyMs,
@@ -142,6 +180,153 @@ export class SpecialistRuntime {
       tokens: analysis.tokens,
     });
 
+    this.publish(input, binding, result, mode, latencyMs, analysis.tokens);
+
+    return {
+      executed: true,
+      mode,
+      specialistId: binding.specialist.id,
+      result,
+      recordId,
+      ...(reuse !== 'NONE' && { reuse }),
+    };
+  }
+
+  private async finishEarly(
+    input: SpecialistRunInput,
+    binding: ResolvedBinding,
+    hash: ImageHash,
+    finding: Exclude<ReuseFinding, { kind: 'NONE' }>,
+    startedAt: number,
+  ): Promise<SpecialistRunOutcome> {
+    const { record } = finding;
+    const fields = this.priorFields(record);
+
+    if (finding.kind === 'CACHED') {
+      const result = this.buildResult({
+        verdict: record.verdict,
+        reasonCodes: this.withCode(record.reasonCodes, 'RESENT_SAME_IMAGE'),
+        fields,
+        confidence: record.confidence,
+        modelUsed: null,
+        tokens: 0,
+      });
+      this.publish(input, binding, result, 'ACTIVE', Date.now() - startedAt, 0);
+      return {
+        executed: true,
+        mode: 'ACTIVE',
+        specialistId: binding.specialist.id,
+        result,
+        recordId: record.id,
+        reuse: 'CACHED',
+      };
+    }
+
+    const used = finding.kind === 'ALREADY_USED';
+    const result = this.buildResult({
+      verdict: used ? 'INVALID' : 'NEEDS_REVIEW',
+      reasonCodes: [used ? 'ALREADY_USED' : 'REUSED_OTHER_CONTACT'],
+      fields,
+      confidence: 0,
+      modelUsed: null,
+      tokens: 0,
+    });
+    const latencyMs = Date.now() - startedAt;
+    const recordId = await this.persist(input, binding, {
+      hash,
+      fingerprint: fieldsFingerprint(fields),
+      result,
+      mode: 'ACTIVE',
+      latencyMs,
+      modelUsed: null,
+      tokens: 0,
+    });
+    this.publish(input, binding, result, 'ACTIVE', latencyMs, 0);
+    return {
+      executed: true,
+      mode: 'ACTIVE',
+      specialistId: binding.specialist.id,
+      result,
+      recordId,
+      reuse: finding.kind,
+    };
+  }
+
+  private async strongestFinding(
+    query: { tenantId: string; capability: string; conversationId: string },
+    finding: ReuseFinding,
+  ): Promise<ReuseFinding> {
+    if (finding.kind === 'NONE' || finding.kind === 'ALREADY_USED') {
+      return finding;
+    }
+    const fingerprint =
+      finding.record.fingerprint ??
+      fieldsFingerprint(this.priorFields(finding.record));
+    if (!fingerprint) return finding;
+
+    const byFingerprint = await this.safeFinding(() =>
+      this.ledger.checkByFingerprint({ ...query, fingerprint }),
+    );
+    return byFingerprint.kind === 'ALREADY_USED' ? byFingerprint : finding;
+  }
+
+  private applyReuse(analysis: Analysis, finding: ReuseFinding): void {
+    if (finding.kind === 'ALREADY_USED') {
+      if (analysis.verdict === 'VALID' || analysis.verdict === 'NEEDS_REVIEW') {
+        analysis.verdict = 'INVALID';
+      }
+      analysis.reasonCodes = this.withCode(
+        analysis.reasonCodes,
+        'ALREADY_USED',
+        true,
+      );
+    } else if (finding.kind === 'OTHER_CONTACT') {
+      if (analysis.verdict === 'VALID') analysis.verdict = 'NEEDS_REVIEW';
+      analysis.reasonCodes = this.withCode(
+        analysis.reasonCodes,
+        'REUSED_OTHER_CONTACT',
+        true,
+      );
+    } else if (finding.kind === 'RESENT') {
+      analysis.reasonCodes = this.withCode(
+        analysis.reasonCodes,
+        'RESENT_SAME_RECEIPT',
+      );
+    }
+  }
+
+  private withCode(codes: string[], code: string, first = false): string[] {
+    if (codes.includes(code)) return codes;
+    const next = first ? [code, ...codes] : [...codes, code];
+    return next.slice(0, MAX_REASON_CODES);
+  }
+
+  private priorFields(record: PriorRecord): ExtractedFields {
+    const parsed = extractedFieldsSchema.safeParse(record.fields);
+    return parsed.success ? parsed.data : {};
+  }
+
+  private async safeFinding(
+    find: () => Promise<ReuseFinding>,
+  ): Promise<ReuseFinding> {
+    try {
+      return await find();
+    } catch (error) {
+      this.logger.error(
+        `No se pudo consultar el historial de verificaciones: ${this.describe(error)}`,
+      );
+      return { kind: 'NONE' };
+    }
+  }
+
+  private publish(
+    input: SpecialistRunInput,
+    binding: ResolvedBinding,
+    result: VerificationResult,
+    mode: 'SHADOW' | 'ACTIVE',
+    latencyMs: number,
+    tokens: number,
+  ): void {
     this.eventBus.publish(EVENT_TYPES.SPECIALIST_COMPLETED, {
       tenantId: input.tenantId,
       botConfigId: input.botConfigId,
@@ -150,16 +335,8 @@ export class SpecialistRuntime {
       verdict: result.verdict,
       mode,
       latencyMs,
-      tokens: analysis.tokens,
+      tokens,
     });
-
-    return {
-      executed: true,
-      mode,
-      specialistId: binding.specialist.id,
-      result,
-      recordId,
-    };
   }
 
   private async lookup(
@@ -276,7 +453,8 @@ export class SpecialistRuntime {
     input: SpecialistRunInput,
     binding: ResolvedBinding,
     data: {
-      subjectHash: string;
+      hash: ImageHash;
+      fingerprint: string | null;
       result: VerificationResult;
       mode: 'SHADOW' | 'ACTIVE';
       latencyMs: number;
@@ -298,7 +476,9 @@ export class SpecialistRuntime {
           botConfigId: input.botConfigId,
           specialistId: binding.specialist.id,
           capability: input.capability,
-          subjectHash: data.subjectHash,
+          subjectHash: data.hash.hash,
+          hashVersion: data.hash.version,
+          fingerprint: data.fingerprint,
           verdict: data.result.verdict,
           confidence: data.result.confidence,
           fields: data.result.fields,

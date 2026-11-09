@@ -17,6 +17,11 @@ export const configValidationSchema = Joi.object({
   REGISTRATION_TOKEN: Joi.string().min(24).optional(),
   LINE_AUTO_ADOPT: Joi.boolean().default(false),
   SPECIALISTS_ENABLED: Joi.boolean().default(false),
+  SPECIALISTS_PASSPORT_TTL_MINUTES: Joi.number()
+    .integer()
+    .min(1)
+    .max(1440)
+    .default(60),
   SPECIALISTS_RETENTION_DAYS: Joi.number()
     .integer()
     .min(1)
@@ -91,6 +96,7 @@ export interface AppConfig {
   specialists: {
     enabled: boolean;
     retentionDays: number;
+    passportTtlMinutes: number;
   };
   database: {
     url: string;
@@ -162,6 +168,10 @@ export const configFactory = (): AppConfig => ({
   specialists: {
     enabled: process.env.SPECIALISTS_ENABLED === 'true',
     retentionDays: parseInt(process.env.SPECIALISTS_RETENTION_DAYS ?? '90', 10),
+    passportTtlMinutes: parseInt(
+      process.env.SPECIALISTS_PASSPORT_TTL_MINUTES ?? '60',
+      10,
+    ),
   },
   database: {
     url: process.env.DATABASE_URL ?? '',
