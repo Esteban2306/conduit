@@ -22,6 +22,11 @@ export const configValidationSchema = Joi.object({
     .min(1)
     .max(1440)
     .default(60),
+  SPECIALISTS_GROUNDING_TIMEOUT_MS: Joi.number()
+    .integer()
+    .min(500)
+    .max(15000)
+    .default(5000),
   SPECIALISTS_RETENTION_DAYS: Joi.number()
     .integer()
     .min(1)
@@ -97,6 +102,7 @@ export interface AppConfig {
     enabled: boolean;
     retentionDays: number;
     passportTtlMinutes: number;
+    groundingTimeoutMs: number;
   };
   database: {
     url: string;
@@ -170,6 +176,10 @@ export const configFactory = (): AppConfig => ({
     retentionDays: parseInt(process.env.SPECIALISTS_RETENTION_DAYS ?? '90', 10),
     passportTtlMinutes: parseInt(
       process.env.SPECIALISTS_PASSPORT_TTL_MINUTES ?? '60',
+      10,
+    ),
+    groundingTimeoutMs: parseInt(
+      process.env.SPECIALISTS_GROUNDING_TIMEOUT_MS ?? '5000',
       10,
     ),
   },

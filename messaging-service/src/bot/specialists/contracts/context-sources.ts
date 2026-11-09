@@ -7,6 +7,8 @@ export const MAX_SOURCE_AGE_SECONDS = 3600;
 
 export const CONTEXT_SOURCE_KINDS = ['TOOL', 'EXTERNAL_MAPPING'] as const;
 
+export const MAPPING_NAME_PATTERN = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_.-]+$/;
+
 export const contextSourceSchema = z
   .object({
     key: groundingKeySchema,
@@ -18,7 +20,8 @@ export const contextSourceSchema = z
       .regex(
         /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)*$/,
         'valuePath debe ser una ruta con puntos, por ejemplo data.anticipo.monto',
-      ),
+      )
+      .optional(),
     maxAgeSeconds: z
       .number()
       .int()
@@ -27,7 +30,27 @@ export const contextSourceSchema = z
       .default(60),
     required: z.boolean().default(false),
   })
-  .strict();
+  .strict()
+  .superRefine((source, ctx) => {
+    if (source.kind === 'TOOL' && !source.valuePath) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['valuePath'],
+        message: 'Una fuente de tipo TOOL exige valuePath',
+      });
+    }
+    if (
+      source.kind === 'EXTERNAL_MAPPING' &&
+      !MAPPING_NAME_PATTERN.test(source.name)
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['name'],
+        message:
+          'El nombre de un mapeo externo debe ser "<espacio>.<clave>", por ejemplo vars.anticipo',
+      });
+    }
+  });
 export type ContextSource = z.infer<typeof contextSourceSchema>;
 
 export const contextSourcesDocumentSchema = z
