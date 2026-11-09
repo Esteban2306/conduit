@@ -40,7 +40,18 @@ suite('SpecialistRuntime contra la base aislada', () => {
   let content = output();
   const orchestrator = {
     analyzeImageForSpecialist: jest.fn(() =>
-      Promise.resolve({ content, tokensUsed: 42, modelUsed: 'm-test' }),
+      Promise.resolve({
+        content,
+        tokensUsed: 42,
+        modelUsed: 'm-test',
+        usage: {
+          input: 30,
+          output: 12,
+          cacheRead: 0,
+          cacheWrite: 0,
+          thinking: 0,
+        },
+      }),
     ),
   };
   const eventBus = { publish: jest.fn() };
@@ -154,6 +165,8 @@ suite('SpecialistRuntime contra la base aislada', () => {
       confidence: 0.7,
       modelUsed: 'm-test',
       tokens: 42,
+      inputTokens: 30,
+      outputTokens: 12,
       mode: 'SHADOW',
       reasonCodes: ['NO_RULES_CONFIGURED'],
       specialistVersion: 1,

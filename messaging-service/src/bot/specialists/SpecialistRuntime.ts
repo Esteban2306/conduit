@@ -41,6 +41,7 @@ import {
 } from './VerificationLedger';
 
 const MAX_OUTPUT_TOKENS = 1024;
+const DRY_RUN_TIMEOUT_MS = 20_000;
 const DAY_MS = 86_400_000;
 
 export interface LegacyImageVerdict {
@@ -56,6 +57,26 @@ export interface SpecialistRunInput {
   image: Buffer;
   legacy?: LegacyImageVerdict | Promise<LegacyImageVerdict | undefined>;
   contactAddress?: string;
+}
+
+export interface DryRunInput {
+  tenantId: string;
+  specialistId: string;
+  version: number;
+  capability: string;
+  promptTemplate: string;
+  rules: unknown;
+  contextSources: unknown;
+  image: Buffer;
+}
+
+export interface DryRunOutcome {
+  result: VerificationResult;
+  modelUsed: string | null;
+  tokens: number;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  latencyMs: number;
 }
 
 export type SpecialistSkipReason =
@@ -191,6 +212,8 @@ export class SpecialistRuntime {
       latencyMs,
       modelUsed: analysis.modelUsed,
       tokens: analysis.tokens,
+      inputTokens: analysis.inputTokens,
+      outputTokens: analysis.outputTokens,
     });
 
     this.publish(input, binding, result, mode, latencyMs, analysis.tokens);
@@ -204,6 +227,43 @@ export class SpecialistRuntime {
       onFailure: binding.onFailure,
       validUntil: this.validUntil(),
       ...(reuse !== 'NONE' && { reuse }),
+    };
+  }
+
+  async dryRun(input: DryRunInput): Promise<DryRunOutcome> {
+    const startedAt = Date.now();
+    const binding: ResolvedBinding = {
+      mode: 'SHADOW',
+      timeoutMs: DRY_RUN_TIMEOUT_MS,
+      onFailure: 'DEGRADE',
+      specialist: {
+        id: input.specialistId,
+        status: 'ACTIVE',
+        version: input.version,
+        promptTemplate: input.promptTemplate,
+        rules: input.rules,
+        contextSources: input.contextSources,
+      },
+    };
+    const analysis = await this.analyze(
+      binding,
+      {
+        tenantId: input.tenantId,
+        botConfigId: 'dry-run',
+        conversationId: 'dry-run',
+        capability: input.capability,
+        image: input.image,
+      },
+      { skipGrounding: true },
+    );
+    const result = this.buildResult(analysis);
+    return {
+      result,
+      modelUsed: analysis.modelUsed,
+      tokens: analysis.tokens,
+      inputTokens: analysis.inputTokens ?? null,
+      outputTokens: analysis.outputTokens ?? null,
+      latencyMs: Date.now() - startedAt,
     };
   }
 
@@ -391,6 +451,7 @@ export class SpecialistRuntime {
   private async analyze(
     binding: ResolvedBinding,
     input: SpecialistRunInput,
+    options: { skipGrounding?: boolean } = {},
   ): Promise<Analysis> {
     const rules = rulesDocumentSchema.safeParse(binding.specialist.rules);
     if (!rules.success) return failure('RULES_INVALID');
@@ -415,11 +476,17 @@ export class SpecialistRuntime {
       Math.max(binding.timeoutMs, MIN_TIMEOUT_MS),
       MAX_TIMEOUT_MS,
     );
-    const grounding = this.startGrounding(
-      input,
-      sources.data.sources,
-      referencedGroundingKeys(rules.data),
-    );
+    const grounding: Promise<GroundingOutcome> = options.skipGrounding
+      ? Promise.resolve({
+          values: {},
+          unavailable: [],
+          requiredUnavailable: false,
+        })
+      : this.startGrounding(
+          input,
+          sources.data.sources,
+          referencedGroundingKeys(rules.data),
+        );
 
     try {
       const budget = new TurnBudget(timeoutMs);
@@ -443,6 +510,7 @@ export class SpecialistRuntime {
           ...failure(parsed.reason),
           modelUsed: response.modelUsed,
           tokens: response.tokensUsed,
+          ...usageOf(response),
         };
       }
 
@@ -468,6 +536,7 @@ export class SpecialistRuntime {
         confidence: parsed.output.confidence ?? 0,
         modelUsed: response.modelUsed,
         tokens: response.tokensUsed,
+        ...usageOf(response),
       };
     } catch (error) {
       const code = this.classify(error);
@@ -537,6 +606,8 @@ export class SpecialistRuntime {
       latencyMs: number;
       modelUsed: string | null;
       tokens: number;
+      inputTokens?: number;
+      outputTokens?: number;
     },
   ): Promise<string | null> {
     try {
@@ -563,6 +634,8 @@ export class SpecialistRuntime {
           reasonCodes: data.result.reasonCodes,
           modelUsed: data.modelUsed,
           tokens: data.tokens,
+          inputTokens: data.inputTokens ?? null,
+          outputTokens: data.outputTokens ?? null,
           latencyMs: data.latencyMs,
           mode: data.mode,
           comparison: this.compare(
@@ -623,6 +696,24 @@ interface Analysis {
   confidence: number;
   modelUsed: string | null;
   tokens: number;
+  inputTokens?: number;
+  outputTokens?: number;
+}
+
+function usageOf(response: {
+  usage?: {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+  };
+}): { inputTokens?: number; outputTokens?: number } {
+  const usage = response.usage;
+  if (!usage) return {};
+  return {
+    inputTokens: usage.input + usage.cacheRead + usage.cacheWrite,
+    outputTokens: usage.output,
+  };
 }
 
 function failure(code: string): Analysis {

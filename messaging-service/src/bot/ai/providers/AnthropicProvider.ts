@@ -265,6 +265,14 @@ export class AnthropicProvider implements AiProvider {
     return {
       content,
       tokensUsed,
+      usage: {
+        input: response.usage.input_tokens,
+        output: response.usage.output_tokens,
+        cacheRead: response.usage.cache_read_input_tokens ?? 0,
+        cacheWrite: response.usage.cache_creation_input_tokens ?? 0,
+        thinking: response.usage.output_tokens_details?.thinking_tokens ?? 0,
+      },
+      stopReason: response.stop_reason,
       model: response.model,
       provider: this.providerName,
       latencyMs: Date.now() - start,

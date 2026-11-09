@@ -143,11 +143,19 @@ export class GeminiProvider implements AiProvider {
     ]);
 
     const content = result.response.text();
-    const tokensUsed = result.response.usageMetadata?.totalTokenCount ?? 0;
+    const meta = result.response.usageMetadata;
+    const tokensUsed = meta?.totalTokenCount ?? 0;
 
     return {
       content,
       tokensUsed,
+      usage: {
+        input: meta?.promptTokenCount ?? 0,
+        output: meta?.candidatesTokenCount ?? 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        thinking: 0,
+      },
       model: input.model,
       provider: this.providerName,
       latencyMs: Date.now() - start,

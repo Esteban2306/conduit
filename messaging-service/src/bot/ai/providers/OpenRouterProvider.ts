@@ -125,7 +125,14 @@ export class OpenRouterProvider implements AiProvider {
       );
     }
 
-    const data = await response.json();
+    const data = (await response.json()) as {
+      choices?: Array<{ message?: { content?: string } }>;
+      usage?: {
+        total_tokens?: number;
+        prompt_tokens?: number;
+        completion_tokens?: number;
+      };
+    };
     const content = data.choices?.[0]?.message?.content ?? '';
     this.logger.warn({
       contentLength: content.length,
@@ -140,6 +147,13 @@ export class OpenRouterProvider implements AiProvider {
     return {
       content,
       tokensUsed,
+      usage: {
+        input: data.usage?.prompt_tokens ?? 0,
+        output: data.usage?.completion_tokens ?? 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        thinking: 0,
+      },
       model: this.DEFAULT_IMAGE_MODEL,
       provider: 'OPENROUTER',
       latencyMs: Date.now() - start,

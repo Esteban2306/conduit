@@ -26,6 +26,8 @@ import { SpecialistModelService } from './specialists/admin/SpecialistModelServi
 import { SpecialistModelController } from './specialists/admin/SpecialistModel.controller';
 import { SpecialistBindingService } from './specialists/admin/SpecialistBindingService';
 import { SpecialistBindingController } from './specialists/admin/SpecialistBinding.controller';
+import { SpecialistVerificationService } from './specialists/admin/SpecialistVerificationService';
+import { SpecialistVerificationController } from './specialists/admin/SpecialistVerification.controller';
 import { MessageDebouncer } from './router/MessageDebouncer';
 import { ReplyMetricsService } from './router/reply-metrics.service';
 import { OpenRouterProvider } from './ai/providers/OpenRouterProvider';
@@ -69,6 +71,7 @@ import { SystemPauseService } from './pause/SystemPause.service';
     SpecialistController,
     SpecialistModelController,
     SpecialistBindingController,
+    SpecialistVerificationController,
   ],
   providers: [
     SystemPauseService,
@@ -93,6 +96,7 @@ import { SystemPauseService } from './pause/SystemPause.service';
     SpecialistAdminService,
     SpecialistModelService,
     SpecialistBindingService,
+    SpecialistVerificationService,
     MessageDebouncer,
     ReplyMetricsService,
     ToolDefinitionService,

@@ -36,6 +36,8 @@ Si devuelve filas, resolverlas antes (la migración falla si hay duplicados).
 | `SPECIALISTS_ENABLED` | `false` | Interruptor global de especialistas |
 | `SPECIALISTS_RETENTION_DAYS` | `90` | Retención de `VerificationRecord` |
 | `SPECIALISTS_GROUNDING_TIMEOUT_MS` | `5000` (500 a 15000) | Tiempo máximo para consultar los datos de referencia de las reglas |
+| `SPECIALISTS_DRY_RUN_PER_MINUTE` | `10` (1 a 600) | Pruebas de dry-run por tenant y minuto; la siguiente recibe 429 con `details.retryAfterSeconds` |
+| `SPECIALISTS_PRICE_TABLE` | vacío | JSON que reemplaza o amplía la tabla de precios, por prefijo de modelo: `{"claude-haiku":{"inputPerMTok":1,"outputPerMTok":5}}`. Entradas inválidas se ignoran |
 | `SPECIALISTS_PASSPORT_TTL_MINUTES` | `60` | Vigencia de un veredicto para habilitar una herramienta y para reutilizarlo desde el caché |
 
 La espera por desconexión **está activa al desplegar** (no depende de una bandera): un mensaje con la línea caída espera sin gastar intentos.
@@ -140,6 +142,17 @@ Topes: **`SHADOW` y `ACTIVE`** exigen especialista activo y un modelo utilizable
 
 La clave y la capacidad son **inmutables**. Las reglas que citan un dato de contexto sin declararlo en `contextSources` se rechazan al guardar. Cada `VerificationRecord` guarda con qué versión del especialista se generó.
 
+### Consulta de verificaciones y dry-run
+
+- `GET /verifications` (cualquier usuario del tenant): filtros `specialistId`, `botConfigId`, `conversationId`, `capability`, `verdict`, `mode`, `reasonCode`, `pendingReview=true` (veredicto `NEEDS_REVIEW` o `ERROR` sin revisar), `from`, `to` (rango máximo 366 días), `limit` (1 a 100, por defecto 25) y `cursor`. Orden: más reciente primero, con cursor estable (fecha e id). Un filtro desconocido, incluido `tenantId`, da 400. Nunca devuelve imágenes: no se guardan.
+- `GET /verifications/:id`: una verificación del tenant (404 si es de otro).
+- Cada resultado trae `tokens: {total, input, output}` y `estimatedCostUsd`. Los registros anteriores a la 5c y los modelos que no informan el desglose tienen `input`/`output` en `null` y costo `null`; no se rellenan con ceros.
+- `POST /specialists/:id/dry-run` (propietario o administrador, `multipart/form-data`): campo `file` (JPEG, PNG o WebP, máximo 5 MB) y campo opcional `draft` (JSON con `promptTemplate`, `rules` y/o `contextSources` para probar cambios sin guardarlos). Devuelve veredicto, campos, códigos de motivo, modelo, tokens, latencia y costo estimado. Responde 200 con `persisted: false`.
+
+El dry-run gasta tokens reales del modelo del especialista. No guarda resultados, no consulta ni marca el historial de reutilización, no resuelve datos de contexto (`groundingSkipped: true`: una regla que dependa de contexto no puede dar `VALID`) y la imagen solo vive en memoria durante la petición. Las peticiones inválidas también cuentan para el límite por minuto.
+
+El costo es una estimación: la tabla base cubre por familia (`claude-haiku`, `claude-sonnet`, `claude-opus`) con valores aproximados que conviene contrastar con la tarifa vigente del proveedor; un modelo sin precio conocido da costo `null` en lugar de un valor inventado.
+
 ## 7. Endurecimiento de la salida del modelo
 
 Todo texto que el modelo lee de la imagen (referencia, destinatario) y el resumen del veredicto se rechazan si contienen saltos de línea, caracteres de control, separadores de línea o párrafo Unicode, marcas de dirección (incluida la inversión `U+202E`), caracteres de ancho cero o el BOM. Las fechas se validan contra el calendario real (`2026-02-31` es inválida). Una respuesta con claves `__proto__`, `constructor` o `prototype` es `ERROR`. No existe un camino en el que una respuesta del modelo produzca `VALID` por texto libre, por un campo de veredicto propio o por texto fuera del JSON.
@@ -156,4 +169,5 @@ Para los modelos de la familia 5.x, la extracción de imágenes se pide con `eff
 - El análisis legado conserva sus defectos (texto positivo no JSON se acepta como válido; el aviso de "alta demanda" no se muestra cuando caen todos los modelos).
 - El proveedor de Anthropic no desactiva el razonamiento: parte de los tokens de salida se gasta en `thinking`.
 - La caché de datos de referencia vive en memoria del proceso; con una sola réplica es correcta, y con varias cada réplica tendría la suya.
+- El límite de dry-run vive en memoria del proceso y se reinicia al reiniciar; con una sola réplica es correcto.
 - Conduit corre en una sola réplica; no escalar horizontalmente.
