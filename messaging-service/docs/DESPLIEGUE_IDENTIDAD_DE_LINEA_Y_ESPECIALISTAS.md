@@ -116,6 +116,28 @@ Todas las rutas usan el tenant del token. Las de consulta piden autenticación; 
 
 Los errores de validación, de conflicto de versión y de archivado traen un campo `details` con lo que el panel necesita mostrar: `issues` (campo por campo), `undeclaredKeys`, `currentVersion` o `bindings`. El filtro global de errores solo reenvía esa clave y nunca en errores 5xx.
 
+### Modelos de un especialista
+
+| Ruta | Efecto |
+|---|---|
+| `GET /specialists/:id/models` | Lista con su estado de uso. **La clave nunca se devuelve** (solo los últimos 4 caracteres) |
+| `POST /specialists/:id/models` | Alta de un modelo propio. Roles admitidos: `IMAGE_ANALYSIS` y `FALLBACK`. Se rechazan las claves de relleno; `CUSTOM` exige `baseUrl` |
+| `PATCH /specialists/:id/models/:modelId` | Cambia el modelo o **rota la clave** (se vuelve a cifrar y se limpia el estado de fallos) |
+| `POST /specialists/:id/models/:modelId/reactivate` | Limpia contadores y fallos y confirma con una llamada de prueba (consume 1 token) |
+| `DELETE /specialists/:id/models/:modelId` | Elimina el modelo |
+
+Los modelos que copió el script de relleno conservan la clave que tenía el bot en ese momento: **rotar la clave del bot no cambia la de la copia**; hay que rotarla aquí. Un cambio que dejaría sin modelo utilizable (activo, con credencial válida, rol `IMAGE_ANALYSIS` o `FALLBACK`) a un especialista con vínculos en `SHADOW` o `ACTIVE` se rechaza (409).
+
+### Vínculos bot-especialista
+
+| Ruta | Efecto |
+|---|---|
+| `GET /bots/:botId/specialists` | Vínculos del bot con un resumen del especialista |
+| `PUT /bots/:botId/specialists/:capability` | Crea o cambia el vínculo (`specialistId`, `mode`, `timeoutMs`, `onFailure`). Nace en `OFF` |
+| `DELETE /bots/:botId/specialists/:capability` | Elimina un vínculo apagado |
+
+Topes: **`SHADOW` y `ACTIVE`** exigen especialista activo y un modelo utilizable; **`ACTIVE`** exige además al menos una regla (sin reglas toda imagen legible saldría válida). Todos los bloqueos se informan juntos en `details.blockers`. Al pasar a `ACTIVE` se devuelven **advertencias** que no bloquean: menos de 20 verificaciones en `SHADOW` en los últimos 30 días (`LOW_SHADOW_SAMPLE`) o coincidencia menor al 80 % con el análisis actual cuando hay al menos 5 casos comparados (`LOW_SHADOW_AGREEMENT`). Un vínculo en uso (`SHADOW` o `ACTIVE`) no se elimina.
+
 La clave y la capacidad son **inmutables**. Las reglas que citan un dato de contexto sin declararlo en `contextSources` se rechazan al guardar. Cada `VerificationRecord` guarda con qué versión del especialista se generó.
 
 ## 7. Endurecimiento de la salida del modelo
