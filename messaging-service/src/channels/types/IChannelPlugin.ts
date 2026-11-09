@@ -44,7 +44,5 @@ export interface IChannelPlugin {
 
   send(payload: ChannelSendPayload): Promise<ChannelSendResult>;
   validateRecipient(address: string): boolean;
-
-  /** Si el canal puede enviar ahora por esa conexión; permite esperar sin gastar intentos. */
   isAvailable?(connectionId?: string): boolean;
 }

@@ -293,12 +293,6 @@ export class MessageProcessor {
     return Math.min(Math.max(wait, 0), MAX_DISCONNECT_WAIT_MS);
   }
 
-  /**
-   * Con la línea desconectada el mensaje no es el que falla: se deja en
-   * espera sin gastar intentos y se revisa de nuevo en unos segundos. Pasado
-   * el tope se manda a la DLQ para que alguien lo revise, nunca se pierde.
-   * Siempre lanza DelayedError salvo cuando agota el tope.
-   */
   private async waitForChannel(
     job: Job<SignedJobPayload>,
     token: string,
