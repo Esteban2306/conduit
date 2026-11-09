@@ -5,7 +5,7 @@ jest.mock('@whiskeysockets/baileys', () => ({
 }));
 
 import { NotFoundException } from '@nestjs/common';
-import { randomBytes, randomUUID } from 'crypto';
+import { randomUUID } from 'crypto';
 import { PrismaClient } from '@prisma/client';
 import {
   MIN_SHADOW_SAMPLE,
