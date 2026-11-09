@@ -81,6 +81,12 @@ export class AiModelSelectorService {
       return stored;
     }
 
+    if (model.specialistId) {
+      throw new Error(
+        `El modelo ${model.id} del especialista no tiene una API key válida y los especialistas no usan claves del sistema. Configura una key real para este modelo.`,
+      );
+    }
+
     const envKeyMap: Record<string, string> = {
       ANTHROPIC: 'ANTHROPIC_DEFAULT_API_KEY',
       OPENAI: 'OPENAI_DEFAULT_API_KEY',
