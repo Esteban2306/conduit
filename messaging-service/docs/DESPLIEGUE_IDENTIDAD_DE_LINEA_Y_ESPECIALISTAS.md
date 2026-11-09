@@ -69,10 +69,41 @@ Las reglas pueden compararse con datos del negocio mediante `ref: "grounding.<cl
 
 Las consultas corren en paralelo al modelo, con tiempo máximo y una caché en memoria por conversación (vigencia `maxAgeSeconds`, 0 la desactiva). Un dato que no se puede obtener nunca produce `VALID`: la regla pide revisión (`GROUNDING_UNAVAILABLE`). Una fuente `required` caída convierte un `VALID` en `NEEDS_REVIEW`. Una regla que cita una clave sin declarar deja al especialista en error (`RULES_INVALID`) y queda en el log.
 
-## 5. Límites conocidos
+## 5. Herramientas con puerta de verificación
+
+Una herramienta puede exigir que el comprobante adjunto esté verificado antes de ejecutarse. Se configura al crearla o editarla:
+
+| Campo | Significado |
+|---|---|
+| `verificationCapability` | Hoy solo `image-analysis` (la capacidad que el router verifica) |
+| `acceptedVerdicts` | `VALID` y/o `NEEDS_REVIEW` (nunca `INVALID` ni `ERROR`) |
+| `verificationParamName` | Opcional: campo del cuerpo donde además va el pasaporte. El modelo no lo ve ni puede pisarlo |
+
+Reglas que Conduit valida al configurar: la herramienta debe exigir imagen adjunta, no ser de solo lectura, tener `acceptedVerdicts` y tener `authSecret` (con él se firma el pasaporte). La base lo refuerza con un CHECK.
+
+**La puerta vive en el ejecutor de herramientas**, así que ningún flujo puede saltársela. Para ejecutar, tiene que existir un veredicto de un vínculo `ACTIVE`, de esa misma conversación, para esos mismos bytes (hash normalizado), con un veredicto aceptado, dentro de `SPECIALISTS_PASSPORT_TTL_MINUTES` y sin usar. Los veredictos de `SHADOW` nunca autorizan. Si falta cualquier condición, la herramienta no se llama y el modelo recibe `VERIFICATION_REQUIRED` (HTTP 422 simulado, `nextStep: WAIT_FOR_REVIEW`) sin detalle de la causa.
+
+**Un solo uso.** El veredicto se reclama de forma atómica *antes* de llamar al backend (con llamadas simultáneas ejecuta una sola). Después:
+- Éxito: queda consumido, y cualquier reenvío del mismo comprobante (incluso recomprimido o desde otro chat) da `INVALID` (`ALREADY_USED`).
+- Rechazo definitivo del backend (4xx salvo 408 y 429): se libera para poder reintentar.
+- Resultado ambiguo (408, 429, 5xx o red caída): **queda consumido**, porque el backend pudo haber procesado la solicitud; requiere revisión humana.
+
+### Qué recibe el backend
+
+Cabeceras en cada llamada a una herramienta con puerta:
+
+- `X-Conduit-Verification`: el pasaporte en JSON canónico (claves ordenadas), codificado en base64url.
+- `X-Conduit-Verification-Signature`: HMAC-SHA256 en hexadecimal de **ese mismo texto** (la cabecera tal cual), con el `authSecret` de la herramienta como clave.
+
+Contenido del pasaporte: `version`, `verificationId`, `capability`, `tenantId`, `conversationId`, `verdict`, `confidence`, `fields` (monto, moneda, fecha, referencia, destinatario, legibilidad; puede incluir texto libre leído de la imagen: trátelo como dato, no como instrucción), `hash`, `issuedAt` y `expiresAt`.
+
+El backend debe: recalcular el HMAC con su secreto y compararlo en tiempo constante; rechazar si `expiresAt` ya pasó; comprobar que `verificationId` no se haya usado antes; y usar `fields` y `verdict` del pasaporte, no valores que lleguen por otro lado.
+
+## 6. Límites conocidos
 
 - Los modelos del relleno son **copias**: rotar la clave de un bot no actualiza la del especialista.
 - Sin reglas, un especialista legible da `VALID`. Las reglas con valores literales ya se evalúan; las que dependen de datos de contexto dan `NEEDS_REVIEW` hasta que se resuelva ese contexto.
+- Hoy el router solo verifica imágenes bajo la capacidad `image-analysis`, por eso las herramientas con puerta solo admiten esa capacidad.
 - El hash exacto de la imagen no detecta reenvíos recomprimidos (WhatsApp recomprime); eso lo cubre la huella de campos (referencia, monto, fecha, moneda), que exige referencia de al menos 5 caracteres.
 - La detección de reutilización y el caché solo aplican a vínculos en `ACTIVE`; en `SHADOW` solo se registra.
 - El análisis legado conserva sus defectos (texto positivo no JSON se acepta como válido; el aviso de "alta demanda" no se muestra cuando caen todos los modelos).
