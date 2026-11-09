@@ -43,6 +43,7 @@ export const extractionOutputSchema = z
   .object({
     version: z.literal(EXTRACTION_VERSION),
     confidence: z.number().min(0).max(1).optional(),
+    isExpectedDocument: z.boolean().optional(),
     fields: extractedFieldsSchema,
   })
   .strict();

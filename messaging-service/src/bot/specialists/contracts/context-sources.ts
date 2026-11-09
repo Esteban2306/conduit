@@ -12,6 +12,13 @@ export const contextSourceSchema = z
     key: groundingKeySchema,
     kind: z.enum(CONTEXT_SOURCE_KINDS),
     name: safeText(120).min(1),
+    valuePath: z
+      .string()
+      .max(120)
+      .regex(
+        /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)*$/,
+        'valuePath debe ser una ruta con puntos, por ejemplo data.anticipo.monto',
+      ),
     maxAgeSeconds: z
       .number()
       .int()
