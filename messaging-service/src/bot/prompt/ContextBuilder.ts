@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { ConversationContext } from '../conversation/interfaces/ConversationContext';
+import { FACTS_KEY, renderFacts } from '../specialists/facts';
 
 export interface BuiltContext {
   block: string | null;
@@ -7,6 +8,7 @@ export interface BuiltContext {
 }
 
 const EXCLUDED = new Set([
+  FACTS_KEY,
   'retryCount',
   'imageVerified',
   'lastImageAnalysis',
@@ -58,6 +60,9 @@ export class ContextBuilder {
 
     const actions = this.buildActionMemory(context);
     if (actions) parts.push(actions);
+
+    const facts = renderFacts(context[FACTS_KEY]);
+    if (facts) parts.push(facts);
 
     const contextLine = this.buildContextLine(context);
     if (contextLine) {

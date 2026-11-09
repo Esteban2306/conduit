@@ -10,5 +10,6 @@ export interface ConversationContext {
   pendingIntent?: string;
   lastIntent?: string;
   retryCount?: number;
+  facts?: unknown;
   [key: string]: unknown;
 }

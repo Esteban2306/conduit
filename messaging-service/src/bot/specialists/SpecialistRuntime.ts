@@ -73,12 +73,15 @@ export type SpecialistRunOutcome =
       specialistId: string;
       result: VerificationResult;
       recordId: string | null;
+      onFailure: 'DEGRADE' | 'BLOCK';
+      validUntil: string;
       reuse?: 'CACHED' | 'ALREADY_USED' | 'OTHER_CONTACT' | 'RESENT';
     };
 
 interface ResolvedBinding {
   mode: 'OFF' | 'SHADOW' | 'ACTIVE';
   timeoutMs: number;
+  onFailure: 'DEGRADE' | 'BLOCK';
   specialist: {
     id: string;
     status: 'ACTIVE' | 'INACTIVE';
@@ -197,6 +200,8 @@ export class SpecialistRuntime {
       specialistId: binding.specialist.id,
       result,
       recordId,
+      onFailure: binding.onFailure,
+      validUntil: this.validUntil(),
       ...(reuse !== 'NONE' && { reuse }),
     };
   }
@@ -227,6 +232,8 @@ export class SpecialistRuntime {
         specialistId: binding.specialist.id,
         result,
         recordId: record.id,
+        onFailure: binding.onFailure,
+        validUntil: this.validUntil(record.createdAt),
         reuse: 'CACHED',
       };
     }
@@ -257,6 +264,8 @@ export class SpecialistRuntime {
       specialistId: binding.specialist.id,
       result,
       recordId,
+      onFailure: binding.onFailure,
+      validUntil: this.validUntil(),
       reuse: finding.kind,
     };
   }
@@ -277,6 +286,10 @@ export class SpecialistRuntime {
       this.ledger.checkByFingerprint({ ...query, fingerprint }),
     );
     return byFingerprint.kind === 'ALREADY_USED' ? byFingerprint : finding;
+  }
+
+  private validUntil(from: Date = new Date()): string {
+    return new Date(from.getTime() + this.ledger.passportTtlMs()).toISOString();
   }
 
   private applyReuse(analysis: Analysis, finding: ReuseFinding): void {
@@ -358,6 +371,7 @@ export class SpecialistRuntime {
       select: {
         mode: true,
         timeoutMs: true,
+        onFailure: true,
         specialist: {
           select: {
             id: true,
