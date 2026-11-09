@@ -122,6 +122,14 @@ export class VerificationLedger {
     return claimed.count === 1;
   }
 
+  async release(recordId: string, tenantId: string): Promise<boolean> {
+    const released = await this.prisma.verificationRecord.updateMany({
+      where: { id: recordId, tenantId, consumedAt: { not: null } },
+      data: { consumedAt: null },
+    });
+    return released.count === 1;
+  }
+
   private async claimingRecords(
     query: ReuseQuery,
     match: Record<string, unknown>,
