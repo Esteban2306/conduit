@@ -72,6 +72,37 @@ describe('contratos de especialistas', () => {
       expect(parsed.sources[0].required).toBe(false);
     });
 
+    it('un mapeo externo no necesita valuePath', () => {
+      expect(
+        contextSourcesDocumentSchema.safeParse({
+          version: 1,
+          sources: [
+            {
+              key: 'anticipo',
+              kind: 'EXTERNAL_MAPPING',
+              name: 'vars.anticipo',
+            },
+          ],
+        }).success,
+      ).toBe(true);
+    });
+
+    it('un mapeo externo acepta valuePath para leer un JSON guardado', () => {
+      expect(
+        contextSourcesDocumentSchema.safeParse({
+          version: 1,
+          sources: [
+            {
+              key: 'anticipo',
+              kind: 'EXTERNAL_MAPPING',
+              name: 'reserva.actual',
+              valuePath: 'anticipo.monto',
+            },
+          ],
+        }).success,
+      ).toBe(true);
+    });
+
     it.each([
       ['claves repetidas', { version: 1, sources: [source(), source()] }],
       ['tipo desconocido', { version: 1, sources: [source({ kind: 'SQL' })] }],

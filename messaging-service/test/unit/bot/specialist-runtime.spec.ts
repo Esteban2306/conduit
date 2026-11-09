@@ -52,6 +52,7 @@ interface Options {
   hashFinding?: Record<string, unknown> | Error;
   fingerprintFinding?: Record<string, unknown> | Error;
   image?: Buffer;
+  grounding?: Record<string, unknown> | Error;
 }
 
 function build(options: Options = {}) {
@@ -64,6 +65,7 @@ function build(options: Options = {}) {
             id: 'esp-1',
             status: 'ACTIVE',
             promptTemplate: 'Comprobantes de pago de reservas.',
+            contextSources: { version: 1, sources: [] },
             rules: { version: 1, rules: [] },
           },
         }
@@ -116,12 +118,26 @@ function build(options: Options = {}) {
     checkByHash: finding(options.hashFinding),
     checkByFingerprint: finding(options.fingerprintFinding),
   };
+  const grounding = {
+    resolve: jest.fn(() =>
+      options.grounding instanceof Error
+        ? Promise.reject(options.grounding)
+        : Promise.resolve(
+            options.grounding ?? {
+              values: {},
+              unavailable: [],
+              requiredUnavailable: false,
+            },
+          ),
+    ),
+  };
   const runtime = new SpecialistRuntime(
     config as never,
     prisma as never,
     orchestrator as never,
     eventBus as never,
     ledger as never,
+    grounding as never,
   );
   const logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
   (runtime as unknown as { logger: object }).logger = logger;
@@ -151,8 +167,35 @@ function build(options: Options = {}) {
     logger,
     saved,
     ledger,
+    grounding,
   };
 }
+
+const SOURCE = {
+  key: 'minimo',
+  kind: 'TOOL',
+  name: 'consultar_anticipo',
+  valuePath: 'data.monto',
+  maxAgeSeconds: 60,
+  required: false,
+};
+
+const groundedBinding = (
+  sources: unknown[] = [SOURCE],
+  rules: unknown[] = [
+    { field: 'amount', op: 'gte', ref: 'grounding.minimo', onFail: 'INVALID' },
+  ],
+) => ({
+  mode: 'SHADOW',
+  timeoutMs: 12000,
+  specialist: {
+    id: 'esp-1',
+    status: 'ACTIVE',
+    promptTemplate: 'p',
+    contextSources: { version: 1, sources },
+    rules: { version: 1, rules },
+  },
+});
 
 const withRules = (rules: unknown[]) => ({
   mode: 'SHADOW',
@@ -161,6 +204,7 @@ const withRules = (rules: unknown[]) => ({
     id: 'esp-1',
     status: 'ACTIVE',
     promptTemplate: 'p',
+    contextSources: { version: 1, sources: [] },
     rules: { version: 1, rules },
   },
 });
@@ -191,6 +235,7 @@ describe('SpecialistRuntime', () => {
             id: 'e',
             status: 'ACTIVE',
             promptTemplate: 'p',
+            contextSources: { version: 1, sources: [] },
             rules: {},
           },
         },
@@ -207,6 +252,7 @@ describe('SpecialistRuntime', () => {
             id: 'e',
             status: 'INACTIVE',
             promptTemplate: 'p',
+            contextSources: { version: 1, sources: [] },
             rules: {},
           },
         },
@@ -384,10 +430,21 @@ describe('SpecialistRuntime', () => {
       });
     });
 
-    it('una regla contra contexto todavía no resuelto pide revisión y nunca es VALID', async () => {
-      const result = await verdictOf({}, gte('grounding.minimo'));
-      expect(result.verdict).toBe('NEEDS_REVIEW');
-      expect(result.reasonCodes).toEqual(['GROUNDING_UNAVAILABLE']);
+    it('una regla contra un contexto que no se pudo resolver pide revisión y nunca es VALID', async () => {
+      const w = build({
+        response: extraction({}),
+        binding: groundedBinding(),
+        grounding: {
+          values: {},
+          unavailable: [{ key: 'minimo', reason: 'TOOL_FAILED' }],
+          requiredUnavailable: false,
+        },
+      });
+      const outcome = await w.run();
+      expect(outcome.executed && outcome.result).toMatchObject({
+        verdict: 'NEEDS_REVIEW',
+        reasonCodes: ['GROUNDING_UNAVAILABLE'],
+      });
     });
 
     it('un documento que no es el esperado es NOT_APPLICABLE', async () => {
@@ -527,6 +584,7 @@ describe('SpecialistRuntime', () => {
               id: 'esp-1',
               status: 'ACTIVE',
               promptTemplate: 'p',
+              contextSources: { version: 1, sources: [] },
               rules: { version: 1, rules: [] },
             },
           },
@@ -559,6 +617,7 @@ describe('SpecialistRuntime', () => {
               id: 'esp-1',
               status: 'ACTIVE',
               promptTemplate: 'p',
+              contextSources: { version: 1, sources: [] },
               rules: { version: 1, rules: [] },
             },
           },
@@ -583,6 +642,7 @@ describe('SpecialistRuntime', () => {
             id: 'esp-1',
             status: 'ACTIVE',
             promptTemplate: 'p',
+            contextSources: { version: 1, sources: [] },
             rules: { version: 9, rules: 'x' },
           },
         },
@@ -649,6 +709,7 @@ describe('SpecialistRuntime', () => {
             id: 'e',
             status: 'INACTIVE',
             promptTemplate: 'p',
+            contextSources: { version: 1, sources: [] },
             rules: {},
           },
         },
@@ -702,6 +763,7 @@ describe('SpecialistRuntime en ACTIVE con detección de reutilización', () => {
       id: 'esp-1',
       status: 'ACTIVE',
       promptTemplate: 'p',
+      contextSources: { version: 1, sources: [] },
       rules: { version: 1, rules },
     },
   });
@@ -1050,5 +1112,219 @@ describe('SpecialistRuntime en ACTIVE con detección de reutilización', () => {
         createHash('sha256').update(png).digest('hex'),
       );
     });
+  });
+});
+
+describe('SpecialistRuntime con contexto del negocio (grounding)', () => {
+  const resolved = (values: Record<string, unknown>) => ({
+    values,
+    unavailable: [],
+    requiredUnavailable: false,
+  });
+
+  it('una regla contra el contexto resuelto se evalúa: cumplida es VALID', async () => {
+    const w = build({
+      response: extraction({ amount: 150000 }),
+      binding: groundedBinding(),
+      grounding: resolved({ minimo: 30000 }),
+    });
+    const outcome = await w.run();
+    expect(outcome.executed && outcome.result).toMatchObject({
+      verdict: 'VALID',
+      reasonCodes: ['RULES_PASSED'],
+    });
+  });
+
+  it('incumplida es INVALID', async () => {
+    const w = build({
+      response: extraction({ amount: 20000 }),
+      binding: groundedBinding(),
+      grounding: resolved({ minimo: 30000 }),
+    });
+    const outcome = await w.run();
+    expect(outcome.executed && outcome.result).toMatchObject({
+      verdict: 'INVALID',
+      reasonCodes: ['AMOUNT_GTE_FAILED'],
+    });
+  });
+
+  it('pide solo las claves que usan las reglas, con la identidad del chat', async () => {
+    const w = build({
+      response: extraction({}),
+      binding: groundedBinding(
+        [SOURCE, { ...SOURCE, key: 'otro', name: 'otra_tool' }],
+        [
+          {
+            field: 'amount',
+            op: 'gte',
+            ref: 'grounding.minimo',
+            onFail: 'INVALID',
+          },
+        ],
+      ),
+      grounding: resolved({ minimo: 1 }),
+    });
+    await w.run();
+
+    const request = (
+      w.grounding.resolve.mock.calls[0] as unknown as [Record<string, any>]
+    )[0];
+    expect(request).toMatchObject({
+      tenantId: TENANT,
+      botConfigId: BOT,
+      conversationId: 'conv-1',
+    });
+    expect(Array.from(request.neededKeys as Set<string>)).toEqual(['minimo']);
+    expect(request.sources).toHaveLength(2);
+  });
+
+  it('pasa la dirección del contacto al resolvedor', async () => {
+    const w = build({
+      response: extraction({}),
+      binding: groundedBinding(),
+      grounding: resolved({ minimo: 1 }),
+    });
+    await w.runtime.run({
+      tenantId: TENANT,
+      botConfigId: BOT,
+      conversationId: 'conv-1',
+      capability: CAP,
+      image,
+      contactAddress: '573001112233',
+    });
+    const request = (
+      w.grounding.resolve.mock.calls[0] as unknown as [Record<string, any>]
+    )[0];
+    expect(request.contactAddress).toBe('573001112233');
+  });
+
+  it('el contexto se pide a la vez que el modelo, no después', async () => {
+    const order: string[] = [];
+    const w = build({
+      response: extraction({}),
+      binding: groundedBinding(),
+      grounding: resolved({ minimo: 1 }),
+    });
+    w.grounding.resolve.mockImplementation(() => {
+      order.push('contexto');
+      return Promise.resolve(resolved({ minimo: 1 }));
+    });
+    w.orchestrator.analyzeImageForSpecialist.mockImplementation(() => {
+      order.push('modelo');
+      return Promise.resolve({
+        content: extraction({}),
+        tokensUsed: 1,
+        modelUsed: 'm',
+      });
+    });
+    await w.run();
+    expect(order).toEqual(['contexto', 'modelo']);
+  });
+
+  it('una fuente obligatoria caída convierte un VALID en NEEDS_REVIEW', async () => {
+    const w = build({
+      response: extraction({}),
+      binding: groundedBinding([{ ...SOURCE, required: true }], []),
+      grounding: {
+        values: {},
+        unavailable: [{ key: 'minimo', reason: 'TIMEOUT' }],
+        requiredUnavailable: true,
+      },
+    });
+    const outcome = await w.run();
+    expect(outcome.executed && outcome.result).toMatchObject({
+      verdict: 'NEEDS_REVIEW',
+      reasonCodes: ['GROUNDING_UNAVAILABLE'],
+    });
+  });
+
+  it('una fuente obligatoria caída no cambia un INVALID', async () => {
+    const w = build({
+      response: extraction({ amount: 5 }),
+      binding: groundedBinding(
+        [{ ...SOURCE, required: true }],
+        [
+          {
+            field: 'amount',
+            op: 'gte',
+            ref: { literal: 100 },
+            onFail: 'INVALID',
+          },
+        ],
+      ),
+      grounding: {
+        values: {},
+        unavailable: [{ key: 'minimo', reason: 'TIMEOUT' }],
+        requiredUnavailable: true,
+      },
+    });
+    const outcome = await w.run();
+    expect(outcome.executed && outcome.result.verdict).toBe('INVALID');
+  });
+
+  it('una regla que cita una clave sin declarar es RULES_INVALID y no llama al modelo', async () => {
+    const w = build({
+      binding: groundedBinding(
+        [],
+        [
+          {
+            field: 'amount',
+            op: 'gte',
+            ref: 'grounding.fantasma',
+            onFail: 'INVALID',
+          },
+        ],
+      ),
+    });
+    const outcome = await w.run();
+    expect(outcome.executed && outcome.result.reasonCodes).toEqual([
+      'RULES_INVALID',
+    ]);
+    expect(w.orchestrator.analyzeImageForSpecialist).not.toHaveBeenCalled();
+    expect(w.grounding.resolve).not.toHaveBeenCalled();
+  });
+
+  it('fuentes de contexto corruptas son CONTEXT_SOURCES_INVALID sin llamar al modelo', async () => {
+    const w = build({
+      binding: {
+        mode: 'SHADOW',
+        timeoutMs: 12000,
+        specialist: {
+          id: 'esp-1',
+          status: 'ACTIVE',
+          promptTemplate: 'p',
+          rules: { version: 1, rules: [] },
+          contextSources: { version: 7, sources: 'x' },
+        },
+      },
+    });
+    const outcome = await w.run();
+    expect(outcome.executed && outcome.result.reasonCodes).toEqual([
+      'CONTEXT_SOURCES_INVALID',
+    ]);
+    expect(w.orchestrator.analyzeImageForSpecialist).not.toHaveBeenCalled();
+  });
+
+  it('si el resolvedor lanza, el análisis sigue y lo obligatorio pide revisión', async () => {
+    const w = build({
+      response: extraction({}),
+      binding: groundedBinding([{ ...SOURCE, required: true }], []),
+      grounding: new Error('boom'),
+    });
+    const outcome = await w.run();
+    expect(outcome.executed && outcome.result).toMatchObject({
+      verdict: 'NEEDS_REVIEW',
+      reasonCodes: ['GROUNDING_UNAVAILABLE'],
+    });
+    expect(w.logger.warn).toHaveBeenCalled();
+  });
+
+  it('sin fuentes declaradas no hay nada que resolver', async () => {
+    const w = build({ response: extraction({}) });
+    await w.run();
+    const request = (
+      w.grounding.resolve.mock.calls[0] as unknown as [Record<string, any>]
+    )[0];
+    expect(request.sources).toEqual([]);
   });
 });

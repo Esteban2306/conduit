@@ -418,6 +418,14 @@ suite('VerificationLedger y reutilización contra la base aislada', () => {
         orchestrator as never,
         { publish: jest.fn() } as never,
         ledger(),
+        {
+          resolve: () =>
+            Promise.resolve({
+              values: {},
+              unavailable: [],
+              requiredUnavailable: false,
+            }),
+        } as never,
       );
     let png: Buffer;
     let recompressed: Buffer;

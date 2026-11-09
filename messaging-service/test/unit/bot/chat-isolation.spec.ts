@@ -2016,6 +2016,7 @@ describe('Especialistas en SHADOW dentro del router (fase 3c-4)', () => {
       botConfigId: BOT,
       conversationId: `conv-${A}`,
       capability: 'image-analysis',
+      contactAddress: A,
     });
     expect(input.image).toBe(w.imageOriginal);
   });

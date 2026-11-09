@@ -61,6 +61,14 @@ suite('SpecialistRuntime contra la base aislada', () => {
       orchestrator as never,
       eventBus as never,
       new VerificationLedger(prisma as never, config as never),
+      {
+        resolve: () =>
+          Promise.resolve({
+            values: {},
+            unavailable: [],
+            requiredUnavailable: false,
+          }),
+      } as never,
     );
 
   const execute = (
