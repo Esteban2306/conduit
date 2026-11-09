@@ -8,6 +8,7 @@ function row(id: string, priority: number, extra: Row = {}): Row {
   return {
     id,
     botConfigId: 'bot',
+    specialistId: null,
     provider: 'ANTHROPIC',
     model: `m-${id}`,
     apiKey: 'k',
@@ -177,5 +178,46 @@ describe('AiModelSelectorService.selectModel (red de seguridad de la fase 3a)', 
       }),
     ]);
     expect((await selector.selectModel('bot', CONVERSATION))?.id).toBe('free');
+  });
+
+  describe('dueño especialista', () => {
+    const owned = (id: string, priority: number, extra: Row = {}) =>
+      row(id, priority, { botConfigId: null, specialistId: 'esp', ...extra });
+
+    it('un especialista elige solo sus modelos', async () => {
+      const { selector } = build([row('del-bot', 1), owned('suyo', 2)]);
+      expect(
+        (await selector.selectModel({ specialistId: 'esp' }, CONVERSATION))?.id,
+      ).toBe('suyo');
+    });
+
+    it('un bot nunca ve los modelos de un especialista', async () => {
+      const { selector } = build([owned('suyo', 1)]);
+      expect(await selector.selectModel('bot', CONVERSATION)).toBeNull();
+    });
+
+    it('el FALLBACK del especialista conserva el dueño y no usa los del bot', async () => {
+      const { selector } = build([
+        row('fb-bot', 1, { role: FALLBACK }),
+        owned('fb-esp', 2, { role: FALLBACK }),
+      ]);
+      expect(
+        (await selector.selectModel({ specialistId: 'esp' }, CONVERSATION))?.id,
+      ).toBe('fb-esp');
+    });
+
+    it('sin modelos propios un especialista no cae a los del bot', async () => {
+      const { selector } = build([row('del-bot', 1)]);
+      expect(
+        await selector.selectModel({ specialistId: 'esp' }, CONVERSATION),
+      ).toBeNull();
+    });
+
+    it('otro especialista tampoco comparte modelos', async () => {
+      const { selector } = build([owned('suyo', 1)]);
+      expect(
+        await selector.selectModel({ specialistId: 'otro' }, CONVERSATION),
+      ).toBeNull();
+    });
   });
 });
