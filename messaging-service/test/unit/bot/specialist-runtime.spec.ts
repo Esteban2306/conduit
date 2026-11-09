@@ -5,12 +5,20 @@ jest.mock('src/bot/helper/ImageOptimizer', () => ({
 }));
 
 import { createHash, randomBytes } from 'crypto';
+import sharp from 'sharp';
+import { fieldsFingerprint } from 'src/bot/specialists/fingerprint';
 import { Prisma } from '@prisma/client';
 import { SpecialistRuntime } from 'src/bot/specialists/SpecialistRuntime';
 import { MAX_HUMAN_SUMMARY } from 'src/bot/specialists/contracts';
 import { summarize } from 'src/bot/specialists/verdict-policy';
 import { EVENT_TYPES } from 'src/infra/events/constants/event.types';
 
+const realDelay = (ms: number) =>
+  new Promise<void>((resolve) => {
+    const { setTimeout: realSetTimeout } =
+      jest.requireActual<typeof import('timers')>('timers');
+    realSetTimeout(resolve, ms);
+  });
 const TENANT = 'tenant-1';
 const BOT = 'bot-1';
 const CAP = 'payment-proof';
@@ -41,6 +49,9 @@ interface Options {
   binding?: Record<string, unknown> | null | Error;
   response?: string | Error | (() => Promise<never>);
   createFails?: boolean;
+  hashFinding?: Record<string, unknown> | Error;
+  fingerprintFinding?: Record<string, unknown> | Error;
+  image?: Buffer;
 }
 
 function build(options: Options = {}) {
@@ -95,11 +106,22 @@ function build(options: Options = {}) {
         'specialists.retentionDays': options.retentionDays ?? 90,
       })[key],
   };
+  const finding = (value: Record<string, unknown> | Error | undefined) =>
+    jest.fn(() =>
+      value instanceof Error
+        ? Promise.reject(value)
+        : Promise.resolve(value ?? { kind: 'NONE' }),
+    );
+  const ledger = {
+    checkByHash: finding(options.hashFinding),
+    checkByFingerprint: finding(options.fingerprintFinding),
+  };
   const runtime = new SpecialistRuntime(
     config as never,
     prisma as never,
     orchestrator as never,
     eventBus as never,
+    ledger as never,
   );
   const logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
   (runtime as unknown as { logger: object }).logger = logger;
@@ -110,7 +132,7 @@ function build(options: Options = {}) {
       botConfigId: BOT,
       conversationId: 'conv-1',
       capability: CAP,
-      image,
+      image: options.image ?? image,
       legacy,
     });
   const saved = () =>
@@ -120,7 +142,16 @@ function build(options: Options = {}) {
       ]
     )[0].data;
 
-  return { runtime, run, prisma, orchestrator, eventBus, logger, saved };
+  return {
+    runtime,
+    run,
+    prisma,
+    orchestrator,
+    eventBus,
+    logger,
+    saved,
+    ledger,
+  };
 }
 
 const withRules = (rules: unknown[]) => ({
@@ -255,6 +286,7 @@ describe('SpecialistRuntime', () => {
       expect(data.subjectHash).toBe(
         createHash('sha256').update(image).digest('hex'),
       );
+      expect(data.hashVersion).toBe(1);
       const serialized = JSON.stringify(data);
       expect(serialized).not.toContain(image.toString('base64'));
       expect(Object.values(data).some((v) => Buffer.isBuffer(v))).toBe(false);
@@ -500,6 +532,7 @@ describe('SpecialistRuntime', () => {
           },
         });
         const pending = w.run();
+        await realDelay(100);
         await jest.advanceTimersByTimeAsync(2100);
         const outcome = await pending;
         expect(outcome.executed && outcome.result.reasonCodes).toEqual([
@@ -531,6 +564,7 @@ describe('SpecialistRuntime', () => {
           },
         });
         const pending = w.run();
+        await realDelay(100);
         await jest.advanceTimersByTimeAsync(500);
         settle({ content: extraction({}), tokensUsed: 1, modelUsed: 'm' });
         const outcome = await pending;
@@ -657,5 +691,364 @@ describe('summarize', () => {
   it('un código desconocido usa un texto genérico', () => {
     expect(summarize(['CODIGO_RARO'])).toBe('Resultado sin descripción.');
     expect(summarize([])).toBe('Resultado sin descripción.');
+  });
+});
+
+describe('SpecialistRuntime en ACTIVE con detección de reutilización', () => {
+  const activeBinding = (rules: unknown[] = []) => ({
+    mode: 'ACTIVE',
+    timeoutMs: 12000,
+    specialist: {
+      id: 'esp-1',
+      status: 'ACTIVE',
+      promptTemplate: 'p',
+      rules: { version: 1, rules },
+    },
+  });
+  const prior = (extra: Record<string, unknown> = {}) => ({
+    id: 'prev-1',
+    conversationId: 'conv-1',
+    verdict: 'VALID',
+    confidence: 0.9,
+    fields: {
+      amount: 150000,
+      currency: 'COP',
+      date: '2026-11-08',
+      reference: 'TRX-48210377',
+      legibility: 'CLEAR',
+    },
+    reasonCodes: ['RULES_PASSED'],
+    consumedAt: null,
+    createdAt: new Date(),
+    ...extra,
+  });
+  const FULL = extraction({ reference: 'TRX-48210377' });
+  const active = (options: Options = {}) =>
+    build({ binding: activeBinding(), response: FULL, ...options });
+
+  describe('por hash, antes de llamar al modelo', () => {
+    it('el mismo comprobante del mismo chat devuelve el veredicto anterior sin modelo ni registro nuevo', async () => {
+      const w = active({
+        hashFinding: { kind: 'CACHED', record: prior() },
+      });
+
+      const outcome = await w.run();
+
+      expect(w.orchestrator.analyzeImageForSpecialist).not.toHaveBeenCalled();
+      expect(w.prisma.verificationRecord.create).not.toHaveBeenCalled();
+      expect(outcome).toMatchObject({
+        executed: true,
+        mode: 'ACTIVE',
+        recordId: 'prev-1',
+        reuse: 'CACHED',
+      });
+      if (!outcome.executed) return;
+      expect(outcome.result).toMatchObject({
+        verdict: 'VALID',
+        confidence: 0.9,
+        reasonCodes: ['RULES_PASSED', 'RESENT_SAME_IMAGE'],
+      });
+      expect(outcome.result.fields.amount).toBe(150000);
+    });
+
+    it('un comprobante ya usado es INVALID sin llamar al modelo y queda registrado', async () => {
+      const w = active({
+        hashFinding: {
+          kind: 'ALREADY_USED',
+          record: prior({ consumedAt: new Date() }),
+        },
+      });
+
+      const outcome = await w.run();
+
+      expect(w.orchestrator.analyzeImageForSpecialist).not.toHaveBeenCalled();
+      expect(outcome.executed && outcome.result).toMatchObject({
+        verdict: 'INVALID',
+        reasonCodes: ['ALREADY_USED'],
+        confidence: 0,
+      });
+      expect(outcome.executed && outcome.reuse).toBe('ALREADY_USED');
+      expect(w.saved()).toMatchObject({
+        verdict: 'INVALID',
+        reasonCodes: ['ALREADY_USED'],
+        tokens: 0,
+        modelUsed: null,
+        mode: 'ACTIVE',
+      });
+    });
+
+    it('un comprobante de otro chat pide revisión sin llamar al modelo', async () => {
+      const w = active({
+        hashFinding: {
+          kind: 'OTHER_CONTACT',
+          record: prior({ conversationId: 'otro-chat' }),
+        },
+      });
+
+      const outcome = await w.run();
+
+      expect(w.orchestrator.analyzeImageForSpecialist).not.toHaveBeenCalled();
+      expect(outcome.executed && outcome.result).toMatchObject({
+        verdict: 'NEEDS_REVIEW',
+        reasonCodes: ['REUSED_OTHER_CONTACT'],
+      });
+    });
+
+    it('un caché del mismo chat pasa a ya usado si otra copia del comprobante ya se consumió', async () => {
+      const w = active({
+        hashFinding: { kind: 'CACHED', record: prior() },
+        fingerprintFinding: {
+          kind: 'ALREADY_USED',
+          record: prior({ id: 'orig', consumedAt: new Date() }),
+        },
+      });
+
+      const outcome = await w.run();
+
+      expect(w.orchestrator.analyzeImageForSpecialist).not.toHaveBeenCalled();
+      expect(outcome.executed && outcome.result).toMatchObject({
+        verdict: 'INVALID',
+        reasonCodes: ['ALREADY_USED'],
+      });
+      expect(outcome.executed && outcome.reuse).toBe('ALREADY_USED');
+    });
+
+    it('otro contacto por hash pasa a ya usado si la huella revela una copia consumida', async () => {
+      const w = active({
+        hashFinding: {
+          kind: 'OTHER_CONTACT',
+          record: prior({ conversationId: 'otro-chat' }),
+        },
+        fingerprintFinding: {
+          kind: 'ALREADY_USED',
+          record: prior({ consumedAt: new Date() }),
+        },
+      });
+
+      const outcome = await w.run();
+
+      expect(outcome.executed && outcome.result.verdict).toBe('INVALID');
+    });
+
+    it('usa la huella guardada del registro previo para la segunda consulta', async () => {
+      const w = active({
+        hashFinding: {
+          kind: 'CACHED',
+          record: prior({ fingerprint: 'fp-guardada' }),
+        },
+      });
+      await w.run();
+
+      expect(w.ledger.checkByFingerprint).toHaveBeenCalledWith(
+        expect.objectContaining({ fingerprint: 'fp-guardada' }),
+      );
+    });
+
+    it('si el registro previo no permite huella, no hay segunda consulta', async () => {
+      const w = active({
+        hashFinding: {
+          kind: 'CACHED',
+          record: prior({ fields: {}, fingerprint: null }),
+        },
+      });
+      await w.run();
+
+      expect(w.ledger.checkByFingerprint).not.toHaveBeenCalled();
+    });
+
+    it('los datos del comprobante anterior se muestran saneados al revisor', async () => {
+      const w = active({
+        hashFinding: {
+          kind: 'OTHER_CONTACT',
+          record: prior({
+            fields: { amount: 'no es un número', cardNumber: '4111' },
+          }),
+        },
+      });
+
+      const outcome = await w.run();
+
+      expect(outcome.executed && outcome.result.fields).toEqual({});
+    });
+
+    it('consulta el libro con tenant, capacidad, conversación y el hash de la imagen', async () => {
+      const w = active();
+      await w.run();
+
+      expect(w.ledger.checkByHash).toHaveBeenCalledWith({
+        tenantId: TENANT,
+        capability: CAP,
+        conversationId: 'conv-1',
+        hash: {
+          hash: createHash('sha256').update(image).digest('hex'),
+          version: 1,
+        },
+      });
+    });
+  });
+
+  describe('por huella, después de extraer', () => {
+    const fingerprintOf = () =>
+      fieldsFingerprint({
+        amount: 150000,
+        currency: 'COP',
+        date: '2026-11-08',
+        reference: 'TRX-48210377',
+      });
+
+    it('guarda la huella y consulta el libro con ella', async () => {
+      const w = active();
+      await w.run();
+
+      expect(w.ledger.checkByFingerprint).toHaveBeenCalledWith({
+        tenantId: TENANT,
+        capability: CAP,
+        conversationId: 'conv-1',
+        fingerprint: fingerprintOf(),
+      });
+      expect(w.saved().fingerprint).toBe(fingerprintOf());
+    });
+
+    it('ya usado: un VALID pasa a INVALID y el motivo va primero', async () => {
+      const w = active({
+        fingerprintFinding: {
+          kind: 'ALREADY_USED',
+          record: prior({ consumedAt: new Date() }),
+        },
+      });
+
+      const outcome = await w.run();
+
+      expect(outcome.executed && outcome.result).toMatchObject({
+        verdict: 'INVALID',
+        reasonCodes: ['ALREADY_USED', 'NO_RULES_CONFIGURED'],
+      });
+      expect(outcome.executed && outcome.reuse).toBe('ALREADY_USED');
+    });
+
+    it('otro contacto: un VALID pasa a NEEDS_REVIEW', async () => {
+      const w = active({
+        fingerprintFinding: {
+          kind: 'OTHER_CONTACT',
+          record: prior({ conversationId: 'otro-chat' }),
+        },
+      });
+
+      const outcome = await w.run();
+
+      expect(outcome.executed && outcome.result).toMatchObject({
+        verdict: 'NEEDS_REVIEW',
+        reasonCodes: ['REUSED_OTHER_CONTACT', 'NO_RULES_CONFIGURED'],
+      });
+    });
+
+    it('otro contacto con una regla incumplida sigue INVALID y agrega el motivo', async () => {
+      const w = build({
+        response: FULL,
+        binding: activeBinding([
+          {
+            field: 'amount',
+            op: 'gte',
+            ref: { literal: 999999 },
+            onFail: 'INVALID',
+          },
+        ]),
+        fingerprintFinding: {
+          kind: 'OTHER_CONTACT',
+          record: prior({ conversationId: 'otro-chat' }),
+        },
+      });
+
+      const outcome = await w.run();
+
+      expect(outcome.executed && outcome.result.verdict).toBe('INVALID');
+      expect(outcome.executed && outcome.result.reasonCodes).toEqual([
+        'REUSED_OTHER_CONTACT',
+        'AMOUNT_GTE_FAILED',
+      ]);
+    });
+
+    it('el mismo chat reenviado con otra compresión conserva el veredicto y lo anota', async () => {
+      const w = active({
+        fingerprintFinding: { kind: 'RESENT', record: prior() },
+      });
+
+      const outcome = await w.run();
+
+      expect(outcome.executed && outcome.result).toMatchObject({
+        verdict: 'VALID',
+        reasonCodes: ['NO_RULES_CONFIGURED', 'RESENT_SAME_RECEIPT'],
+      });
+      expect(outcome.executed && outcome.reuse).toBe('RESENT');
+    });
+
+    it('sin referencia o monto no hay huella y no se consulta', async () => {
+      const w = active({
+        response: extraction({ reference: null }),
+      });
+      await w.run();
+
+      expect(w.ledger.checkByFingerprint).not.toHaveBeenCalled();
+      expect(w.saved().fingerprint).toBeNull();
+    });
+
+    it('un resultado con error no consulta por huella', async () => {
+      const w = active({ response: 'no es json' });
+      await w.run();
+
+      expect(w.ledger.checkByFingerprint).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('robustez', () => {
+    it('si falla el libro continúa como si no hubiera historial y lo registra', async () => {
+      const w = active({
+        hashFinding: new Error('db caída'),
+        fingerprintFinding: new Error('db caída'),
+      });
+
+      const outcome = await w.run();
+
+      expect(outcome.executed && outcome.result.verdict).toBe('VALID');
+      expect(w.logger.error).toHaveBeenCalled();
+      expect(w.orchestrator.analyzeImageForSpecialist).toHaveBeenCalledTimes(1);
+    });
+
+    it('en SHADOW nunca consulta el libro ni cambia el veredicto', async () => {
+      const w = build({
+        response: FULL,
+        hashFinding: { kind: 'ALREADY_USED', record: prior() },
+        fingerprintFinding: { kind: 'ALREADY_USED', record: prior() },
+      });
+
+      const outcome = await w.run();
+
+      expect(w.ledger.checkByHash).not.toHaveBeenCalled();
+      expect(w.ledger.checkByFingerprint).not.toHaveBeenCalled();
+      expect(outcome.executed && outcome.result.verdict).toBe('VALID');
+      expect(outcome.executed && outcome.reuse).toBeUndefined();
+      expect(w.saved().fingerprint).toEqual(expect.any(String));
+    });
+
+    it('una imagen real se guarda con el hash normalizado versión 2', async () => {
+      const png = await sharp({
+        create: {
+          width: 30,
+          height: 30,
+          channels: 3,
+          background: { r: 10, g: 20, b: 30 },
+        },
+      })
+        .png()
+        .toBuffer();
+      const w = active({ image: png });
+
+      await w.run();
+
+      expect(w.saved().hashVersion).toBe(2);
+      expect(w.saved().subjectHash).not.toBe(
+        createHash('sha256').update(png).digest('hex'),
+      );
+    });
   });
 });

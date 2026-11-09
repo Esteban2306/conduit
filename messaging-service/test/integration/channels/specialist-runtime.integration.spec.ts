@@ -7,6 +7,7 @@ jest.mock('@whiskeysockets/baileys', () => ({
 import { randomBytes, randomUUID } from 'crypto';
 import { PrismaClient } from '@prisma/client';
 import { SpecialistRuntime } from 'src/bot/specialists/SpecialistRuntime';
+import { VerificationLedger } from 'src/bot/specialists/VerificationLedger';
 import { isolatedInfra } from '../../helpers/isolated-env';
 import { createTestPrisma } from '../../helpers/prisma.helper';
 
@@ -44,18 +45,22 @@ suite('SpecialistRuntime contra la base aislada', () => {
   };
   const eventBus = { publish: jest.fn() };
 
+  const config = {
+    get: (key: string) =>
+      ({
+        'specialists.enabled': true,
+        'specialists.retentionDays': 30,
+        'specialists.passportTtlMinutes': 60,
+      })[key],
+  };
+
   const runtime = () =>
     new SpecialistRuntime(
-      {
-        get: (key: string) =>
-          ({
-            'specialists.enabled': true,
-            'specialists.retentionDays': 30,
-          })[key],
-      } as never,
+      config as never,
       prisma as never,
       orchestrator as never,
       eventBus as never,
+      new VerificationLedger(prisma as never, config as never),
     );
 
   const execute = (
