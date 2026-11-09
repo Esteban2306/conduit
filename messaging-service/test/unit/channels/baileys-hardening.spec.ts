@@ -353,7 +353,9 @@ describe('BaileysSessionManager — cierres de conexión y lease', () => {
         expect.stringContaining(fragment),
         expect.objectContaining({ immediate: true }),
       );
-      expect(alerts.report.mock.calls[0][2]).toContain('Línea del spa');
+      expect((alerts.report.mock.calls[0] as unknown[])[2]).toContain(
+        'Línea del spa',
+      );
       await manager.stop('c1');
     }
   });
@@ -388,7 +390,9 @@ describe('BaileysSessionManager — cierres de conexión y lease', () => {
     manager.setNumberConflictHandler(handler);
 
     await manager.start('c1');
-    (fakeSockets[0] as any).user = { id: '573001112233:7@s.whatsapp.net' };
+    Object.assign(fakeSockets[0], {
+      user: { id: '573001112233:7@s.whatsapp.net' },
+    });
     fakeSockets[0].ev.emit('connection.update', { connection: 'open' });
     await flush();
     await flush();
@@ -399,7 +403,9 @@ describe('BaileysSessionManager — cierres de conexión y lease', () => {
       expect.stringContaining('adopt/c1'),
       expect.anything(),
     );
-    expect(alerts.report.mock.calls[0][2]).toContain('linea-vieja');
+    expect((alerts.report.mock.calls[0] as unknown[])[2]).toContain(
+      'linea-vieja',
+    );
     expect(handler).toHaveBeenCalledWith({
       tenantId: 't1',
       newConnectionId: 'c1',

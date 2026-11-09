@@ -10,7 +10,10 @@ const p2002 = () =>
 
 function build(existingKeys: string[] = []) {
   const created: Array<Record<string, unknown>> = [];
-  const update = jest.fn();
+  const update = jest.fn<
+    Promise<unknown>,
+    [{ data: Record<string, unknown> }]
+  >();
   const tx = {
     botConfig: { findFirst: jest.fn().mockResolvedValue({ id: 'bot-1' }) },
     whatsAppConnection: {
@@ -22,13 +25,13 @@ function build(existingKeys: string[] = []) {
   };
   const prisma = {
     whatsAppConnection: {
-      count: jest.fn(({ where }) =>
+      count: jest.fn(({ where }: { where: { key: string } }) =>
         Promise.resolve(existingKeys.includes(where.key) ? 1 : 0),
       ),
       findFirst: jest.fn(),
       update,
     },
-    $transaction: jest.fn((fn) => fn(tx)),
+    $transaction: jest.fn((fn: (t: unknown) => unknown) => fn(tx)),
   };
   return {
     service: new WhatsAppConnectionService(prisma as never),
