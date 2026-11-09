@@ -49,6 +49,9 @@ suite(
 
     afterAll(async () => {
       const tenants = [tenantA, tenantB];
+      await prisma.verificationRecord.deleteMany({
+        where: { tenantId: { in: tenants } },
+      });
       await prisma.aiModelConfig.deleteMany({
         where: { specialist: { tenantId: { in: tenants } } },
       });
@@ -190,6 +193,118 @@ suite(
       await expect(
         prisma.botConfig.delete({ where: { id: botA } }),
       ).rejects.toThrow();
+    });
+
+    describe('VerificationRecord', () => {
+      const record = (
+        tenantId: string,
+        specialistId: string,
+        capability: string,
+        botConfigId = botA,
+      ) =>
+        prisma.verificationRecord.create({
+          data: {
+            tenantId,
+            conversationId: 'conv-1',
+            botConfigId,
+            specialistId,
+            capability,
+            subjectHash: 'a'.repeat(64),
+            verdict: 'VALID',
+            mode: 'SHADOW',
+            reasonCodes: [],
+            expiresAt: new Date(Date.now() + 86_400_000),
+          },
+        });
+
+      it('guarda un resultado con los valores por defecto', async () => {
+        const saved = await record(tenantA, specA, 'payment-proof');
+        expect(saved.confidence).toBe(0);
+        expect(saved.fields).toEqual({});
+        expect(saved.tokens).toBe(0);
+        expect(saved.comparison).toBeNull();
+      });
+
+      it('guarda la comparación de SHADOW y los códigos de motivo', async () => {
+        const saved = await prisma.verificationRecord.create({
+          data: {
+            tenantId: tenantA,
+            conversationId: 'conv-2',
+            botConfigId: botA,
+            specialistId: specA,
+            capability: 'payment-proof',
+            subjectHash: 'b'.repeat(64),
+            verdict: 'NEEDS_REVIEW',
+            confidence: 0.4,
+            fields: { amount: 100 },
+            reasonCodes: ['LOW_CONFIDENCE', 'AMOUNT_UNCLEAR'],
+            mode: 'SHADOW',
+            comparison: { legacyValid: true, agrees: false },
+            expiresAt: new Date(Date.now() + 86_400_000),
+          },
+        });
+        expect(saved.reasonCodes).toEqual(['LOW_CONFIDENCE', 'AMOUNT_UNCLEAR']);
+        expect(saved.comparison).toEqual({ legacyValid: true, agrees: false });
+      });
+
+      it('rechaza un resultado con el tenant de otro especialista', async () => {
+        await expect(record(tenantA, specB, 'payment-proof')).rejects.toThrow(
+          /foreign key/i,
+        );
+      });
+
+      it('rechaza un resultado con una capacidad distinta a la del especialista', async () => {
+        await expect(record(tenantA, specA, 'identity-check')).rejects.toThrow(
+          /foreign key/i,
+        );
+      });
+
+      it('rechaza un veredicto que no existe', async () => {
+        await expect(
+          prisma.verificationRecord.create({
+            data: {
+              tenantId: tenantA,
+              conversationId: 'c',
+              botConfigId: botA,
+              specialistId: specA,
+              capability: 'payment-proof',
+              subjectHash: 'c'.repeat(64),
+              verdict: 'APPROVED' as never,
+              mode: 'SHADOW',
+              reasonCodes: [],
+              expiresAt: new Date(),
+            },
+          }),
+        ).rejects.toThrow();
+      });
+
+      it('no deja borrar un especialista con resultados', async () => {
+        await expect(
+          prisma.specialist.delete({ where: { id: specA } }),
+        ).rejects.toThrow();
+      });
+
+      it('los resultados no impiden borrar un bot que ya no tiene vínculos', async () => {
+        const free = await prisma.botConfig.create({
+          data: { tenantId: tenantA, name: 'libre', systemPrompt: 'x' },
+        });
+        await record(tenantA, specA, 'payment-proof', free.id);
+        await expect(
+          prisma.botConfig.delete({ where: { id: free.id } }),
+        ).resolves.toBeDefined();
+      });
+
+      it('se buscan por tenant y hash de la imagen', async () => {
+        const found = await prisma.verificationRecord.findMany({
+          where: { tenantId: tenantA, subjectHash: 'a'.repeat(64) },
+        });
+        expect(found.length).toBeGreaterThan(0);
+        expect(
+          await prisma.verificationRecord.count({
+            where: { tenantId: tenantB, subjectHash: 'a'.repeat(64) },
+          }),
+        ).toBe(0);
+      });
     });
   },
 );

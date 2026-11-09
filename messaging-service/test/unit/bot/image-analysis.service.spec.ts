@@ -105,6 +105,42 @@ describe('ImageAnalysisService (red de seguridad de la fase 3c)', () => {
     });
   });
 
+  describe('descarga y análisis por separado', () => {
+    it('downloadOriginal descarga el mensaje como buffer', async () => {
+      const { service } = build();
+      const message = { key: { id: 'WA1' } };
+
+      expect(await service.downloadOriginal(message as never)).toBe(original);
+      expect(download).toHaveBeenCalledWith(message, 'buffer', {});
+    });
+
+    it('analyzeBuffer analiza sin descargar nada', async () => {
+      const { service, orchestrator } = build();
+      orchestrator.analyzeImage.mockResolvedValue({
+        content: '{"valid":true,"confidence":"HIGH","details":"ok"}',
+      });
+
+      const result = await service.analyzeBuffer(original, 'bot-1');
+
+      expect(download).not.toHaveBeenCalled();
+      expect(optimize).toHaveBeenCalledWith(original);
+      expect(result).toMatchObject({ status: 'SUCCESS', valid: true });
+    });
+
+    it('analyzeFromMessage es descargar y luego analyzeBuffer', async () => {
+      const { service } = build();
+      const spy = jest.spyOn(service, 'analyzeBuffer').mockResolvedValue({
+        status: 'SUCCESS',
+        valid: true,
+        confidence: 'HIGH',
+      });
+
+      await analyze(service);
+
+      expect(spy).toHaveBeenCalledWith(original, 'bot-1');
+    });
+  });
+
   describe('interpretación de la respuesta del modelo', () => {
     const respond = async (content: string) => {
       const { service, orchestrator } = build();
