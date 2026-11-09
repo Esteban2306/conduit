@@ -12,6 +12,7 @@ Resume lo que añade la rama `feat/line-identity-and-queue-resilience` y el orde
 | `20261108210000_ai_model_owner` | `AiModelConfig` puede pertenecer a un especialista (dueño único con CHECK) |
 | `20261108220000_specialists` | `Specialist`, `BotSpecialistBinding` y claves compuestas entre tenants |
 | `20261108230000_verification_record` | `VerificationRecord` (veredictos, sin bytes de imagen) |
+| `20261109110000_specialist_admin` | Versión y archivado del especialista, tabla `SpecialistVersion` (con la versión 1 de los especialistas existentes), y en `VerificationRecord` la versión usada, el desglose de tokens y los campos de revisión humana |
 | `20261109100000_attachment_verification` | Huella de campos, versión de hash y marca de consumo en `VerificationRecord`; campos de verificación y CHECK en `ToolDefinition` |
 
 Todas son aditivas. Antes de `stable_keys` en cada base, buscar números duplicados por tenant:
@@ -99,13 +100,29 @@ Contenido del pasaporte: `version`, `verificationId`, `capability`, `tenantId`, 
 
 El backend debe: recalcular el HMAC con su secreto y compararlo en tiempo constante; rechazar si `expiresAt` ya pasó; comprobar que `verificationId` no se haya usado antes; y usar `fields` y `verdict` del pasaporte, no valores que lleguen por otro lado.
 
-## 6. Endurecimiento de la salida del modelo
+## 6. Administración de especialistas (Fase 5)
+
+Todas las rutas usan el tenant del token. Las de consulta piden autenticación; las que modifican piden además rol administrador (o API key).
+
+| Ruta | Efecto |
+|---|---|
+| `GET /specialists` | Lista (filtros `status`, `capability`, `includeArchived`), con conteo de vínculos y modelos |
+| `GET /specialists/:id`, `GET /specialists/by-key/:key` | Detalle |
+| `POST /specialists` | Crea (nace `INACTIVE`, versión 1). La clave se genera del nombre si no se envía |
+| `PATCH /specialists/:id` | Cambia nombre, prompt, reglas, contexto o estado. Un cambio de prompt, reglas o contexto crea una versión nueva; `expectedVersion` evita pisar la edición de otra persona (409) |
+| `GET /specialists/:id/versions`, `GET .../versions/:n` | Historial y contenido de cada versión |
+| `POST /specialists/:id/versions/:n/restore` | Restaura una versión anterior **como una versión nueva** (el historial no se reescribe) |
+| `POST /specialists/:id/archive`, `.../unarchive` | Archivar exige que no tenga vínculos en `SHADOW` ni `ACTIVE` |
+
+La clave y la capacidad son **inmutables**. Las reglas que citan un dato de contexto sin declararlo en `contextSources` se rechazan al guardar. Cada `VerificationRecord` guarda con qué versión del especialista se generó.
+
+## 7. Endurecimiento de la salida del modelo
 
 Todo texto que el modelo lee de la imagen (referencia, destinatario) y el resumen del veredicto se rechazan si contienen saltos de línea, caracteres de control, separadores de línea o párrafo Unicode, marcas de dirección (incluida la inversión `U+202E`), caracteres de ancho cero o el BOM. Las fechas se validan contra el calendario real (`2026-02-31` es inválida). Una respuesta con claves `__proto__`, `constructor` o `prototype` es `ERROR`. No existe un camino en el que una respuesta del modelo produzca `VALID` por texto libre, por un campo de veredicto propio o por texto fuera del JSON.
 
 Para los modelos de la familia 5.x, la extracción de imágenes se pide con `effort: low` (los demás modelos no reciben el parámetro).
 
-## 7. Límites conocidos
+## 8. Límites conocidos
 
 - Los modelos del relleno son **copias**: rotar la clave de un bot no actualiza la del especialista.
 - Sin reglas, un especialista legible da `VALID`. Las reglas con valores literales ya se evalúan; las que dependen de datos de contexto dan `NEEDS_REVIEW` hasta que se resuelva ese contexto.
