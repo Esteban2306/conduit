@@ -580,6 +580,7 @@ export class BotRouter {
         botConfig,
         conversationId,
         tenantId,
+        phoneNumber,
       );
 
       if (analysisResult.status === 'SUCCESS') {
@@ -1186,6 +1187,7 @@ export class BotRouter {
     botConfig: { id: string; systemPrompt: string },
     conversationId: string,
     tenantId: string,
+    phoneNumber: string,
   ): Promise<ImageAnalysisResult> {
     const legacyOnly = () =>
       this.imageAnalysisService.analyzeFromMessage(
@@ -1221,6 +1223,7 @@ export class BotRouter {
       tenantId,
       botConfig.id,
       conversationId,
+      phoneNumber,
       original,
       legacy,
     );
@@ -1231,6 +1234,7 @@ export class BotRouter {
     tenantId: string,
     botConfigId: string,
     conversationId: string,
+    contactAddress: string,
     image: Buffer,
     legacy: Promise<ImageAnalysisResult>,
   ): void {
@@ -1248,6 +1252,7 @@ export class BotRouter {
         conversationId,
         capability: IMAGE_ANALYSIS_CAPABILITY,
         image,
+        contactAddress,
         legacy: verdict,
       })
       .catch((error: unknown) => {

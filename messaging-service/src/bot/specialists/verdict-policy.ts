@@ -35,6 +35,12 @@ export function decideVerdict(
       return { verdict: 'NEEDS_REVIEW', reasonCodes: ['LEGIBILITY_PARTIAL'] };
     case 'CLEAR': {
       const evaluation = evaluateRules(input.fields, rules, context);
+      if (evaluation.verdict === 'VALID' && context.requiredUnavailable) {
+        return {
+          verdict: 'NEEDS_REVIEW',
+          reasonCodes: ['GROUNDING_UNAVAILABLE'],
+        };
+      }
       return {
         verdict: evaluation.verdict,
         reasonCodes: evaluation.reasonCodes,
@@ -63,6 +69,8 @@ const SUMMARIES: Record<string, string> = {
   NO_MODEL: 'El especialista no tiene un modelo disponible.',
   PROVIDER_ERROR: 'El proveedor de IA falló.',
   RULES_INVALID: 'Las reglas del especialista no son válidas.',
+  CONTEXT_SOURCES_INVALID:
+    'Las fuentes de contexto del especialista no son válidas.',
   INTERNAL_ERROR: 'Ocurrió un error interno al analizar.',
 };
 

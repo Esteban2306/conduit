@@ -19,6 +19,7 @@ import { forwardRef } from '@nestjs/common';
 import { ImageAnalysisService } from './ai/ImageAnalysisService';
 import { SpecialistRuntime } from './specialists/SpecialistRuntime';
 import { VerificationLedger } from './specialists/VerificationLedger';
+import { GroundingResolver } from './specialists/GroundingResolver';
 import { MessageDebouncer } from './router/MessageDebouncer';
 import { ReplyMetricsService } from './router/reply-metrics.service';
 import { OpenRouterProvider } from './ai/providers/OpenRouterProvider';
@@ -79,6 +80,7 @@ import { SystemPauseService } from './pause/SystemPause.service';
     ImageAnalysisService,
     SpecialistRuntime,
     VerificationLedger,
+    GroundingResolver,
     MessageDebouncer,
     ReplyMetricsService,
     ToolDefinitionService,

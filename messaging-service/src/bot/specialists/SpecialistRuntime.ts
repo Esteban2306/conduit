@@ -14,6 +14,7 @@ import {
   MAX_TIMEOUT_MS,
   MIN_TIMEOUT_MS,
   VERDICT_VERSION,
+  contextSourcesDocumentSchema,
   Verdict,
   VerificationResult,
   extractedFieldsSchema,
@@ -28,6 +29,11 @@ import {
 import { decideVerdict, summarize } from './verdict-policy';
 import { fieldsFingerprint } from './fingerprint';
 import { ImageHash, hashImage } from './image-hash';
+import { GroundingOutcome, GroundingResolver } from './GroundingResolver';
+import {
+  referencedGroundingKeys,
+  undeclaredGroundingKeys,
+} from './grounding-config';
 import {
   PriorRecord,
   ReuseFinding,
@@ -49,6 +55,7 @@ export interface SpecialistRunInput {
   capability: string;
   image: Buffer;
   legacy?: LegacyImageVerdict | Promise<LegacyImageVerdict | undefined>;
+  contactAddress?: string;
 }
 
 export type SpecialistSkipReason =
@@ -77,6 +84,7 @@ interface ResolvedBinding {
     status: 'ACTIVE' | 'INACTIVE';
     promptTemplate: string;
     rules: unknown;
+    contextSources: unknown;
   };
 }
 
@@ -90,6 +98,7 @@ export class SpecialistRuntime {
     private readonly orchestrator: AiOrchestrator,
     private readonly eventBus: EventBusService,
     private readonly ledger: VerificationLedger,
+    private readonly grounding: GroundingResolver,
   ) {}
 
   isEnabled(): boolean {
@@ -156,7 +165,7 @@ export class SpecialistRuntime {
       }
     }
 
-    const analysis = await this.analyze(binding, input.image);
+    const analysis = await this.analyze(binding, input);
     const fingerprint = fieldsFingerprint(analysis.fields);
 
     let reuse: ReuseFinding['kind'] = 'NONE';
@@ -355,6 +364,7 @@ export class SpecialistRuntime {
             status: true,
             promptTemplate: true,
             rules: true,
+            contextSources: true,
           },
         },
       },
@@ -364,20 +374,41 @@ export class SpecialistRuntime {
 
   private async analyze(
     binding: ResolvedBinding,
-    image: Buffer,
+    input: SpecialistRunInput,
   ): Promise<Analysis> {
     const rules = rulesDocumentSchema.safeParse(binding.specialist.rules);
     if (!rules.success) return failure('RULES_INVALID');
+
+    const sources = contextSourcesDocumentSchema.safeParse(
+      binding.specialist.contextSources,
+    );
+    if (!sources.success) return failure('CONTEXT_SOURCES_INVALID');
+
+    const undeclared = undeclaredGroundingKeys(
+      rules.data,
+      sources.data.sources,
+    );
+    if (undeclared.length > 0) {
+      this.logger.error(
+        `El especialista ${binding.specialist.id} usa claves de contexto sin declarar: ${undeclared.join(', ')}`,
+      );
+      return failure('RULES_INVALID');
+    }
 
     const timeoutMs = Math.min(
       Math.max(binding.timeoutMs, MIN_TIMEOUT_MS),
       MAX_TIMEOUT_MS,
     );
+    const grounding = this.startGrounding(
+      input,
+      sources.data.sources,
+      referencedGroundingKeys(rules.data),
+    );
 
     try {
       const budget = new TurnBudget(timeoutMs);
       const prepared = await budget.race(
-        ImageOptimizer.optimizeForExtraction(image),
+        ImageOptimizer.optimizeForExtraction(input.image),
       );
       const response = await budget.race(
         this.orchestrator.analyzeImageForSpecialist(binding.specialist.id, {
@@ -398,6 +429,7 @@ export class SpecialistRuntime {
         };
       }
 
+      const grounded = await grounding;
       const decision = decideVerdict(
         {
           fields: parsed.output.fields,
@@ -405,7 +437,8 @@ export class SpecialistRuntime {
         },
         rules.data,
         {
-          grounding: {},
+          grounding: grounded.values,
+          requiredUnavailable: grounded.requiredUnavailable,
           now: new Date(),
           timeZone:
             this.config.get<string>('whatsapp.timeZone') ?? 'America/Bogota',
@@ -426,6 +459,33 @@ export class SpecialistRuntime {
       );
       return failure(code);
     }
+  }
+
+  private startGrounding(
+    input: SpecialistRunInput,
+    sources: Parameters<GroundingResolver['resolve']>[0]['sources'],
+    neededKeys: ReadonlySet<string>,
+  ): Promise<GroundingOutcome> {
+    const hadRequired = sources.some((source) => source.required);
+    return this.grounding
+      .resolve({
+        tenantId: input.tenantId,
+        botConfigId: input.botConfigId,
+        conversationId: input.conversationId,
+        contactAddress: input.contactAddress,
+        sources,
+        neededKeys,
+      })
+      .catch((error: unknown) => {
+        this.logger.warn(
+          `No se pudo resolver el contexto: ${this.describe(error)}`,
+        );
+        return {
+          values: {},
+          unavailable: [],
+          requiredUnavailable: hadRequired,
+        };
+      });
   }
 
   private buildResult(analysis: Analysis): VerificationResult {

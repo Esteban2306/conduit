@@ -13,6 +13,7 @@ export type GroundingValues = Record<string, GroundingValue>;
 
 export interface EvaluationContext {
   grounding: GroundingValues;
+  requiredUnavailable?: boolean;
   now: Date;
   timeZone: string;
 }
