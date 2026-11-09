@@ -85,6 +85,7 @@ interface ResolvedBinding {
   specialist: {
     id: string;
     status: 'ACTIVE' | 'INACTIVE';
+    version: number;
     promptTemplate: string;
     rules: unknown;
     contextSources: unknown;
@@ -376,6 +377,7 @@ export class SpecialistRuntime {
           select: {
             id: true,
             status: true,
+            version: true,
             promptTemplate: true,
             rules: true,
             contextSources: true,
@@ -550,6 +552,7 @@ export class SpecialistRuntime {
           conversationId: input.conversationId,
           botConfigId: input.botConfigId,
           specialistId: binding.specialist.id,
+          specialistVersion: binding.specialist.version,
           capability: input.capability,
           subjectHash: data.hash.hash,
           hashVersion: data.hash.version,
