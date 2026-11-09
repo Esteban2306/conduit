@@ -62,6 +62,12 @@ export function reasoningParams(
   return {};
 }
 
+const EFFORT_MODELS = /^claude-(haiku|sonnet|opus|fable|mythos)-5(-|$)/;
+
+export function supportsEffort(model: string): boolean {
+  return EFFORT_MODELS.test(model);
+}
+
 @Injectable()
 export class AnthropicProvider implements AiProvider {
   readonly providerName = 'ANTHROPIC';
@@ -222,6 +228,9 @@ export class AnthropicProvider implements AiProvider {
     const response = await client.messages.create({
       model: input.model,
       max_tokens: input.maxTokens ?? 1024,
+      ...(input.effort === 'low' && supportsEffort(input.model)
+        ? reasoningParams('LOW')
+        : {}),
       system: input.systemPrompt,
       messages: [
         {

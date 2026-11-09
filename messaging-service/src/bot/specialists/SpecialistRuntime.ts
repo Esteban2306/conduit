@@ -431,6 +431,7 @@ export class SpecialistRuntime {
           imageBuffer: prepared,
           mimeType: 'image/jpeg',
           maxTokens: MAX_OUTPUT_TOKENS,
+          effort: 'low',
         }),
       );
 

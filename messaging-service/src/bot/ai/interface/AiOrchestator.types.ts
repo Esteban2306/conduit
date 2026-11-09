@@ -32,6 +32,7 @@ export interface AnalyzeImageInput {
   imageBuffer: Buffer;
   mimeType: string;
   maxTokens?: number;
+  effort?: 'low';
 }
 
 export type SpecialistImageInput = Omit<AnalyzeImageInput, 'botConfigId'>;

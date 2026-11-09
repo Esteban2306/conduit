@@ -196,6 +196,7 @@ export class AiOrchestrator {
           apiKey: await this.selector.resolveApiKey(config),
           baseUrl: config.baseUrl ?? undefined,
           maxTokens: input.maxTokens ?? 1024,
+          effort: input.effort,
         });
 
         return { result, config };

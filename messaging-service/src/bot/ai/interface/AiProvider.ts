@@ -69,6 +69,7 @@ export interface AnalyzeImageInput {
   apiKey: string;
   baseUrl?: string;
   maxTokens?: number;
+  effort?: 'low';
 }
 
 export interface GenerateTextResult {
