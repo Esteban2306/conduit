@@ -27,7 +27,10 @@ const errorsOf = async (input: Record<string, unknown>) =>
     (e) => e.property,
   );
 
-function build(existing: Record<string, unknown> | null = null) {
+function build(
+  existing: Record<string, unknown> | null = null,
+  binding: Record<string, unknown> | null = { id: 'b1' },
+) {
   const prisma = {
     toolDefinition: {
       create: jest.fn(({ data }: { data: Record<string, unknown> }) =>
@@ -38,6 +41,9 @@ function build(existing: Record<string, unknown> | null = null) {
         Promise.resolve({ id: 't1', ...data }),
       ),
       findMany: jest.fn().mockResolvedValue([]),
+    },
+    botSpecialistBinding: {
+      findFirst: jest.fn().mockResolvedValue(binding),
     },
   };
   const service = new ToolDefinitionService(
@@ -57,11 +63,20 @@ describe('validación de los campos de verificación (DTO)', () => {
     expect(await errorsOf(base)).toEqual([]);
   });
 
-  it('solo se admiten las capacidades que el router verifica', async () => {
+  it('acepta cualquier capacidad con formato de clave válido', async () => {
     expect(
-      await errorsOf({ ...gated, verificationCapability: 'payment-proof' }),
-    ).toContain('verificationCapability');
+      await errorsOf({ ...gated, verificationCapability: 'landscape-check' }),
+    ).toEqual([]);
   });
+
+  it.each(['A', 'con espacio', 'a--b', 'x'.repeat(80)])(
+    'rechaza la capacidad con formato inválido %j',
+    async (capability) => {
+      expect(
+        await errorsOf({ ...gated, verificationCapability: capability }),
+      ).toContain('verificationCapability');
+    },
+  );
 
   it.each([
     [['VALID', 'NEEDS_REVIEW'], true],
@@ -125,11 +140,6 @@ describe('ToolDefinitionService: coherencia de la verificación', () => {
     ['de solo lectura', { httpMethod: 'GET' }, /solo lectura/],
     ['sin veredictos aceptados', { acceptedVerdicts: [] }, /acceptedVerdicts/],
     ['sin secreto para firmar', { authSecret: undefined }, /authSecret/],
-    [
-      'con una capacidad no soportada',
-      { verificationCapability: 'otra' },
-      /verificationCapability/,
-    ],
   ])('rechaza al crear una herramienta %s', async (_name, over, message) => {
     const w = build();
     await expect(
@@ -253,5 +263,44 @@ describe('ToolDefinitionService.getActiveToolsForBot con verificación', () => {
     };
     expect(Object.keys(schema.properties)).toEqual(['nota']);
     expect(schema.required ?? []).not.toContain('verificacion');
+  });
+});
+
+describe('la capacidad exigida debe estar vinculada al bot', () => {
+  it('crea la herramienta si el bot tiene el vínculo', async () => {
+    const w = build(null, { id: 'b1' });
+    await w.service.create('bot', 'tenant', {
+      ...gated,
+      verificationCapability: 'landscape-check',
+    });
+    expect(w.prisma.botSpecialistBinding.findFirst).toHaveBeenCalledWith({
+      where: { botConfigId: 'bot', capability: 'landscape-check' },
+      select: { id: true },
+    });
+    expect(w.prisma.toolDefinition.create).toHaveBeenCalled();
+  });
+
+  it('rechaza crear si el bot no tiene vínculo para esa capacidad', async () => {
+    const w = build(null, null);
+    await expect(
+      w.service.create('bot', 'tenant', gated),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(w.prisma.toolDefinition.create).not.toHaveBeenCalled();
+  });
+
+  it('rechaza actualizar hacia una capacidad sin vínculo', async () => {
+    const w = build({ ...base, id: 't1', botConfigId: 'bot' } as never, null);
+    await expect(
+      w.service.update('bot', 't1', 'tenant', {
+        verificationCapability: 'image-analysis',
+        acceptedVerdicts: ['VALID'],
+      } as never),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('las herramientas sin verificación no consultan vínculos', async () => {
+    const w = build(null, null);
+    await w.service.create('bot', 'tenant', base);
+    expect(w.prisma.botSpecialistBinding.findFirst).not.toHaveBeenCalled();
   });
 });

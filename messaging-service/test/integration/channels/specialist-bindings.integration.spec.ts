@@ -157,6 +157,9 @@ suite('Vínculos bot-especialista contra la base aislada', () => {
     await prisma.specialist.deleteMany({
       where: { tenantId: { in: tenants } },
     });
+    await prisma.toolDefinition.deleteMany({
+      where: { botConfig: { tenantId: { in: tenants } } },
+    });
     await prisma.botConfig.deleteMany({ where: { tenantId: { in: tenants } } });
     await prisma.tenant.deleteMany({ where: { id: { in: tenants } } });
     await prisma.$disconnect();
@@ -583,6 +586,45 @@ suite('Vínculos bot-especialista contra la base aislada', () => {
         ).toBe(1);
       },
     );
+
+    it('un vínculo que usa una herramienta con verificación no se elimina hasta liberarla', async () => {
+      const bot = await newBot();
+      const spec = await specialist();
+      await put(tenantA, bot, { specialistId: spec, mode: 'OFF' });
+      const tool = await prisma.toolDefinition.create({
+        data: {
+          botConfigId: bot,
+          name: 'subir_documento',
+          description: 'd',
+          parametersSchema: { type: 'object', properties: {} },
+          endpointUrl: 'https://backend.test/x',
+          verificationCapability: CAP,
+          acceptedVerdicts: ['VALID'],
+          requiresImageAttachment: true,
+        },
+      });
+      await expect(service.remove(tenantA, bot, CAP)).rejects.toMatchObject({
+        status: 409,
+        message: expect.stringContaining('subir_documento'),
+      });
+      expect(
+        await prisma.botSpecialistBinding.count({
+          where: { botConfigId: bot },
+        }),
+      ).toBe(1);
+
+      await prisma.toolDefinition.update({
+        where: { id: tool.id },
+        data: { verificationCapability: null, acceptedVerdicts: [] },
+      });
+      await service.remove(tenantA, bot, CAP);
+      await prisma.toolDefinition.delete({ where: { id: tool.id } });
+      expect(
+        await prisma.botSpecialistBinding.count({
+          where: { botConfigId: bot },
+        }),
+      ).toBe(0);
+    });
 
     it('un vínculo inexistente o de otro tenant da 404', async () => {
       const bot = await newBot();

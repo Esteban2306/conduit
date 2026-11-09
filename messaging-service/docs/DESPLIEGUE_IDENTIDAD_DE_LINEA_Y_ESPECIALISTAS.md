@@ -94,7 +94,7 @@ Una herramienta puede exigir que el comprobante adjunto esté verificado antes d
 
 | Campo | Significado |
 |---|---|
-| `verificationCapability` | Hoy solo `image-analysis` (el router ya verifica varias capacidades, pero esta lista aún no se abrió) |
+| `verificationCapability` | Cualquier capacidad que el bot tenga vinculada (clave en minúsculas con guiones). Crear o actualizar la herramienta falla con 400 si el bot no tiene el vínculo |
 | `acceptedVerdicts` | `VALID` y/o `NEEDS_REVIEW` (nunca `INVALID` ni `ERROR`) |
 | `verificationParamName` | Opcional: campo del cuerpo donde además va el pasaporte. El modelo no lo ve ni puede pisarlo |
 
@@ -255,7 +255,7 @@ Para los modelos de la familia 5.x, la extracción de imágenes se pide con `eff
 
 - Los modelos del relleno son **copias**: rotar la clave de un bot no actualiza la del especialista.
 - Sin reglas, un especialista legible da `VALID`. Las reglas con valores literales ya se evalúan; las que dependen de datos de contexto dan `NEEDS_REVIEW` hasta que se resuelva ese contexto.
-- El router ya verifica todos los vínculos `ACTIVE` del bot, pero las herramientas con puerta siguen admitiendo solo la capacidad `image-analysis` hasta que esa validación pase a comprobarse contra los vínculos del bot.
+- Una herramienta con puerta exige que el bot tenga vínculo para su capacidad (cualquier modo). Eliminar ese vínculo responde 409 mientras alguna herramienta lo use. Pasarlo a OFF sí se permite: la puerta rechaza entonces la herramienta, que es el lado seguro.
 - El hash exacto de la imagen no detecta reenvíos recomprimidos (WhatsApp recomprime); eso lo cubre la huella de variables (`uniqueBy` del especialista), que solo existe si todas sus variables se leyeron y cada texto cumple su `identityMinLength`.
 - La detección de reutilización y el caché solo aplican a vínculos en `ACTIVE`; en `SHADOW` solo se registra.
 - El análisis legado conserva sus defectos (texto positivo no JSON se acepta como válido; el aviso de "alta demanda" no se muestra cuando caen todos los modelos).

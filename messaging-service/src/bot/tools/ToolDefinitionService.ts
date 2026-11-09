@@ -10,10 +10,7 @@ import { SecretEncryptionService } from 'src/shared/security/secret-encryption.s
 import { CreateToolDefinitionDto } from './dto/create-tool-definition.dto';
 import { UpdateToolDefinitionDto } from './dto/update-tool-definition.dto';
 import { Prisma, VerificationVerdict } from '@prisma/client';
-import {
-  ACCEPTABLE_TOOL_VERDICTS,
-  SUPPORTED_VERIFICATION_CAPABILITIES,
-} from '../specialists/constants';
+import { ACCEPTABLE_TOOL_VERDICTS } from '../specialists/constants';
 import { stripSchemaPath } from './json-path.util';
 
 export interface ResolvedTool {
@@ -52,6 +49,7 @@ export class ToolDefinitionService {
   ) {
     await this.botConfigService.findOne(botConfigId, tenantId);
     this.validate(dto);
+    await this.requireBinding(botConfigId, dto.verificationCapability);
     this.validateVerification({
       verificationCapability: dto.verificationCapability ?? null,
       acceptedVerdicts: dto.acceptedVerdicts ?? [],
@@ -98,6 +96,9 @@ export class ToolDefinitionService {
     });
     if (!existing) throw new NotFoundException('Tool no encontrada.');
     this.validate(dto, true);
+    if (dto.verificationCapability) {
+      await this.requireBinding(botConfigId, dto.verificationCapability);
+    }
     this.validateVerification({
       verificationCapability:
         dto.verificationCapability !== undefined
@@ -230,6 +231,22 @@ export class ToolDefinitionService {
     }
   }
 
+  private async requireBinding(
+    botConfigId: string,
+    capability: string | null | undefined,
+  ): Promise<void> {
+    if (!capability) return;
+    const binding = await this.prisma.botSpecialistBinding.findFirst({
+      where: { botConfigId, capability },
+      select: { id: true },
+    });
+    if (!binding) {
+      throw new BadRequestException(
+        `El bot no tiene un especialista vinculado a la capacidad "${capability}". Vincúlalo antes de exigirla en una herramienta.`,
+      );
+    }
+  }
+
   private validateVerification(state: {
     verificationCapability: string | null;
     acceptedVerdicts: readonly string[];
@@ -239,15 +256,6 @@ export class ToolDefinitionService {
   }): void {
     if (!state.verificationCapability) return;
 
-    if (
-      !SUPPORTED_VERIFICATION_CAPABILITIES.includes(
-        state.verificationCapability,
-      )
-    ) {
-      throw new BadRequestException(
-        `verificationCapability debe ser una de: ${SUPPORTED_VERIFICATION_CAPABILITIES.join(', ')}.`,
-      );
-    }
     if (!state.requiresImageAttachment) {
       throw new BadRequestException(
         'Una herramienta con verificación debe exigir una imagen adjunta (requiresImageAttachment).',

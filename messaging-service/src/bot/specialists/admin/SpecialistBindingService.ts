@@ -160,6 +160,16 @@ export class SpecialistBindingService {
       );
     }
 
+    const gated = await this.prisma.toolDefinition.findMany({
+      where: { botConfigId: botId, verificationCapability: capability },
+      select: { name: true },
+    });
+    if (gated.length > 0) {
+      throw new ConflictException(
+        `Las herramientas ${gated.map((t) => t.name).join(', ')} exigen esta capacidad: quítales la verificación o elimínalas antes.`,
+      );
+    }
+
     return this.prisma.botSpecialistBinding.delete({
       where: { id: binding.id },
       select: BINDING_SELECT,

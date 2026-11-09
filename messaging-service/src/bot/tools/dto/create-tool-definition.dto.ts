@@ -12,12 +12,14 @@ import {
   IsUrl,
   Matches,
   Max,
+  MaxLength,
   Min,
 } from 'class-validator';
+import { ACCEPTABLE_TOOL_VERDICTS } from '../../specialists/constants';
 import {
-  ACCEPTABLE_TOOL_VERDICTS,
-  SUPPORTED_VERIFICATION_CAPABILITIES,
-} from '../../specialists/constants';
+  STABLE_KEY_MAX_LENGTH,
+  STABLE_KEY_PATTERN,
+} from 'src/shared/stable-key';
 
 export class CreateToolDefinitionDto {
   @IsString()
@@ -89,7 +91,9 @@ export class CreateToolDefinitionDto {
    * usar para esa misma imagen, la herramienta se rechaza.
    */
   @IsOptional()
-  @IsIn([...SUPPORTED_VERIFICATION_CAPABILITIES])
+  @IsString()
+  @MaxLength(STABLE_KEY_MAX_LENGTH)
+  @Matches(STABLE_KEY_PATTERN)
   verificationCapability?: string;
 
   @IsOptional()
