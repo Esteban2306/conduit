@@ -483,3 +483,23 @@ describe('comparación de texto', () => {
     expect(fuzzySimilarity('a', 'b')).toBe(0);
   });
 });
+
+describe('within_days con fechas que no existen', () => {
+  it.each(['2026-02-31', '2026-04-31', '2026-13-01', 'no-es-fecha'])(
+    '%s pide revisión en lugar de interpretarse como otra fecha',
+    (date) => {
+      const result = evaluateRules(
+        fields({ date }) as never,
+        {
+          version: 1,
+          rules: [
+            rule({ field: 'date', op: 'within_days', ref: { literal: 3 } }),
+          ],
+        } as never,
+        context(),
+      );
+      expect(result.verdict).toBe('NEEDS_REVIEW');
+      expect(result.reasonCodes).toEqual(['RULE_OPERAND_INVALID']);
+    },
+  );
+});

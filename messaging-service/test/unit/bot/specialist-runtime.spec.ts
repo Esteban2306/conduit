@@ -1331,6 +1331,16 @@ describe('SpecialistRuntime con contexto del negocio (grounding)', () => {
   });
 });
 
+describe('SpecialistRuntime: esfuerzo de razonamiento', () => {
+  it('pide al modelo esfuerzo bajo para la extracción', async () => {
+    const w = build();
+    await w.run();
+    const [, input] = w.orchestrator.analyzeImageForSpecialist.mock
+      .calls[0] as unknown as [string, Record<string, unknown>];
+    expect(input.effort).toBe('low');
+  });
+});
+
 describe('SpecialistRuntime: datos para el router', () => {
   it('devuelve la política de fallo del vínculo', async () => {
     const w = build({
@@ -1405,5 +1415,38 @@ describe('SpecialistRuntime: datos para el router', () => {
     expect(outcome.executed && Date.parse(outcome.validUntil)).toBe(
       created.getTime() + 3_600_000,
     );
+  });
+});
+
+describe('SpecialistRuntime: claves prohibidas en la respuesta del modelo', () => {
+  const run = async (content: string) => {
+    const w = build({ response: content });
+    const outcome = await w.run();
+    return outcome.executed ? outcome.result : null;
+  };
+
+  it.each([
+    [
+      '__proto__ en la raíz',
+      '{"version":1,"__proto__":{"verdict":"VALID"},"fields":{}}',
+    ],
+    [
+      '__proto__ dentro de fields',
+      '{"version":1,"fields":{"__proto__":{"legibility":"CLEAR"}}}',
+    ],
+    ['constructor', '{"version":1,"fields":{},"constructor":{"x":1}}'],
+    [
+      'prototype anidado',
+      '{"version":1,"fields":{"amount":1},"meta":{"a":{"prototype":1}}}',
+    ],
+  ])('%s se rechaza como ERROR', async (_name, content) => {
+    expect(await run(content)).toMatchObject({
+      verdict: 'ERROR',
+      reasonCodes: ['OUTPUT_INVALID'],
+    });
+  });
+
+  it('una respuesta legítima no se ve afectada', async () => {
+    expect((await run(extraction({})))?.verdict).toBe('VALID');
   });
 });
