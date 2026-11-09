@@ -902,6 +902,7 @@ model Specialist {
   promptTemplate String @db.Text
   rules Json @default("{\"version\":1,\"rules\":[]}")
   contextSources Json @default("{\"version\":1,\"sources\":[]}")
+  outputSchema Json @default("{\"version\":1,\"variables\":[],\"uniqueBy\":[]}")
   outputVersion Int @default(1)
   version Int @default(1)
   archivedAt DateTime?
@@ -928,6 +929,7 @@ model BotSpecialistBinding {
   mode SpecialistBindingMode @default(OFF)
   timeoutMs Int @default(12000)
   onFailure SpecialistFailurePolicy @default(DEGRADE)
+  blockMessage String? @db.Text
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -1005,6 +1007,7 @@ model SpecialistVersion {
   promptTemplate String   @db.Text
   rules          Json
   contextSources Json
+  outputSchema   Json      @default("{\"version\":1,\"variables\":[],\"uniqueBy\":[]}")
   changeNote     String?
   createdBy      String?
   createdAt      DateTime @default(now())
