@@ -746,6 +746,10 @@ model ToolDefinition {
   verificationCapability  String?
   acceptedVerdicts        VerificationVerdict[] @default([])
   verificationParamName   String?
+  /// Ruta del parámetro -> nombre de la variable verificada de la capacidad
+  /// de la herramienta. Conduit escribe el valor del registro verificado; el
+  /// modelo no lo ve ni lo llena.
+  verifiedParams          Json    @default("{}")
 
   injectPhoneParamName    String?
   /// Si la llamada sale bien, el bot se pausa en esa conversación durante

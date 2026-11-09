@@ -43,7 +43,21 @@ function build(
       findMany: jest.fn().mockResolvedValue([]),
     },
     botSpecialistBinding: {
-      findFirst: jest.fn().mockResolvedValue(binding),
+      findFirst: jest.fn().mockResolvedValue(
+        binding && {
+          specialist: {
+            outputSchema: {
+              version: 1,
+              variables: [
+                { name: 'amount', type: 'number', description: 'valor' },
+                { name: 'reference', type: 'string', description: 'código' },
+              ],
+              uniqueBy: [],
+            },
+          },
+          ...binding,
+        },
+      ),
     },
   };
   const service = new ToolDefinitionService(
@@ -275,7 +289,7 @@ describe('la capacidad exigida debe estar vinculada al bot', () => {
     });
     expect(w.prisma.botSpecialistBinding.findFirst).toHaveBeenCalledWith({
       where: { botConfigId: 'bot', capability: 'landscape-check' },
-      select: { id: true },
+      select: { id: true, specialist: { select: { outputSchema: true } } },
     });
     expect(w.prisma.toolDefinition.create).toHaveBeenCalled();
   });
@@ -302,5 +316,128 @@ describe('la capacidad exigida debe estar vinculada al bot', () => {
     const w = build(null, null);
     await w.service.create('bot', 'tenant', base);
     expect(w.prisma.botSpecialistBinding.findFirst).not.toHaveBeenCalled();
+  });
+});
+
+describe('verifiedParams: configuración', () => {
+  const create = (over: Record<string, unknown>) =>
+    build().service.create('bot', 'tenant', { ...gated, ...over } as never);
+
+  it('guarda el mapa y lo oculta del esquema que ve el modelo', async () => {
+    const w = build();
+    const created = await w.service.create('bot', 'tenant', {
+      ...gated,
+      parametersSchema: {
+        type: 'object',
+        properties: { monto: { type: 'number' }, nota: { type: 'string' } },
+        required: ['monto'],
+      },
+      verifiedParams: { monto: 'amount' },
+    } as never);
+    expect(
+      (created as unknown as { verifiedParams: unknown }).verifiedParams,
+    ).toEqual({ monto: 'amount' });
+
+    w.prisma.toolDefinition.findMany.mockResolvedValue([
+      {
+        id: 't1',
+        name: 'subir',
+        description: 'd',
+        httpMethod: 'POST',
+        isActive: true,
+        requiresImageAttachment: true,
+        imageParamName: 'imageBase64',
+        verificationCapability: 'image-analysis',
+        verifiedParams: { monto: 'amount' },
+        parametersSchema: {
+          type: 'object',
+          properties: { monto: { type: 'number' }, nota: { type: 'string' } },
+          required: ['monto'],
+        },
+      },
+    ]);
+    const [resolved] = await w.service.getActiveToolsForBot('bot');
+    expect(Object.keys(resolved.spec.parametersSchema.properties)).toEqual([
+      'nota',
+    ]);
+    expect(resolved.spec.parametersSchema.required).toEqual([]);
+  });
+
+  it.each([
+    [
+      'sin verificación',
+      {
+        verificationCapability: undefined,
+        acceptedVerdicts: undefined,
+        verifiedParams: { a: 'amount' },
+      },
+      /solo se permite/,
+    ],
+    [
+      'con una variable que el especialista no declara',
+      { verifiedParams: { a: 'inexistente' } },
+      /no declara la variable/,
+    ],
+    [
+      'que choca con el parámetro de imagen',
+      { verifiedParams: { imageBase64: 'amount' } },
+      /choca/,
+    ],
+    [
+      'que choca con el teléfono',
+      { injectPhoneParamName: 'tel', verifiedParams: { tel: 'amount' } },
+      /choca/,
+    ],
+    [
+      'que cuelga del parámetro del pasaporte',
+      { verificationParamName: 'ver', verifiedParams: { 'ver.x': 'amount' } },
+      /choca/,
+    ],
+    [
+      'con rutas solapadas',
+      { verifiedParams: { a: 'amount', 'a.b': 'reference' } },
+      /se solapa/,
+    ],
+    [
+      'con una ruta inválida',
+      { verifiedParams: { 'a b': 'amount' } },
+      /verifiedParams no es válido/,
+    ],
+    [
+      'con un nombre de variable inválido',
+      { verifiedParams: { a: 'Monto' } },
+      /verifiedParams no es válido/,
+    ],
+    [
+      'con ruta peligrosa',
+      { verifiedParams: { 'a.__proto__': 'amount' } },
+      /verifiedParams no es válido/,
+    ],
+  ])('rechaza %s', async (_n, over, message) => {
+    const attempt = create(over);
+    await expect(attempt).rejects.toBeInstanceOf(BadRequestException);
+    await expect(attempt).rejects.toThrow(message);
+  });
+
+  it('rechaza más de 12 entradas', async () => {
+    const many = Object.fromEntries(
+      Array.from({ length: 13 }, (_, i) => [`p${i}`, 'amount']),
+    );
+    await expect(create({ verifiedParams: many })).rejects.toThrow(/Máximo 12/);
+  });
+
+  it('actualizar otro campo revalida el mapa guardado contra el especialista', async () => {
+    const w = build({
+      ...base,
+      id: 't1',
+      botConfigId: 'bot',
+      verificationCapability: 'image-analysis',
+      acceptedVerdicts: ['VALID'],
+      authSecretEncrypted: 'enc',
+      verifiedParams: { a: 'variable_vieja' },
+    } as never);
+    await expect(
+      w.service.update('bot', 't1', 'tenant', { description: 'x' } as never),
+    ).rejects.toThrow(/no declara la variable/);
   });
 });

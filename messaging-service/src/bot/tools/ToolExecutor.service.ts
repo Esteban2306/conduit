@@ -3,7 +3,8 @@ import { ToolInvocationStatus } from '@prisma/client';
 import { createHash } from 'crypto';
 import { PrismaService } from 'src/shared/prisma.service';
 import { SecretEncryptionService } from 'src/shared/security/secret-encryption.service';
-import { canonicalJson, setByPath } from './json-path.util';
+import { canonicalJson, setByPath, unsetByPath } from './json-path.util';
+import { readVerifiedParams } from './verified-params';
 import { createHmac } from 'crypto';
 import { variablesRecordSchema } from '../specialists/contracts';
 import { hashImage, NORMALIZED_HASH_VERSION } from '../specialists/image-hash';
@@ -141,6 +142,21 @@ export class ToolExecutorService {
       };
       if (tool.verificationParamName) {
         setByPath(finalParams, tool.verificationParamName, signed);
+      }
+    }
+    if (granted) {
+      // Valores del registro verificado, no del modelo: pisan lo que haya
+      // enviado y, si la variable no se leyó, el campo no se envía.
+      const verified = granted.passport.fields as Record<string, unknown>;
+      for (const [path, variable] of Object.entries(
+        readVerifiedParams(tool.verifiedParams),
+      )) {
+        const value = verified[variable];
+        if (value === undefined || value === null) {
+          unsetByPath(finalParams, path);
+        } else {
+          setByPath(finalParams, path, value);
+        }
       }
     }
     if (request.injectedPhone && request.phoneParamName) {

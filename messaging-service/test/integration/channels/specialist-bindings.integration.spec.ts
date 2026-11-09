@@ -11,6 +11,7 @@ import {
   MIN_SHADOW_SAMPLE,
   SpecialistBindingService,
 } from 'src/bot/specialists/admin/SpecialistBindingService';
+import { ToolDefinitionService } from 'src/bot/tools/ToolDefinitionService';
 import { isolatedInfra } from '../../helpers/isolated-env';
 import { createTestPrisma } from '../../helpers/prisma.helper';
 
@@ -641,6 +642,89 @@ suite('Vínculos bot-especialista contra la base aislada', () => {
           where: { botConfigId: bot },
         }),
       ).toBe(1);
+    });
+  });
+
+  describe('parámetros verificados de las herramientas', () => {
+    const tools = () =>
+      new ToolDefinitionService(
+        prisma as never,
+        bots as never,
+        { encrypt: (v: string) => `enc:${v}` } as never,
+      );
+    const dto = (over: Record<string, unknown> = {}) =>
+      ({
+        name: 'subir_documento',
+        description: 'd',
+        parametersSchema: {
+          type: 'object',
+          properties: { monto: { type: 'number' } },
+        },
+        endpointUrl: 'https://backend.test/x',
+        authHeaderName: 'X-Api-Key',
+        authSecret: 'secreto-largo-de-prueba',
+        requiresImageAttachment: true,
+        verificationCapability: CAP,
+        acceptedVerdicts: ['VALID'],
+        ...over,
+      }) as never;
+
+    const boundBot = async (variables: unknown[]) => {
+      const bot = await newBot();
+      const spec = await specialist();
+      await prisma.specialist.update({
+        where: { id: spec },
+        data: {
+          outputSchema: { version: 1, variables, uniqueBy: [] } as never,
+        },
+      });
+      await put(tenantA, bot, { specialistId: spec, mode: 'OFF' });
+      return bot;
+    };
+
+    it('guarda el mapa validado contra las variables del especialista vinculado', async () => {
+      const bot = await boundBot([
+        { name: 'valor', type: 'number', description: 'total' },
+      ]);
+      const created = await tools().create(
+        bot,
+        tenantA,
+        dto({ verifiedParams: { monto: 'valor' } }),
+      );
+      const row = await prisma.toolDefinition.findUniqueOrThrow({
+        where: { id: created.id },
+      });
+      expect(row.verifiedParams).toEqual({ monto: 'valor' });
+
+      await expect(
+        tools().create(
+          bot,
+          tenantA,
+          dto({ name: 'otra', verifiedParams: { monto: 'monto' } }),
+        ),
+      ).rejects.toMatchObject({ status: 400 });
+      await prisma.toolDefinition.delete({ where: { id: created.id } });
+    });
+
+    it('la columna rechaza un valor que no sea objeto y por defecto es vacía', async () => {
+      const bot = await newBot();
+      const plain = await prisma.toolDefinition.create({
+        data: {
+          botConfigId: bot,
+          name: 'normal',
+          description: 'd',
+          parametersSchema: { type: 'object', properties: {} },
+          endpointUrl: 'https://backend.test/x',
+        },
+      });
+      expect(plain.verifiedParams).toEqual({});
+      await expect(
+        prisma.toolDefinition.update({
+          where: { id: plain.id },
+          data: { verifiedParams: ['x'] },
+        }),
+      ).rejects.toThrow();
+      await prisma.toolDefinition.delete({ where: { id: plain.id } });
     });
   });
 });

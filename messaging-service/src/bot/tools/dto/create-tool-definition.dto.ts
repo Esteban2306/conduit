@@ -111,4 +111,13 @@ export class CreateToolDefinitionDto {
   @IsString()
   @Matches(/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/)
   verificationParamName?: string;
+
+  /**
+   * Ruta del parámetro -> variable verificada de la capacidad de la
+   * herramienta. Conduit escribe el valor desde el registro verificado y
+   * el modelo no ve esos campos.
+   */
+  @IsOptional()
+  @IsObject()
+  verifiedParams?: Record<string, string>;
 }

@@ -14,6 +14,7 @@ Resume lo que añade la rama `feat/line-identity-and-queue-resilience` y el orde
 | `20261108230000_verification_record` | `VerificationRecord` (veredictos, sin bytes de imagen) |
 | `20261109110000_specialist_admin` | Versión y archivado del especialista, tabla `SpecialistVersion` (con la versión 1 de los especialistas existentes), y en `VerificationRecord` la versión usada, el desglose de tokens y los campos de revisión humana |
 | `20261109120000_specialist_output_schema` | `outputSchema` en `Specialist` y `SpecialistVersion` (las filas existentes reciben la declaración equivalente a los seis campos anteriores, como datos) y `blockMessage` en `BotSpecialistBinding` |
+| `20261110120000_tool_verified_params` | Columna `verifiedParams` (JSONB, por defecto `{}`) en `ToolDefinition`, con restricción de que sea un objeto. Aditiva: las herramientas existentes no cambian |
 | `20261109100000_attachment_verification` | Huella de campos, versión de hash y marca de consumo en `VerificationRecord`; campos de verificación y CHECK en `ToolDefinition` |
 
 Todas son aditivas. Antes de `stable_keys` en cada base, buscar números duplicados por tenant:
@@ -97,6 +98,7 @@ Una herramienta puede exigir que el comprobante adjunto esté verificado antes d
 | `verificationCapability` | Cualquier capacidad que el bot tenga vinculada (clave en minúsculas con guiones). Crear o actualizar la herramienta falla con 400 si el bot no tiene el vínculo |
 | `acceptedVerdicts` | `VALID` y/o `NEEDS_REVIEW` (nunca `INVALID` ni `ERROR`) |
 | `verificationParamName` | Opcional: campo del cuerpo donde además va el pasaporte. El modelo no lo ve ni puede pisarlo |
+| `verifiedParams` | Opcional: mapa `ruta del parámetro → variable` (p. ej. `{"monto":"amount","pago.ref":"reference"}`). Conduit escribe en esos campos el valor del registro verificado, pisa lo que envíe el modelo y se los quita del esquema que ve. Solo variables de la capacidad de la propia herramienta |
 
 Reglas que Conduit valida al configurar: la herramienta debe exigir imagen adjunta, no ser de solo lectura, tener `acceptedVerdicts` y tener `authSecret` (con él se firma el pasaporte). La base lo refuerza con un CHECK.
 
@@ -106,6 +108,13 @@ Reglas que Conduit valida al configurar: la herramienta debe exigir imagen adjun
 - Éxito: queda consumido, y cualquier reenvío del mismo comprobante (incluso recomprimido o desde otro chat) da `INVALID` (`ALREADY_USED`).
 - Rechazo definitivo del backend (4xx salvo 408 y 429): se libera para poder reintentar.
 - Resultado ambiguo (408, 429, 5xx o red caída): **queda consumido**, porque el backend pudo haber procesado la solicitud; requiere revisión humana.
+
+### Parámetros verificados
+
+- Se validan al crear o actualizar: la herramienta debe tener puerta; cada variable debe existir en el especialista vinculado; la ruta no puede coincidir ni colgar de los parámetros de imagen, teléfono o pasaporte; las rutas no pueden solaparse; máximo 12.
+- Si la variable no se leyó en la imagen (ausente o nula), el campo **no se envía**, incluso si el modelo lo había enviado. El backend decide qué hacer.
+- No se interpreta ninguna plantilla: un texto con `{{...}}` escrito por el cliente o el modelo viaja como texto.
+- Si luego se quita esa variable del especialista, actualizar la herramienta falla con 400 hasta corregir el mapa. Mientras tanto, en ejecución el campo simplemente no se envía.
 
 ### Qué recibe el backend
 

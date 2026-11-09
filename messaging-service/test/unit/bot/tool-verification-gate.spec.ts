@@ -454,4 +454,73 @@ describe('puerta de verificación del ejecutor de herramientas', () => {
       expect(headers[VERIFICATION_SIGNATURE_HEADER]).toBeUndefined();
     });
   });
+
+  describe('parámetros verificados', () => {
+    beforeEach(() => respond(200));
+    const sent = () =>
+      JSON.parse(fetched()[0][1].body) as Record<string, unknown>;
+
+    it('escribe los valores del registro verificado y pisa lo que envíe el modelo', async () => {
+      const w = build({
+        verifiedParams: { monto: 'amount', 'pago.ref': 'reference' },
+      });
+      await call(w, {
+        params: { monto: 1, pago: { ref: 'FALSA', nota: 'x' }, otro: 'dato' },
+      });
+      const body = sent();
+      expect(body.monto).toBe(150000);
+      expect(body.pago).toEqual({ ref: 'TRX-48210377', nota: 'x' });
+      expect(body.otro).toBe('dato');
+    });
+
+    it('crea la ruta anidada si el modelo no la envió', async () => {
+      const w = build({ verifiedParams: { 'pago.moneda': 'currency' } });
+      await call(w);
+      expect(sent().pago).toEqual({ moneda: 'COP' });
+    });
+
+    it('una variable ausente del registro no se envía, ni siquiera la del modelo', async () => {
+      const w = build({ verifiedParams: { cuenta: 'account' } });
+      await call(w, { params: { cuenta: 'INVENTADA' } });
+      expect(sent()).not.toHaveProperty('cuenta');
+    });
+
+    it('una variable nula en el registro tampoco se envía', async () => {
+      const w = build(
+        { verifiedParams: { monto: 'amount' } },
+        {
+          findAcceptable: jest
+            .fn()
+            .mockResolvedValue(record({ fields: { amount: null } })),
+        },
+      );
+      await call(w, { params: { monto: 99 } });
+      expect(sent()).not.toHaveProperty('monto');
+    });
+
+    it('un valor con forma de plantilla no se interpreta', async () => {
+      const w = build({ verifiedParams: { monto: 'amount' } });
+      await call(w, {
+        params: { nota: '{{verification.image-analysis.amount}}' },
+      });
+      expect(sent().nota).toBe('{{verification.image-analysis.amount}}');
+    });
+
+    it('un valor corrupto en la base equivale a no declarar nada', async () => {
+      const w = build({ verifiedParams: 'roto' });
+      await call(w, { params: { otro: 'dato' } });
+      expect(Object.keys(sent()).sort()).toEqual(['imageBase64', 'otro']);
+    });
+
+    it('la clave de idempotencia usa el valor verificado, no el del modelo', async () => {
+      const a = build({ verifiedParams: { monto: 'amount' } });
+      await call(a, { params: { monto: 1 } });
+      const keyA = fetched()[0][1].headers['X-Conduit-Idempotency-Key'];
+      global.fetch = originalFetch;
+      respond(200);
+      const b = build({ verifiedParams: { monto: 'amount' } });
+      await call(b, { params: { monto: 2 } });
+      expect(fetched()[0][1].headers['X-Conduit-Idempotency-Key']).toBe(keyA);
+    });
+  });
 });
