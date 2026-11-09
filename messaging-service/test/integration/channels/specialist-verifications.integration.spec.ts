@@ -337,4 +337,105 @@ suite('Consulta de verificaciones contra la base aislada', () => {
       expect(mine.items.map((item) => item.id)).not.toContain(foreign);
     });
   });
+  describe('revisión humana', () => {
+    it('registra la decisión sin tocar veredicto, campos ni consumo', async () => {
+      const id = await make({
+        verdict: 'NEEDS_REVIEW',
+        conversationId: 'conv-rev',
+        minute: 80,
+      });
+      const before = await prisma.verificationRecord.findUniqueOrThrow({
+        where: { id },
+      });
+      const out = await service.review(tenantA, 'user-1', id, {
+        decision: 'APPROVED',
+        note: 'Revisado a mano',
+      });
+      expect(out).toMatchObject({
+        reviewDecision: 'APPROVED',
+        reviewedBy: 'user-1',
+        reviewNote: 'Revisado a mano',
+      });
+      expect(out.reviewedAt).toBeInstanceOf(Date);
+      const after = await prisma.verificationRecord.findUniqueOrThrow({
+        where: { id },
+      });
+      expect(after.verdict).toBe(before.verdict);
+      expect(after.consumedAt).toBeNull();
+      expect(after.fields).toEqual(before.fields);
+      expect(after.reasonCodes).toEqual(before.reasonCodes);
+      expect(after.mode).toBe(before.mode);
+    });
+
+    it('sale de la lista de pendientes tras revisarse', async () => {
+      const id = await make({
+        verdict: 'ERROR',
+        conversationId: 'conv-rev2',
+        minute: 81,
+      });
+      const pending = () =>
+        service
+          .list(tenantA, { pendingReview: 'true', conversationId: 'conv-rev2' })
+          .then((page) => page.items.map((item) => item.id));
+      expect(await pending()).toEqual([id]);
+      await service.review(tenantA, 'user-1', id, { decision: 'REJECTED' });
+      expect(await pending()).toEqual([]);
+    });
+
+    it('dos revisiones simultáneas: una gana y la otra recibe 409', async () => {
+      const id = await make({
+        verdict: 'NEEDS_REVIEW',
+        conversationId: 'conv-rev3',
+        minute: 82,
+      });
+      const results = await Promise.allSettled([
+        service.review(tenantA, 'user-a', id, { decision: 'APPROVED' }),
+        service.review(tenantA, 'user-b', id, { decision: 'REJECTED' }),
+      ]);
+      const ok = results.filter((r) => r.status === 'fulfilled');
+      const failed = results.filter((r) => r.status === 'rejected');
+      expect(ok).toHaveLength(1);
+      expect(failed).toHaveLength(1);
+      expect(failed[0].reason).toMatchObject({
+        status: 409,
+      });
+      const saved = await prisma.verificationRecord.findUniqueOrThrow({
+        where: { id },
+      });
+      const winner = (ok[0] as PromiseFulfilledResult<{ reviewedBy: string }>)
+        .value.reviewedBy;
+      expect(saved.reviewedBy).toBe(winner);
+    });
+
+    it('no se puede revisar de nuevo ni un resultado ya válido', async () => {
+      const reviewed = await make({
+        verdict: 'NEEDS_REVIEW',
+        conversationId: 'conv-rev4',
+        minute: 83,
+      });
+      await service.review(tenantA, 'u', reviewed, { decision: 'APPROVED' });
+      await expect(
+        service.review(tenantA, 'u2', reviewed, { decision: 'REJECTED' }),
+      ).rejects.toMatchObject({ status: 409 });
+      const valid = await make({ conversationId: 'conv-rev4', minute: 84 });
+      await expect(
+        service.review(tenantA, 'u', valid, { decision: 'APPROVED' }),
+      ).rejects.toMatchObject({ status: 409 });
+    });
+
+    it('otro tenant no puede revisar ni ver que existe', async () => {
+      const id = await make({
+        verdict: 'NEEDS_REVIEW',
+        conversationId: 'conv-rev5',
+        minute: 85,
+      });
+      await expect(
+        service.review(tenantB, 'u', id, { decision: 'APPROVED' }),
+      ).rejects.toMatchObject({ status: 404 });
+      const saved = await prisma.verificationRecord.findUniqueOrThrow({
+        where: { id },
+      });
+      expect(saved.reviewedAt).toBeNull();
+    });
+  });
 });

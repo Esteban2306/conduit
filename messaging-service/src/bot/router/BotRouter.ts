@@ -1337,6 +1337,28 @@ export class BotRouter {
     if (!outcome.executed) return null;
 
     const { result } = outcome;
+    if (
+      outcome.mode === 'ACTIVE' &&
+      (result.verdict === 'NEEDS_REVIEW' || result.verdict === 'ERROR')
+    ) {
+      try {
+        void this.botEscalation
+          .notifyVerificationReview({
+            tenantId,
+            botConfigId,
+            conversationId,
+            contactAddress: phoneNumber,
+            verdict: result.verdict,
+            reasonCodes: result.reasonCodes,
+            recordId: outcome.recordId,
+          })
+          .catch(() => undefined);
+      } catch {
+        this.logger.warn(
+          'No se pudo avisar de una imagen pendiente de revisión.',
+        );
+      }
+    }
     const facts = mergeFacts(
       aiData.context[FACTS_KEY],
       IMAGE_ANALYSIS_CAPABILITY,

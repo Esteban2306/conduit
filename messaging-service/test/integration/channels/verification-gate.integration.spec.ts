@@ -10,6 +10,7 @@ import { createHmac, randomBytes, randomUUID } from 'crypto';
 import { PrismaClient } from '@prisma/client';
 import sharp from 'sharp';
 import { SpecialistRuntime } from 'src/bot/specialists/SpecialistRuntime';
+import { SpecialistVerificationService } from 'src/bot/specialists/admin/SpecialistVerificationService';
 import { VerificationLedger } from 'src/bot/specialists/VerificationLedger';
 import { hashImage } from 'src/bot/specialists/image-hash';
 import {
@@ -331,6 +332,33 @@ suite(
       await record(image, { conversationId, mode: 'SHADOW' });
       expect((await call(image, conversationId)).status).toBe('BUSINESS_ERROR');
       expect(seen).toHaveLength(0);
+    });
+
+    it('una revisión humana aprobada no habilita la herramienta estricta ni gasta el veredicto', async () => {
+      const image = await png(41);
+      const conversationId = await nextConversation();
+      const saved = await record(image, {
+        conversationId,
+        verdict: 'NEEDS_REVIEW',
+      });
+      await new SpecialistVerificationService(
+        prisma as never,
+        {} as never,
+        config as never,
+      ).review(tenantA, 'user-1', saved.id, { decision: 'APPROVED' });
+
+      const outcome = await call(image, conversationId, strictTool);
+
+      expect(outcome).toMatchObject({
+        status: 'BUSINESS_ERROR',
+        responseBody: { code: 'VERIFICATION_REQUIRED' },
+      });
+      expect(seen).toHaveLength(0);
+      expect(await consumedAt(saved.id)).toBeNull();
+      const after = await prisma.verificationRecord.findUniqueOrThrow({
+        where: { id: saved.id },
+      });
+      expect(after.verdict).toBe('NEEDS_REVIEW');
     });
 
     it('un veredicto no listado se rechaza: NEEDS_REVIEW solo pasa en la herramienta que lo acepta', async () => {

@@ -1,18 +1,96 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { ToolInvocationStatus } from '@prisma/client';
 import { MessageOrchestrator } from 'src/core/orchestrator/MessageOrchestrator';
 import { EVENT_TYPES } from 'src/infra/events/constants/event.types';
 import { EventBusService } from 'src/infra/events/event.service';
 import { PrismaService } from 'src/shared/prisma.service';
 
+export type EscalationTrigger = ToolInvocationStatus | 'VERIFICATION_REVIEW';
+
+export interface VerificationReviewAlert {
+  tenantId: string;
+  botConfigId: string;
+  conversationId: string;
+  contactAddress: string;
+  verdict: string;
+  reasonCodes: string[];
+  recordId: string | null;
+}
+
+const DEFAULT_REVIEW_THROTTLE_MINUTES = 30;
+const MAX_THROTTLE_ENTRIES = 5000;
+
 @Injectable()
 export class BotEscalationService {
   private readonly logger = new Logger(BotEscalationService.name);
+  private readonly reviewAlerts = new Map<string, number>();
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly orchestrator: MessageOrchestrator,
+    private readonly config: ConfigService,
   ) {}
+
+  async notifyVerificationReview(
+    alert: VerificationReviewAlert,
+  ): Promise<boolean> {
+    const windowMs = this.reviewThrottleMs();
+    const key = `${alert.tenantId}:${alert.conversationId}`;
+    const now = Date.now();
+    const last = this.reviewAlerts.get(key);
+    if (last !== undefined && now - last < windowMs) return false;
+
+    this.reviewAlerts.set(key, now);
+    this.pruneReviewAlerts(now, windowMs);
+
+    const codes =
+      alert.reasonCodes.length > 0
+        ? alert.reasonCodes.join(', ')
+        : 'sin código';
+    const message =
+      `🔎 Imagen pendiente de revisión\n\n` +
+      `Cliente: ${alert.contactAddress}\n` +
+      `Resultado: ${alert.verdict}\n` +
+      `Motivos: ${codes}\n` +
+      (alert.recordId ? `Verificación: ${alert.recordId}\n` : '') +
+      `\nEl bot siguió la conversación sin dar la imagen por válida. Revísala y registra tu decisión en el panel.`;
+
+    let delivered = false;
+    try {
+      delivered = await this.notifyContacts(
+        alert.tenantId,
+        alert.botConfigId,
+        'VERIFICATION_REVIEW',
+        message,
+        'revisión de imagen',
+      );
+    } catch (error) {
+      this.logger.error(
+        `No fue posible avisar de una imagen pendiente de revisión: ${(error as Error).message}`,
+      );
+    }
+    if (!delivered) this.reviewAlerts.delete(key);
+    return delivered;
+  }
+
+  private reviewThrottleMs(): number {
+    const minutes = this.config.get<number>(
+      'specialists.reviewAlertThrottleMinutes',
+    );
+    return (
+      (Number.isFinite(minutes) && (minutes as number) > 0
+        ? (minutes as number)
+        : DEFAULT_REVIEW_THROTTLE_MINUTES) * 60_000
+    );
+  }
+
+  private pruneReviewAlerts(now: number, windowMs: number): void {
+    if (this.reviewAlerts.size < MAX_THROTTLE_ENTRIES) return;
+    for (const [key, at] of this.reviewAlerts) {
+      if (now - at >= windowMs) this.reviewAlerts.delete(key);
+    }
+  }
 
   async notifyToolFailure(
     tenantId: string,
@@ -67,7 +145,7 @@ export class BotEscalationService {
   async notifyContacts(
     tenantId: string,
     botConfigId: string,
-    status: ToolInvocationStatus,
+    status: EscalationTrigger,
     message: string,
     subject: string,
   ): Promise<boolean> {

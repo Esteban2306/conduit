@@ -37,6 +37,11 @@ export const configValidationSchema = Joi.object({
     .min(1)
     .max(600)
     .default(10),
+  SPECIALISTS_REVIEW_ALERT_THROTTLE_MINUTES: Joi.number()
+    .integer()
+    .min(1)
+    .max(1440)
+    .default(30),
   SPECIALISTS_PRICE_TABLE: Joi.string().allow('').optional(),
   QUEUE_DISCONNECT_WAIT_MS: Joi.number().integer().min(0).default(21600000),
   QUEUE_DISCONNECT_POLL_MS: Joi.number().integer().min(100).default(30000),
@@ -110,6 +115,7 @@ export interface AppConfig {
     passportTtlMinutes: number;
     groundingTimeoutMs: number;
     dryRunPerMinute: number;
+    reviewAlertThrottleMinutes: number;
     priceTable?: string;
   };
   database: {
@@ -192,6 +198,10 @@ export const configFactory = (): AppConfig => ({
     ),
     dryRunPerMinute: parseInt(
       process.env.SPECIALISTS_DRY_RUN_PER_MINUTE ?? '10',
+      10,
+    ),
+    reviewAlertThrottleMinutes: parseInt(
+      process.env.SPECIALISTS_REVIEW_ALERT_THROTTLE_MINUTES ?? '30',
       10,
     ),
     priceTable: process.env.SPECIALISTS_PRICE_TABLE,

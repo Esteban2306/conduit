@@ -56,6 +56,21 @@ export class SpecialistVerificationController {
   }
 
   @UseGuards(TenantAdminGuard)
+  @Post('verifications/:id/review')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'Registrar la decisión de una persona sobre un resultado dudoso. Solo deja constancia: no habilita herramientas ni cambia el veredicto',
+  })
+  review(
+    @CurrentUser() user: JwtPayload,
+    @Param('id') id: string,
+    @Body() body: unknown,
+  ) {
+    return this.verifications.review(user.tenantId, user.sub, id, body);
+  }
+
+  @UseGuards(TenantAdminGuard)
   @Post('specialists/:id/dry-run')
   @HttpCode(200)
   @ApiOperation({

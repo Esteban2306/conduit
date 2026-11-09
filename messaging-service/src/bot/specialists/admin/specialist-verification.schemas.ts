@@ -4,6 +4,7 @@ import {
   capabilitySchema,
   contextSourcesDocumentSchema,
   reasonCodeSchema,
+  safeText,
   rulesDocumentSchema,
 } from '../contracts';
 
@@ -87,3 +88,13 @@ export function decodeCursor(
     return null;
   }
 }
+
+export const REVIEWABLE_VERDICTS = ['NEEDS_REVIEW', 'ERROR'] as const;
+
+export const reviewVerificationSchema = z
+  .object({
+    decision: z.enum(['APPROVED', 'REJECTED']),
+    note: safeText(500).optional(),
+  })
+  .strict();
+export type ReviewVerificationInput = z.infer<typeof reviewVerificationSchema>;

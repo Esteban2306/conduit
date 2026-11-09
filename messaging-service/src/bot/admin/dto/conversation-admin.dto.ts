@@ -35,6 +35,7 @@ export class HumanReplyDto {
 export const ESCALATION_TRIGGERS = [
   'TECHNICAL_ERROR',
   'BUSINESS_ERROR',
+  'VERIFICATION_REVIEW',
 ] as const;
 
 export class CreateEscalationContactDto {

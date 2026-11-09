@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   HttpException,
   HttpStatus,
   Injectable,
@@ -23,6 +24,8 @@ import {
   dryRunDraftSchema,
   encodeCursor,
   listVerificationsSchema,
+  REVIEWABLE_VERDICTS,
+  reviewVerificationSchema,
 } from './specialist-verification.schemas';
 
 export const DRY_RUN_MAX_IMAGE_BYTES = 5 * 1024 * 1024;
@@ -156,6 +159,43 @@ export class SpecialistVerificationService {
     });
     if (!row) throw new NotFoundException('Verificación no encontrada');
     return this.present(row);
+  }
+
+  async review(tenantId: string, actor: string, id: string, body: unknown) {
+    const input = parseOrThrow(reviewVerificationSchema, body);
+    const found = await this.prisma.verificationRecord.findFirst({
+      where: { id, tenantId },
+      select: { verdict: true, reviewedAt: true },
+    });
+    if (!found) throw new NotFoundException('Verificación no encontrada');
+    if (!(REVIEWABLE_VERDICTS as readonly string[]).includes(found.verdict)) {
+      throw new ConflictException({
+        message: 'Solo se revisan resultados dudosos o con error',
+        details: { code: 'NOT_REVIEWABLE', verdict: found.verdict },
+      });
+    }
+
+    const updated = await this.prisma.verificationRecord.updateMany({
+      where: {
+        id,
+        tenantId,
+        reviewedAt: null,
+        verdict: { in: [...REVIEWABLE_VERDICTS] },
+      },
+      data: {
+        reviewedAt: new Date(),
+        reviewedBy: actor,
+        reviewDecision: input.decision,
+        reviewNote: input.note ?? null,
+      },
+    });
+    if (updated.count === 0) {
+      throw new ConflictException({
+        message: 'Esta verificación ya fue revisada',
+        details: { code: 'ALREADY_REVIEWED' },
+      });
+    }
+    return this.get(tenantId, id);
   }
 
   async dryRun(

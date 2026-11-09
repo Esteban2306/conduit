@@ -37,6 +37,7 @@ Si devuelve filas, resolverlas antes (la migración falla si hay duplicados).
 | `SPECIALISTS_RETENTION_DAYS` | `90` | Retención de `VerificationRecord` |
 | `SPECIALISTS_GROUNDING_TIMEOUT_MS` | `5000` (500 a 15000) | Tiempo máximo para consultar los datos de referencia de las reglas |
 | `SPECIALISTS_DRY_RUN_PER_MINUTE` | `10` (1 a 600) | Pruebas de dry-run por tenant y minuto; la siguiente recibe 429 con `details.retryAfterSeconds` |
+| `SPECIALISTS_REVIEW_ALERT_THROTTLE_MINUTES` | `30` (1 a 1440) | Ventana mínima entre dos avisos de revisión de la misma conversación |
 | `SPECIALISTS_PRICE_TABLE` | vacío | JSON que reemplaza o amplía la tabla de precios, por prefijo de modelo: `{"claude-haiku":{"inputPerMTok":1,"outputPerMTok":5}}`. Entradas inválidas se ignoran |
 | `SPECIALISTS_PASSPORT_TTL_MINUTES` | `60` | Vigencia de un veredicto para habilitar una herramienta y para reutilizarlo desde el caché |
 
@@ -166,6 +167,17 @@ El costo es una estimación: la tabla base cubre por familia (`claude-haiku`, `c
 
 Los resultados guardados en `ACTIVE` por reutilización (`ALREADY_USED`, `REUSED_OTHER_CONTACT`) cuentan en los veredictos pero no en latencia ni tokens. Los retenidos más allá de `SPECIALISTS_RETENTION_DAYS` ya no existen, así que un rango mayor a la retención muestra solo lo que quedó.
 
+### Imágenes pendientes de revisión
+
+Cuando un vínculo en `ACTIVE` produce `NEEDS_REVIEW` o `ERROR` (incluidos los casos de reutilización con otro contacto), el bot avisa a los contactos de escalamiento del bot. Es un disparador nuevo, **`VERIFICATION_REVIEW`**, que es **opt-in**: los contactos existentes solo reciben `TECHNICAL_ERROR` y no recibirán nada hasta que se les agregue (`POST /bots/:botId/escalation-contacts` con `"notifyOn": ["VERIFICATION_REVIEW"]`). No hay migración: `notifyOn` ya es JSON.
+
+- El aviso incluye cliente, resultado, códigos de motivo y el id de la verificación; **no** incluye los datos extraídos de la imagen.
+- Se envía como máximo uno por conversación y ventana. Si nadie pudo recibirlo (sin contactos o con la entrega fallida), no consume la ventana y se reintenta con la siguiente imagen.
+- En `SHADOW` nunca avisa.
+- El aviso es de mejor esfuerzo: si falla, la conversación continúa.
+
+`POST /verifications/:id/review` (propietario o administrador) registra la decisión de una persona sobre un resultado `NEEDS_REVIEW` o `ERROR`: `{"decision": "APPROVED" | "REJECTED", "note": "..."}`. Guarda `reviewedAt`, `reviewedBy` (el usuario del token), `reviewDecision` y `reviewNote`, y nada más. **Es solo constancia de auditoría**: no cambia el veredicto, no consume ni habilita nada, y la puerta de las herramientas no lee esos campos (hay una prueba que lo garantiza). Una verificación se revisa una sola vez (409 `ALREADY_REVIEWED`; dos peticiones simultáneas resuelven con una sola ganadora) y solo si es `NEEDS_REVIEW` o `ERROR` (409 `NOT_REVIEWABLE`). Las revisadas salen de `?pendingReview=true`. Para que una imagen dudosa llegue a una herramienta estricta, la clienta debe reenviarla y obtener un `VALID`, o la herramienta debe aceptar `NEEDS_REVIEW` de forma explícita.
+
 ## 7. Endurecimiento de la salida del modelo
 
 Todo texto que el modelo lee de la imagen (referencia, destinatario) y el resumen del veredicto se rechazan si contienen saltos de línea, caracteres de control, separadores de línea o párrafo Unicode, marcas de dirección (incluida la inversión `U+202E`), caracteres de ancho cero o el BOM. Las fechas se validan contra el calendario real (`2026-02-31` es inválida). Una respuesta con claves `__proto__`, `constructor` o `prototype` es `ERROR`. No existe un camino en el que una respuesta del modelo produzca `VALID` por texto libre, por un campo de veredicto propio o por texto fuera del JSON.
@@ -183,4 +195,5 @@ Para los modelos de la familia 5.x, la extracción de imágenes se pide con `eff
 - El proveedor de Anthropic no desactiva el razonamiento: parte de los tokens de salida se gasta en `thinking`.
 - La caché de datos de referencia vive en memoria del proceso; con una sola réplica es correcta, y con varias cada réplica tendría la suya.
 - El límite de dry-run vive en memoria del proceso y se reinicia al reiniciar; con una sola réplica es correcto.
+- La ventana de los avisos de revisión vive en memoria del proceso: al reiniciar se pierde y puede repetirse un aviso.
 - Conduit corre en una sola réplica; no escalar horizontalmente.
