@@ -140,6 +140,8 @@ model Tenant {
   webhookEndpoints WebhookEndpoint[]
   tags             Tag[]
   botContig        BotConfig[]
+  specialists      Specialist[]
+  specialistBindings BotSpecialistBinding[]
   whatsappConnections WhatsAppConnection[]
 }
 
@@ -312,6 +314,7 @@ model AiModelConfig {
   updatedAt DateTime @updatedAt
   
   botConfig BotConfig? @relation(fields: [botConfigId], references: [id], onDelete: Restrict)
+  specialist Specialist? @relation(fields: [specialistId], references: [id], onDelete: Restrict)
   
   @@index([botConfigId, role, priority])
   @@index([botConfigId, isActive])
@@ -353,8 +356,10 @@ model BotConfig {
   toolDefinitions ToolDefinition[]
   escalationContacts BotEscalationContact[]
   intents BotIntent[]
+  specialistBindings BotSpecialistBinding[]
 
   @@unique([tenantId, key])
+  @@unique([id, tenantId])
 }
 
 model BotAiSettings {
@@ -866,4 +871,62 @@ model OutboundReply {
   @@index([conversationId, status])
   @@index([groupId])
   @@index([status, expiresAt])
+}
+
+enum SpecialistStatus {
+  ACTIVE
+  INACTIVE
+}
+enum SpecialistBindingMode {
+  OFF
+  SHADOW
+  ACTIVE
+}
+enum SpecialistFailurePolicy {
+  DEGRADE
+  BLOCK
+}
+
+model Specialist {
+  id String @id @default(uuid())
+  tenantId String
+  key String
+  name String
+  capability String
+  status SpecialistStatus @default(INACTIVE)
+  promptTemplate String @db.Text
+  rules Json @default("{\"version\":1,\"rules\":[]}")
+  contextSources Json @default("{\"version\":1,\"sources\":[]}")
+  outputVersion Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  models AiModelConfig[]
+  bindings BotSpecialistBinding[]
+
+  @@unique([tenantId, key])
+  @@unique([id, tenantId, capability])
+  @@index([tenantId, capability])
+}
+
+model BotSpecialistBinding {
+  id String @id @default(uuid())
+  tenantId String
+  botConfigId String
+  capability String
+  specialistId String
+  mode SpecialistBindingMode @default(OFF)
+  timeoutMs Int @default(12000)
+  onFailure SpecialistFailurePolicy @default(DEGRADE)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  botConfig BotConfig @relation(fields: [botConfigId, tenantId], references: [id, tenantId], onDelete: Restrict)
+  specialist Specialist @relation(fields: [specialistId, tenantId, capability], references: [id, tenantId, capability], onDelete: Restrict)
+
+  @@unique([botConfigId, capability])
+  @@index([specialistId])
+  @@index([tenantId])
 }
