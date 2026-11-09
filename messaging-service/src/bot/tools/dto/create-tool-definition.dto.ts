@@ -1,4 +1,7 @@
 import {
+  ArrayNotEmpty,
+  ArrayUnique,
+  IsArray,
   IsBoolean,
   IsIn,
   IsInt,
@@ -11,6 +14,10 @@ import {
   Max,
   Min,
 } from 'class-validator';
+import {
+  ACCEPTABLE_TOOL_VERDICTS,
+  SUPPORTED_VERIFICATION_CAPABILITIES,
+} from '../../specialists/constants';
 
 export class CreateToolDefinitionDto {
   @IsString()
@@ -75,4 +82,29 @@ export class CreateToolDefinitionDto {
   @Min(1)
   @Max(7 * 24 * 60)
   pausesBotMinutes?: number;
+
+  /**
+   * Capacidad de verificación que debe aprobar el comprobante adjunto antes
+   * de ejecutar la herramienta. Sin un veredicto aceptado, vigente y sin
+   * usar para esa misma imagen, la herramienta se rechaza.
+   */
+  @IsOptional()
+  @IsIn([...SUPPORTED_VERIFICATION_CAPABILITIES])
+  verificationCapability?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayNotEmpty()
+  @ArrayUnique()
+  @IsIn([...ACCEPTABLE_TOOL_VERDICTS], { each: true })
+  acceptedVerdicts?: string[];
+
+  /**
+   * Campo del cuerpo donde Conduit coloca el pasaporte firmado, además de
+   * las cabeceras. El modelo no ve ese campo.
+   */
+  @IsOptional()
+  @IsString()
+  @Matches(/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/)
+  verificationParamName?: string;
 }

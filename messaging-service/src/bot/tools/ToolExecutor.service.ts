@@ -4,10 +4,14 @@ import { createHash } from 'crypto';
 import { PrismaService } from 'src/shared/prisma.service';
 import { SecretEncryptionService } from 'src/shared/security/secret-encryption.service';
 import { canonicalJson, setByPath } from './json-path.util';
+import { createHmac } from 'crypto';
+import { extractedFieldsSchema } from '../specialists/contracts';
+import { hashImage, NORMALIZED_HASH_VERSION } from '../specialists/image-hash';
 import {
-  TOOL_READ_TIMEOUT_MS,
-  TOOL_WRITE_TIMEOUT_MS,
-} from '../ai/turn-budget';
+  AcceptableRecord,
+  VerificationLedger,
+} from '../specialists/VerificationLedger';
+import { TOOL_READ_TIMEOUT_MS, TOOL_WRITE_TIMEOUT_MS } from '../ai/turn-budget';
 
 /**
  * Headers con la identidad verificada del chat. Los pone Conduit (no el
@@ -18,6 +22,10 @@ export const CONTACT_PHONE_HEADER = 'X-Conduit-Contact-Phone';
 export const CONTACT_LID_HEADER = 'X-Conduit-Contact-Lid';
 export const CONVERSATION_HEADER = 'X-Conduit-Conversation-Id';
 export const CORRELATION_HEADER = 'X-Correlation-Id';
+export const VERIFICATION_HEADER = 'X-Conduit-Verification';
+export const VERIFICATION_SIGNATURE_HEADER = 'X-Conduit-Verification-Signature';
+export const VERIFICATION_REQUIRED = 'VERIFICATION_REQUIRED';
+export const PASSPORT_VERSION = 1;
 
 export interface AttachedImage {
   dataUri: string;
@@ -56,6 +64,16 @@ export interface ToolCallOutcome {
 
 const READ_ONLY_METHODS = new Set(['GET', 'HEAD']);
 
+interface Granted {
+  recordId: string;
+  tenantId: string;
+  passport: Record<string, unknown>;
+}
+
+type Decision =
+  | { ok: true; granted: Granted }
+  | { ok: false; outcome: ToolCallOutcome };
+
 @Injectable()
 export class ToolExecutorService {
   private readonly logger = new Logger(ToolExecutorService.name);
@@ -65,11 +83,13 @@ export class ToolExecutorService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly encryption: SecretEncryptionService,
+    private readonly ledger: VerificationLedger,
   ) {}
 
   async execute(request: ToolCallRequest): Promise<ToolCallOutcome> {
     const tool = await this.prisma.toolDefinition.findUnique({
       where: { id: request.toolDefinitionId },
+      include: { botConfig: { select: { tenantId: true } } },
     });
 
     if (!tool || !tool.isActive) {
@@ -97,10 +117,31 @@ export class ToolExecutorService {
       }
     }
 
+    let granted: Granted | null = null;
+    if (tool.verificationCapability) {
+      const decision = await this.authorize(tool, request);
+      if (!decision.ok) return decision.outcome;
+      granted = decision.granted;
+    }
+
     const finalParams = { ...request.params };
 
     if (request.attachedImage && request.imageParamName) {
       finalParams[request.imageParamName] = request.attachedImage.dataUri;
+    }
+    let passportHeaders: Record<string, string> = {};
+    if (granted && tool.authSecretEncrypted) {
+      const signed = this.sign(
+        granted.passport,
+        this.encryption.decrypt(tool.authSecretEncrypted),
+      );
+      passportHeaders = {
+        [VERIFICATION_HEADER]: signed.payload,
+        [VERIFICATION_SIGNATURE_HEADER]: signed.signature,
+      };
+      if (tool.verificationParamName) {
+        setByPath(finalParams, tool.verificationParamName, signed);
+      }
     }
     if (request.injectedPhone && request.phoneParamName) {
       setByPath(finalParams, request.phoneParamName, request.injectedPhone);
@@ -125,6 +166,8 @@ export class ToolExecutorService {
         tool.authSecretEncrypted,
       );
     }
+
+    Object.assign(headers, passportHeaders);
 
     let idempotencyKey: string | null = null;
     if (!isReadOnly) {
@@ -159,6 +202,10 @@ export class ToolExecutorService {
         : response.status >= 400 && response.status < 500
           ? ToolInvocationStatus.BUSINESS_ERROR
           : ToolInvocationStatus.TECHNICAL_ERROR;
+
+      if (granted && this.isDefinitiveRejection(response.status)) {
+        await this.releaseQuietly(granted);
+      }
 
       if (isReadOnly) {
         return {
@@ -342,6 +389,146 @@ export class ToolExecutorService {
       errorDetail,
       invocationId: record.id,
     };
+  }
+
+  private async authorize(
+    tool: {
+      verificationCapability: string | null;
+      acceptedVerdicts: string[] | null;
+      authSecretEncrypted: string | null;
+      botConfig: { tenantId: string };
+    },
+    request: ToolCallRequest,
+  ): Promise<Decision> {
+    const refuse = (detail: string): Decision => ({
+      ok: false,
+      outcome: {
+        status: ToolInvocationStatus.BUSINESS_ERROR,
+        responseBody: {
+          code: VERIFICATION_REQUIRED,
+          message:
+            'Esta acción exige un comprobante con verificación aprobada, vigente y sin usar. Pídele a la clienta que envíe el comprobante en este chat o informa que una persona lo revisará.',
+          nextStep: 'WAIT_FOR_REVIEW',
+        },
+        httpStatus: 422,
+        errorDetail: detail,
+        invocationId: null,
+      },
+    });
+
+    if (!tool.authSecretEncrypted) {
+      return {
+        ok: false,
+        outcome: {
+          status: ToolInvocationStatus.TECHNICAL_ERROR,
+          responseBody: null,
+          httpStatus: null,
+          errorDetail:
+            'La herramienta exige verificación pero no tiene secreto para firmar el pasaporte.',
+          invocationId: null,
+        },
+      };
+    }
+
+    const buffer = this.decodeImage(request.attachedImage?.dataUri);
+    if (!buffer) return refuse('Sin imagen adjunta');
+
+    const hash = await hashImage(buffer);
+    if (hash.version !== NORMALIZED_HASH_VERSION) {
+      return refuse('La imagen no se pudo normalizar');
+    }
+
+    const tenantId = tool.botConfig.tenantId;
+    const record = await this.ledger.findAcceptable({
+      tenantId,
+      conversationId: request.conversationId,
+      capability: tool.verificationCapability as string,
+      hash: hash.hash,
+      acceptedVerdicts: (tool.acceptedVerdicts ?? []) as never,
+    });
+    if (!record)
+      return refuse('Sin veredicto aceptado y vigente para la imagen');
+
+    if (!(await this.ledger.claim(record.id, tenantId))) {
+      return refuse('El veredicto ya fue utilizado');
+    }
+
+    return {
+      ok: true,
+      granted: {
+        recordId: record.id,
+        tenantId,
+        passport: this.passportOf(
+          record,
+          tenantId,
+          request.conversationId,
+          tool.verificationCapability as string,
+        ),
+      },
+    };
+  }
+
+  private decodeImage(dataUri: string | undefined): Buffer | null {
+    const match = /^data:[^;,]+;base64,(.+)$/s.exec(dataUri ?? '');
+    if (!match) return null;
+    const buffer = Buffer.from(match[1], 'base64');
+    return buffer.length > 0 ? buffer : null;
+  }
+
+  private passportOf(
+    record: AcceptableRecord,
+    tenantId: string,
+    conversationId: string,
+    capability: string,
+  ): Record<string, unknown> {
+    const fields = extractedFieldsSchema.safeParse(record.fields);
+    return {
+      version: PASSPORT_VERSION,
+      verificationId: record.id,
+      capability,
+      tenantId,
+      conversationId,
+      verdict: record.verdict,
+      confidence: record.confidence,
+      fields: fields.success ? fields.data : {},
+      hash: record.subjectHash,
+      issuedAt: record.createdAt.toISOString(),
+      expiresAt: new Date(
+        record.createdAt.getTime() + this.ledger.passportTtlMs(),
+      ).toISOString(),
+    };
+  }
+
+  private sign(
+    passport: Record<string, unknown>,
+    secret: string,
+  ): { payload: string; signature: string } {
+    const payload = Buffer.from(canonicalJson(passport)).toString('base64url');
+    const signature = createHmac('sha256', secret)
+      .update(payload)
+      .digest('hex');
+    return { payload, signature };
+  }
+
+  private isDefinitiveRejection(httpStatus: number): boolean {
+    return (
+      httpStatus >= 400 &&
+      httpStatus < 500 &&
+      httpStatus !== 408 &&
+      httpStatus !== 429
+    );
+  }
+
+  private async releaseQuietly(granted: Granted): Promise<void> {
+    try {
+      await this.ledger.release(granted.recordId, granted.tenantId);
+    } catch (error) {
+      this.logger.error(
+        `No se pudo liberar el veredicto ${granted.recordId} tras un rechazo del backend: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
   }
 
   private fail(

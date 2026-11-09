@@ -9,7 +9,11 @@ import { BotConfigService } from '../config/BotConfigService';
 import { SecretEncryptionService } from 'src/shared/security/secret-encryption.service';
 import { CreateToolDefinitionDto } from './dto/create-tool-definition.dto';
 import { UpdateToolDefinitionDto } from './dto/update-tool-definition.dto';
-import { Prisma } from '@prisma/client';
+import { Prisma, VerificationVerdict } from '@prisma/client';
+import {
+  ACCEPTABLE_TOOL_VERDICTS,
+  SUPPORTED_VERIFICATION_CAPABILITIES,
+} from '../specialists/constants';
 import { stripSchemaPath } from './json-path.util';
 
 export interface ResolvedTool {
@@ -21,6 +25,7 @@ export interface ResolvedTool {
   injectPhoneParamName: string | null;
   pausesBotMinutes: number | null;
   readOnly: boolean;
+  verificationCapability: string | null;
 }
 
 @Injectable()
@@ -47,6 +52,13 @@ export class ToolDefinitionService {
   ) {
     await this.botConfigService.findOne(botConfigId, tenantId);
     this.validate(dto);
+    this.validateVerification({
+      verificationCapability: dto.verificationCapability ?? null,
+      acceptedVerdicts: dto.acceptedVerdicts ?? [],
+      requiresImageAttachment: dto.requiresImageAttachment ?? false,
+      httpMethod: dto.httpMethod ?? 'POST',
+      hasSecret: Boolean(dto.authSecret),
+    });
 
     return this.prisma.toolDefinition.create({
       data: {
@@ -66,6 +78,9 @@ export class ToolDefinitionService {
         maxImageSizeBytes: dto.maxImageSizeBytes,
         injectPhoneParamName: dto.injectPhoneParamName,
         pausesBotMinutes: dto.pausesBotMinutes,
+        verificationCapability: dto.verificationCapability,
+        acceptedVerdicts: (dto.acceptedVerdicts ?? []) as VerificationVerdict[],
+        verificationParamName: dto.verificationParamName,
       },
       select: this.safeSelect(),
     });
@@ -83,13 +98,36 @@ export class ToolDefinitionService {
     });
     if (!existing) throw new NotFoundException('Tool no encontrada.');
     this.validate(dto, true);
+    this.validateVerification({
+      verificationCapability:
+        dto.verificationCapability !== undefined
+          ? dto.verificationCapability
+          : existing.verificationCapability,
+      acceptedVerdicts: dto.acceptedVerdicts ?? existing.acceptedVerdicts,
+      requiresImageAttachment:
+        dto.requiresImageAttachment ?? existing.requiresImageAttachment,
+      httpMethod: dto.httpMethod ?? existing.httpMethod,
+      hasSecret: dto.clearAuth
+        ? false
+        : Boolean(dto.authSecret) || Boolean(existing.authSecretEncrypted),
+    });
 
-    const { clearAuth, authSecret, parametersSchema, ...changes } = dto;
+    const {
+      clearAuth,
+      authSecret,
+      parametersSchema,
+      acceptedVerdicts,
+      ...changes
+    } = dto;
 
     return this.prisma.toolDefinition.update({
       where: { id: toolId },
       data: {
         ...changes,
+
+        ...(acceptedVerdicts !== undefined
+          ? { acceptedVerdicts: acceptedVerdicts as VerificationVerdict[] }
+          : {}),
 
         ...(parametersSchema !== undefined
           ? {
@@ -136,6 +174,9 @@ export class ToolDefinitionService {
       if (d.injectPhoneParamName) {
         fieldsToStrip.push(d.injectPhoneParamName);
       }
+      if (d.verificationParamName) {
+        fieldsToStrip.push(d.verificationParamName);
+      }
       const exposedSchema =
         fieldsToStrip.length > 0
           ? this.stripFields(fullSchema, fieldsToStrip)
@@ -152,6 +193,7 @@ export class ToolDefinitionService {
         maxImageSizeBytes: d.maxImageSizeBytes,
         injectPhoneParamName: d.injectPhoneParamName,
         pausesBotMinutes: d.pausesBotMinutes,
+        verificationCapability: d.verificationCapability,
         readOnly: ['GET', 'HEAD'].includes(
           (d.httpMethod ?? 'POST').toUpperCase(),
         ),
@@ -188,6 +230,46 @@ export class ToolDefinitionService {
     }
   }
 
+  private validateVerification(state: {
+    verificationCapability: string | null;
+    acceptedVerdicts: readonly string[];
+    requiresImageAttachment: boolean;
+    httpMethod: string;
+    hasSecret: boolean;
+  }): void {
+    if (!state.verificationCapability) return;
+
+    if (
+      !SUPPORTED_VERIFICATION_CAPABILITIES.includes(
+        state.verificationCapability,
+      )
+    ) {
+      throw new BadRequestException(
+        `verificationCapability debe ser una de: ${SUPPORTED_VERIFICATION_CAPABILITIES.join(', ')}.`,
+      );
+    }
+    if (!state.requiresImageAttachment) {
+      throw new BadRequestException(
+        'Una herramienta con verificación debe exigir una imagen adjunta (requiresImageAttachment).',
+      );
+    }
+    if (['GET', 'HEAD'].includes(state.httpMethod.toUpperCase())) {
+      throw new BadRequestException(
+        'Una herramienta con verificación no puede ser de solo lectura.',
+      );
+    }
+    if (state.acceptedVerdicts.length === 0) {
+      throw new BadRequestException(
+        `acceptedVerdicts debe listar al menos un veredicto aceptado (${ACCEPTABLE_TOOL_VERDICTS.join(', ')}).`,
+      );
+    }
+    if (!state.hasSecret) {
+      throw new BadRequestException(
+        'Una herramienta con verificación necesita authSecret: con él se firma el pasaporte que recibe el backend.',
+      );
+    }
+  }
+
   private safeSelect() {
     return {
       id: true,
@@ -204,6 +286,9 @@ export class ToolDefinitionService {
       maxImageSizeBytes: true,
       injectPhoneParamName: true,
       pausesBotMinutes: true,
+      verificationCapability: true,
+      acceptedVerdicts: true,
+      verificationParamName: true,
       createdAt: true,
       updatedAt: true,
     };
