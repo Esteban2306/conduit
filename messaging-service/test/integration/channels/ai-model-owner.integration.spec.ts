@@ -10,6 +10,7 @@ suite('AiModelConfig: dueño único en la base aislada', () => {
   const tenantId = `it-${randomUUID()}`;
   let prisma: PrismaClient;
   let botId: string;
+  let specialistId: string;
 
   const model = (owner: {
     botConfigId?: string | null;
@@ -36,12 +37,24 @@ suite('AiModelConfig: dueño único en la base aislada', () => {
       data: { tenantId, name: 'bot', systemPrompt: 'x' },
     });
     botId = bot.id;
+    specialistId = (
+      await prisma.specialist.create({
+        data: {
+          tenantId,
+          key: 'owner-test',
+          name: 'owner-test',
+          capability: 'payment-proof',
+          promptTemplate: 'p',
+        },
+      })
+    ).id;
   });
 
   afterAll(async () => {
     await prisma.aiModelConfig.deleteMany({
-      where: { OR: [{ botConfigId: botId }, { specialistId: tenantId }] },
+      where: { OR: [{ botConfigId: botId }, { specialistId }] },
     });
+    await prisma.specialist.deleteMany({ where: { tenantId } });
     await prisma.botConfig.deleteMany({ where: { tenantId } });
     await prisma.tenant.deleteMany({ where: { id: tenantId } });
     await prisma.$disconnect();
@@ -52,13 +65,13 @@ suite('AiModelConfig: dueño único en la base aislada', () => {
   });
 
   it('acepta un modelo con dueño especialista', async () => {
-    await expect(model({ specialistId: tenantId })).resolves.toBeDefined();
+    await expect(model({ specialistId })).resolves.toBeDefined();
   });
 
   it('rechaza un modelo con los dos dueños', async () => {
-    await expect(
-      model({ botConfigId: botId, specialistId: tenantId }),
-    ).rejects.toThrow(/single_owner_check/);
+    await expect(model({ botConfigId: botId, specialistId })).rejects.toThrow(
+      /single_owner_check/,
+    );
   });
 
   it('rechaza un modelo sin dueño', async () => {

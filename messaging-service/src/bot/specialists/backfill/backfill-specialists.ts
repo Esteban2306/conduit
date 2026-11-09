@@ -76,6 +76,18 @@ export async function backfillSpecialists(
           role: { in: COPIED_ROLES },
         },
         orderBy: [{ role: 'asc' }, { priority: 'asc' }],
+        select: {
+          provider: true,
+          model: true,
+          apiKey: true,
+          apiKeyLast4: true,
+          baseUrl: true,
+          role: true,
+          tier: true,
+          priority: true,
+          dailyTokenLimit: true,
+          minuteRequestLimit: true,
+        },
       });
       if (!models.some((m) => m.role === AiModelRole.IMAGE_ANALYSIS)) {
         report.skipped.push({
