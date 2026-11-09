@@ -102,7 +102,7 @@ El backend debe: recalcular el HMAC con su secreto y compararlo en tiempo consta
 
 ## 6. Administración de especialistas (Fase 5)
 
-Todas las rutas usan el tenant del token. Las de consulta piden autenticación; las que modifican piden además rol administrador (o API key).
+Todas las rutas usan el tenant del token. Las de consulta piden autenticación; las que modifican piden además rol propietario o administrador (una API key cuenta como administrador).
 
 | Ruta | Efecto |
 |---|---|
@@ -113,6 +113,8 @@ Todas las rutas usan el tenant del token. Las de consulta piden autenticación; 
 | `GET /specialists/:id/versions`, `GET .../versions/:n` | Historial y contenido de cada versión |
 | `POST /specialists/:id/versions/:n/restore` | Restaura una versión anterior **como una versión nueva** (el historial no se reescribe) |
 | `POST /specialists/:id/archive`, `.../unarchive` | Archivar exige que no tenga vínculos en `SHADOW` ni `ACTIVE` |
+
+Los errores de validación, de conflicto de versión y de archivado traen un campo `details` con lo que el panel necesita mostrar: `issues` (campo por campo), `undeclaredKeys`, `currentVersion` o `bindings`. El filtro global de errores solo reenvía esa clave y nunca en errores 5xx.
 
 La clave y la capacidad son **inmutables**. Las reglas que citan un dato de contexto sin declararlo en `contextSources` se rechazan al guardar. Cada `VerificationRecord` guarda con qué versión del especialista se generó.
 
