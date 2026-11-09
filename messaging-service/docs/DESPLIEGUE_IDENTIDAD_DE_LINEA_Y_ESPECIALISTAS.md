@@ -50,7 +50,13 @@ La espera por desconexión **está activa al desplegar** (no depende de una band
 
 3. Aplicarlo: `npm run specialists:backfill -- --apply` (opcional `--tenant=<id>`). Crea, por cada bot con modelo `IMAGE_ANALYSIS` activo, un especialista `ACTIVE` con prompt neutro, **copias** de sus modelos de imagen y de respaldo, y un vínculo en `SHADOW`. Es idempotente.
 4. Encender `SPECIALISTS_ENABLED=true` primero en la línea de prueba. En SHADOW el especialista corre en paralelo al análisis actual, no retrasa ni cambia la respuesta y deja un `VerificationRecord` con la comparación.
-5. Un vínculo en `ACTIVE` todavía no responde por sí solo: se usa el análisis actual y queda un aviso en el log.
+5. Un vínculo en `ACTIVE` **reemplaza al análisis actual** dentro del turno: el especialista verifica la imagen, el resultado se guarda en `facts` de la conversación y el modelo recibe una línea armada por código (`[imagen verificada por el sistema: VALID, RULES_PASSED]`) más un bloque "Verificaciones del sistema" con campos tipados (veredicto, confianza, monto, moneda, fecha, motivos y un resumen de texto fijo). **El texto libre de la imagen (referencia, destinatario) nunca llega al modelo conversacional.**
+   - Con `ERROR` y política `DEGRADE` la conversación continúa y el hecho queda "pendiente de revisión humana". Con `BLOCK` se responde un texto fijo de espera y ese turno no llama al modelo conversacional.
+   - `NEEDS_REVIEW` y `ERROR` marcan el hecho como pendiente; `BLOCK` solo corta ante `ERROR`.
+   - Un hecho es vigente durante `SPECIALISTS_PASSPORT_TTL_MINUTES`; vencido, deja de mostrarse.
+   - Los modelos de un especialista **nunca** usan claves del sistema (`<PROVEEDOR>_DEFAULT_API_KEY`): sin una clave propia válida el modelo falla con un mensaje claro.
+   - Si el especialista no llega a ejecutarse (por ejemplo, queda inactivo justo en ese momento), el turno vuelve al análisis actual.
+   - Antes de pasar un vínculo a `ACTIVE`, comparar en `SHADOW` los `VerificationRecord` con el comportamiento actual.
 
 Reversión: `SPECIALISTS_ENABLED=false`.
 
