@@ -187,7 +187,7 @@ export class SpecialistAdminService {
       throw new ConflictException({
         message:
           'El especialista tiene vínculos en uso. Apaga o cambia esos vínculos antes de archivarlo.',
-        bindings: live,
+        details: { bindings: live },
       });
     }
 
@@ -373,7 +373,7 @@ export class SpecialistAdminService {
       throw new BadRequestException({
         message:
           'Hay reglas que citan datos de contexto que no están declarados en contextSources.',
-        undeclaredKeys: undeclared,
+        details: { undeclaredKeys: undeclared },
       });
     }
   }
@@ -398,7 +398,7 @@ export class SpecialistAdminService {
     return new ConflictException({
       message:
         'El especialista cambió mientras lo editabas. Recarga la versión actual y vuelve a intentarlo.',
-      ...(currentVersion !== undefined ? { currentVersion } : {}),
+      ...(currentVersion !== undefined ? { details: { currentVersion } } : {}),
     });
   }
 

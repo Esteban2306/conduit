@@ -72,12 +72,14 @@ export function parseOrThrow<T extends z.ZodType>(
   if (parsed.success) return parsed.data;
   throw new BadRequestException({
     message: 'Datos inválidos',
-    issues: parsed.error.issues.map((issue) => ({
-      path: issue.path.join('.'),
-      message:
-        issue.code === 'unrecognized_keys'
-          ? `Campos no permitidos o inmutables: ${issue.keys.join(', ')}`
-          : issue.message,
-    })),
+    details: {
+      issues: parsed.error.issues.map((issue) => ({
+        path: issue.path.join('.'),
+        message:
+          issue.code === 'unrecognized_keys'
+            ? `Campos no permitidos o inmutables: ${issue.keys.join(', ')}`
+            : issue.message,
+      })),
+    },
   });
 }

@@ -11,7 +11,7 @@ import {
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { ApiAuthGuard } from 'src/auth/guards/api-auth.guard';
-import { AdminGuard } from 'src/auth/guards/admin.guard';
+import { TenantAdminGuard } from 'src/auth/guards/tenant-admin.guard';
 import { CurrentUser } from 'src/auth/decorators/current-user.decorator';
 import type { JwtPayload } from 'src/auth/types/jwt.types';
 import { SpecialistAdminService } from './SpecialistAdminService';
@@ -56,14 +56,14 @@ export class SpecialistController {
     return this.specialists.getVersion(user.tenantId, id, version);
   }
 
-  @UseGuards(AdminGuard)
+  @UseGuards(TenantAdminGuard)
   @Post()
   @ApiOperation({ summary: 'Crear un especialista (nace inactivo)' })
   create(@CurrentUser() user: JwtPayload, @Body() body: unknown) {
     return this.specialists.create(user.tenantId, user.sub, body);
   }
 
-  @UseGuards(AdminGuard)
+  @UseGuards(TenantAdminGuard)
   @Patch(':id')
   @ApiOperation({
     summary:
@@ -77,7 +77,7 @@ export class SpecialistController {
     return this.specialists.update(user.tenantId, user.sub, id, body);
   }
 
-  @UseGuards(AdminGuard)
+  @UseGuards(TenantAdminGuard)
   @Post(':id/versions/:version/restore')
   @ApiOperation({
     summary:
@@ -92,14 +92,14 @@ export class SpecialistController {
     return this.specialists.restore(user.tenantId, user.sub, id, version, body);
   }
 
-  @UseGuards(AdminGuard)
+  @UseGuards(TenantAdminGuard)
   @Post(':id/archive')
   @ApiOperation({ summary: 'Archivar un especialista sin vínculos en uso' })
   archive(@CurrentUser() user: JwtPayload, @Param('id') id: string) {
     return this.specialists.archive(user.tenantId, id);
   }
 
-  @UseGuards(AdminGuard)
+  @UseGuards(TenantAdminGuard)
   @Post(':id/unarchive')
   @ApiOperation({ summary: 'Desarchivar un especialista' })
   unarchive(@CurrentUser() user: JwtPayload, @Param('id') id: string) {
