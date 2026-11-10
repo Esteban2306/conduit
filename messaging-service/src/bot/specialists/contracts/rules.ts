@@ -20,6 +20,7 @@ export const RULE_OPERATORS = [
   'within_days',
   'contains',
   'fuzzy',
+  'within',
 ] as const;
 export const RULE_FAILURE_VERDICTS = ['INVALID', 'NEEDS_REVIEW'] as const;
 
@@ -31,7 +32,7 @@ export const OPERATORS_BY_TYPE: Record<VariableType, readonly RuleOperator[]> =
   {
     number: ['gte', 'lte', 'eq'],
     date: ['within_days', 'eq'],
-    string: ['eq', 'contains', 'fuzzy', 'in'],
+    string: ['eq', 'contains', 'fuzzy', 'in', 'within'],
     boolean: ['eq'],
     enum: ['eq', 'in'],
   };
@@ -93,7 +94,8 @@ export const ruleSchema = z
 
     const wantsNumber =
       rule.op === 'gte' || rule.op === 'lte' || rule.op === 'within_days';
-    const wantsText = rule.op === 'contains' || rule.op === 'fuzzy';
+    const wantsText =
+      rule.op === 'contains' || rule.op === 'fuzzy' || rule.op === 'within';
 
     if (wantsNumber && typeof literal !== 'number') {
       issue('ref', `El operador ${rule.op} exige un literal numérico`);

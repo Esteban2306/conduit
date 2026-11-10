@@ -522,10 +522,16 @@ describe('GroundingResolver', () => {
     });
 
     it('un valor demasiado largo no se acepta', async () => {
-      const w = build({ mapping: { value: 'x'.repeat(300) } });
+      const w = build({ mapping: { value: 'x'.repeat(1001) } });
       expect((await w.resolve([mappingSource()])).unavailable[0].reason).toBe(
         'VALUE_NOT_SCALAR',
       );
+    });
+
+    it('un texto de unas instrucciones de pago sí se acepta', async () => {
+      const w = build({ mapping: { value: 'x'.repeat(600) } });
+      const out = await w.resolve([mappingSource()]);
+      expect(out.unavailable).toEqual([]);
     });
 
     it('no usa herramientas', async () => {

@@ -107,6 +107,11 @@ export class MessageRecoveryService implements OnModuleInit, OnModuleDestroy {
         );
       }
       return recovered;
+    } catch (error) {
+      this.logger.error(
+        `El barrido de recuperación falló y se reintentará en el siguiente ciclo: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return 0;
     } finally {
       this.running = false;
     }

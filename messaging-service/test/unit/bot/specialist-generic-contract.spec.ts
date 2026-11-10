@@ -311,6 +311,12 @@ describe('reglas contra la declaración', () => {
         rule({ field: 'shot_on', op: 'eq', ref: { literal: '2026-11-08' } }),
         rule({ field: 'place', op: 'fuzzy', ref: { literal: 'Cartagena' } }),
         rule({ field: 'caption', op: 'contains', ref: 'grounding.palabra' }),
+        rule({ field: 'place', op: 'within', ref: 'grounding.texto' }),
+        rule({
+          field: 'place',
+          op: 'within',
+          ref: { literal: 'Calle 1 # 2-3' },
+        }),
       ]),
     ).toEqual([]);
   });
@@ -326,6 +332,11 @@ describe('reglas contra la declaración', () => {
       'fuzzy sobre un enum',
       rule({ field: 'kind', op: 'fuzzy', ref: { literal: 'beach' } }),
     ],
+    [
+      'within sobre un enum',
+      rule({ field: 'kind', op: 'within', ref: { literal: 'beach city' } }),
+    ],
+    ['within sobre un número', rule({ op: 'within', ref: { literal: 'x' } })],
     ['eq numérico con texto', rule({ op: 'eq', ref: { literal: 'x' } })],
     [
       'eq booleano con número',
@@ -677,4 +688,21 @@ describe('independencia de Conduit respecto a cualquier negocio', () => {
       expect(offenders).toEqual([]);
     },
   );
+});
+
+describe('within: forma del literal', () => {
+  const parse = (ref: unknown) =>
+    rulesDocumentSchema.safeParse({
+      version: 1,
+      rules: [{ field: 'place', op: 'within', ref, onFail: 'INVALID' }],
+    }).success;
+
+  it('acepta un contexto o un literal de texto', () => {
+    expect(parse('grounding.texto')).toBe(true);
+    expect(parse({ literal: 'Calle 1 # 2-3' })).toBe(true);
+  });
+
+  it.each([5, true, ['a', 'b'], ''])('rechaza el literal %j', (literal) => {
+    expect(parse({ literal })).toBe(false);
+  });
 });

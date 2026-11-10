@@ -72,6 +72,55 @@ describe('MessageRecoveryService', () => {
     expect(dlq.handle).not.toHaveBeenCalled();
   });
 
+  describe('cuando la base de datos falla', () => {
+    const quiet = () => {
+      const logger = { error: jest.fn(), warn: jest.fn(), log: jest.fn() };
+      (service as unknown as { logger: object }).logger = logger;
+      return logger;
+    };
+
+    it('el barrido no lanza: devuelve 0 y deja un aviso en el registro', async () => {
+      const logger = quiet();
+      prisma.message.findMany.mockRejectedValue(
+        new Error('The column Message.category does not exist'),
+      );
+
+      await expect(service.sweep()).resolves.toBe(0);
+
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.stringContaining('Message.category'),
+      );
+    });
+
+    it('el temporizador no deja una promesa rechazada sin atrapar', async () => {
+      quiet();
+      prisma.message.findMany.mockRejectedValue(new Error('conexión caída'));
+      const unhandled = jest.fn();
+      process.on('unhandledRejection', unhandled);
+      jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+      try {
+        service.onModuleInit();
+        await jest.advanceTimersByTimeAsync(10 * 60_000);
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(prisma.message.findMany).toHaveBeenCalled();
+        expect(unhandled).not.toHaveBeenCalled();
+      } finally {
+        service.onModuleDestroy();
+        jest.useRealTimers();
+        process.off('unhandledRejection', unhandled);
+      }
+    });
+
+    it('tras un fallo, el siguiente barrido funciona (la marca de ejecución se libera)', async () => {
+      quiet();
+      prisma.message.findMany.mockRejectedValueOnce(new Error('falla'));
+      await service.sweep();
+
+      prisma.message.findMany.mockResolvedValue([stale(MessageStatus.PENDING)]);
+      await expect(service.sweep()).resolves.toBe(1);
+    });
+  });
+
   it('NO reenvía un PROCESSING sin job: resultado incierto → DLQ', async () => {
     prisma.message.findMany.mockResolvedValue([
       stale(MessageStatus.PROCESSING),

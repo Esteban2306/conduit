@@ -83,7 +83,8 @@ const SUMMARIES: Record<string, string> = {
 const FALLBACK_SUMMARY = 'Resultado sin descripción.';
 
 const MISSING_SUFFIX = '_MISSING';
-const FAILED_SUFFIX = /_(GTE|LTE|EQ|IN|WITHIN_DAYS|CONTAINS|FUZZY)_FAILED$/;
+const FAILED_SUFFIX =
+  /_(GTE|LTE|EQ|IN|WITHIN_DAYS|WITHIN|CONTAINS|FUZZY)_FAILED$/;
 
 function labelsOf(
   schema: OutputSchemaDocument | undefined,
