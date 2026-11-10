@@ -466,6 +466,7 @@ function world(
             } as Record<string, number>
           )[key],
   } as never);
+  const legacyUsageRecord = jest.fn();
   const router = new BotRouter(
     sessionManager as never,
     {
@@ -557,6 +558,7 @@ function world(
     { isPaused: later(() => systemPaused) } as never,
     { findBindings: specialistFindMode, run: specialistRun } as never,
     prefetch,
+    { record: legacyUsageRecord } as never,
   );
   (router as unknown as { logger: object }).logger = {
     debug: jest.fn(),
@@ -731,6 +733,7 @@ function world(
     promptInputs,
     activeOutcome,
     imageOriginal: original,
+    legacyUsageRecord,
     setSpecialistMode: (value: 'OFF' | 'SHADOW' | 'ACTIVE') => {
       specialistMode = value;
     },
@@ -2132,6 +2135,37 @@ describe('Especialistas en SHADOW dentro del router (fase 3c-4)', () => {
     expect(w.imageDownload).not.toHaveBeenCalled();
     expect(w.imageAnalyzeBuffer).not.toHaveBeenCalled();
     expect(w.specialistRun).not.toHaveBeenCalled();
+  });
+
+  describe('contador de uso del camino antiguo', () => {
+    it('sin vínculos cuenta una imagen para su tenant y bot', async () => {
+      const w = shadowWorld('OFF');
+      await runImage(w);
+      expect(w.legacyUsageRecord).toHaveBeenCalledTimes(1);
+      expect(w.legacyUsageRecord).toHaveBeenCalledWith(TENANT, BOT);
+    });
+
+    it('con un vínculo solo en SHADOW el análisis actual sigue siendo el real y cuenta', async () => {
+      const w = shadowWorld('SHADOW');
+      await runImage(w);
+      expect(w.legacyUsageRecord).toHaveBeenCalledTimes(1);
+    });
+
+    it('con un vínculo ACTIVE no cuenta', async () => {
+      const w = shadowWorld('ACTIVE');
+      w.specialistRun.mockResolvedValue(w.activeOutcome('VALID'));
+      await runImage(w);
+      expect(w.legacyUsageRecord).not.toHaveBeenCalled();
+    });
+
+    it('si el contador lanza, la respuesta no cambia', async () => {
+      const w = shadowWorld('OFF');
+      w.legacyUsageRecord.mockImplementation(() => {
+        throw new Error('boom');
+      });
+      await runImage(w, 'hola');
+      expect(w.sends).toHaveLength(1);
+    });
   });
 
   it('en SHADOW descarga una sola vez y el análisis actual usa esa descarga', async () => {

@@ -1,9 +1,16 @@
+import { LegacyImageUsageService } from '../ai/LegacyImageUsage.service';
 import {
   IMAGE_NOT_ANALYZED,
   IMAGE_WARNING_KEY,
   ImageNotAnalyzedReason,
 } from '../conversation/image-warning';
-import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
+import {
+  forwardRef,
+  Inject,
+  Injectable,
+  Logger,
+  Optional,
+} from '@nestjs/common';
 import { BotConfigService } from '../config/BotConfigService';
 import { ConversationService } from '../conversation/ConversationService';
 import { downloadMediaMessage, WAMessage } from '@whiskeysockets/baileys';
@@ -166,6 +173,7 @@ export class BotRouter {
     private readonly systemPause: SystemPauseService,
     private readonly specialistRuntime: SpecialistRuntime,
     private readonly imagePrefetch: ImagePrefetchService<ImageBundle>,
+    @Optional() private readonly legacyUsage?: LegacyImageUsageService,
   ) {}
 
   async route(
@@ -1336,10 +1344,12 @@ export class BotRouter {
     const active = bindings.filter((binding) => binding.mode === 'ACTIVE');
     const shadow = bindings.filter((binding) => binding.mode === 'SHADOW');
 
-    const legacyOnly = (): Promise<ImageBundle> =>
-      this.imageAnalysisService
+    const legacyOnly = (): Promise<ImageBundle> => {
+      this.countLegacyImage(job);
+      return this.imageAnalysisService
         .analyzeFromMessage(message, job.botConfigId, job.systemPrompt)
         .then((result) => ({ kind: 'LEGACY' as const, result }));
+    };
 
     if (bindings.length === 0) return legacyOnly();
 
@@ -1356,6 +1366,7 @@ export class BotRouter {
     prepared.catch(() => undefined);
 
     if (active.length === 0) {
+      this.countLegacyImage(job);
       const legacy = this.imageAnalysisService.analyzeBuffer(
         original,
         job.botConfigId,
@@ -1472,6 +1483,17 @@ export class BotRouter {
             `Especialista en SHADOW falló sin afectar la respuesta: ${maskSecrets(error instanceof Error ? error.message : String(error))}`,
           );
         });
+    }
+  }
+
+  /** El conteo nunca puede afectar al turno. */
+  private countLegacyImage(job: ImageJob): void {
+    try {
+      this.legacyUsage?.record(job.tenantId, job.botConfigId);
+    } catch (error: unknown) {
+      this.logger.warn(
+        `No se pudo contar el uso del camino antiguo: ${maskSecrets(error instanceof Error ? error.message : String(error))}`,
+      );
     }
   }
 

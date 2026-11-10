@@ -235,6 +235,10 @@ La conversación **nunca se detiene** por un fallo de análisis: el bot sigue y 
 | `RULES_INVALID` | Las reglas guardadas ya no cuadran con las variables; corrígelas |
 | Advertencia `IMAGE_NOT_ANALYZED` en una conversación del panel | La imagen llegó pero no se analizó (ver `reason`). El bot siguió y la imagen está en el panel para revisarla a mano. Se limpia sola con el siguiente análisis correcto |
 
+### Saber si ya nadie usa el análisis antiguo
+
+`GET /image-analysis/legacy-usage?days=14` muestra cuántas imágenes se analizaron con el camino antiguo (un bot sin especialista ACTIVE), por bot. Si un bot aparece ahí, es que su imagen aún no la procesa un especialista: vincúlalo en `SHADOW` y pásalo a `ACTIVE`. `retirementReady: true` significa 14 días observados sin ninguna llamada.
+
 ### Cambiar un especialista en producción
 
 1. Prueba el cambio con `dry-run` y `draft`, y mide con el banco (`compare`).

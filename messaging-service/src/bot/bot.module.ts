@@ -18,6 +18,8 @@ import { BotRouter } from './router/BotRouter';
 import { ChannelsModule } from 'src/channels/channels.module';
 import { forwardRef } from '@nestjs/common';
 import { ImageAnalysisService } from './ai/ImageAnalysisService';
+import { LegacyImageUsageService } from './ai/LegacyImageUsage.service';
+import { LegacyImageUsageController } from './ai/LegacyImageUsage.controller';
 import { SpecialistRuntime } from './specialists/SpecialistRuntime';
 import { VerificationLedger } from './specialists/VerificationLedger';
 import { GroundingResolver } from './specialists/GroundingResolver';
@@ -76,6 +78,7 @@ import { SystemPauseService } from './pause/SystemPause.service';
     SpecialistModelController,
     SpecialistBindingController,
     SpecialistVerificationController,
+    LegacyImageUsageController,
   ],
   providers: [
     SystemPauseService,
@@ -94,6 +97,7 @@ import { SystemPauseService } from './pause/SystemPause.service';
     MistralProvider,
     CustomProvider,
     ImageAnalysisService,
+    LegacyImageUsageService,
     SpecialistRuntime,
     VerificationLedger,
     GroundingResolver,

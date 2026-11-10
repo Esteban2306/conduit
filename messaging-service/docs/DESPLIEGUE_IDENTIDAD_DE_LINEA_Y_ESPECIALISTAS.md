@@ -16,6 +16,7 @@ Resume lo que añade la rama `feat/line-identity-and-queue-resilience` y el orde
 | `20261109120000_specialist_output_schema` | `outputSchema` en `Specialist` y `SpecialistVersion` (las filas existentes reciben la declaración equivalente a los seis campos anteriores, como datos) y `blockMessage` en `BotSpecialistBinding` |
 | `20261110120000_tool_verified_params` | Columna `verifiedParams` (JSONB, por defecto `{}`) en `ToolDefinition`, con restricción de que sea un objeto. Aditiva: las herramientas existentes no cambian |
 | `20261111120000_tool_unverified_fallback` | Enum `ToolVerificationFallback` y columna `onTechnicalFailure` (por defecto `REFUSE`) en `ToolDefinition`, con restricción de que `PROCEED_UNVERIFIED` exija `verificationCapability`. Aditiva: las herramientas existentes no cambian |
+| `20261112120000_legacy_image_usage` | Tabla `LegacyImageUsage` (conteo por bot y día UTC del análisis de imagen antiguo, sin claves foráneas). Aditiva. La fecha en que se aplica esta migración es la que se usa como "desde cuándo se observa" |
 | `20261109100000_attachment_verification` | Huella de campos, versión de hash y marca de consumo en `VerificationRecord`; campos de verificación y CHECK en `ToolDefinition` |
 
 Todas son aditivas. Antes de `stable_keys` en cada base, buscar números duplicados por tenant:
@@ -75,6 +76,22 @@ Reversión: `SPECIALISTS_ENABLED=false`.
 Un fallo del análisis **nunca corta la conversación**: el bot continúa con el aviso `[imagen recibida, no analizada]`, y la imagen llega al panel por el mismo camino de siempre (no depende del análisis). Antes, con el proveedor saturado, el análisis antiguo respondía "intenta de nuevo" y no llamaba al modelo; eso ya no ocurre. La única excepción es un vínculo configurado explícitamente con `onFailure: BLOCK`, que responde su texto de espera.
 
 La conversación queda con una advertencia que el panel recibe en `GET /bots/:botId/conversations`, dentro de cada elemento: `warnings: [{ "code": "IMAGE_NOT_ANALYZED", "reason": "...", "since": "<fecha ISO>" }]` (lista vacía si no hay). `reason` es `NOT_RUN` (no se llegó a analizar), `PROVIDER_UNAVAILABLE`, `ANALYSIS_ERROR` o `SPECIALIST_ERROR`. Se limpia sola cuando una imagen posterior se analiza bien. No se envía ningún mensaje al administrador y el contexto nunca llega al prompt del modelo.
+
+### Uso del análisis antiguo (para decidir su retiro)
+
+Cada imagen analizada con el camino antiguo (bot sin vínculo, o solo con vínculos `SHADOW` u `OFF`) suma 1 en `LegacyImageUsage` por bot y día UTC y deja una línea de aviso en el log. Un vínculo `ACTIVE` no cuenta. El conteo es de mejor esfuerzo: nunca retrasa ni cambia un turno.
+
+`GET /image-analysis/legacy-usage?days=14` (propietario o administrador; `days` de 1 a 90, 14 por defecto, otro valor da 400) devuelve, del tenant: `totalCalls`, `lastUsedAt`, `bots` (con `name`, `calls`, `lastUsedAt`), `observedSince` (cuándo se aplicó la migración), `observedDays` y `retirementReady`. `retirementReady` es verdadero solo si el contador lleva observando **toda la ventana** y hubo **cero** llamadas en ella: cero llamadas sin haber observado el tiempo suficiente no prueba nada.
+
+Para una decisión sobre todos los tenants (el retiro del código es global), consultar la tabla directamente:
+
+```sql
+SELECT COALESCE(SUM(calls), 0) AS llamadas, MAX("lastAt") AS ultima
+FROM "LegacyImageUsage"
+WHERE day > (NOW() AT TIME ZONE 'UTC')::date - 14;
+```
+
+Criterio acordado para retirar el camino antiguo: 14 días con `llamadas = 0` desde que se aplicó la migración, y todo bot con `imageAnalysisEnabled` con un especialista ACTIVE.
 
 ### Camino rápido de la imagen
 
@@ -317,4 +334,5 @@ Para los modelos de la familia 5.x, la extracción de imágenes se pide con `eff
 - La ventana de los avisos de revisión vive en memoria del proceso: al reiniciar se pierde y puede repetirse un aviso.
 - Los cuerpos de `WebhookDelivery` se guardan en la base con las variables del resultado (datos del negocio). No hay una limpieza automática de esa tabla: definir una retención antes de usar estos eventos con datos sensibles.
 - El aviso se registra después de guardar el resultado, sin outbox transaccional: si el proceso se cae en esa ventana, ese aviso se pierde.
+- El conteo del camino antiguo no tiene claves foráneas: las filas de un bot borrado quedan huérfanas (pocas y pequeñas).
 - Conduit corre en una sola réplica; no escalar horizontalmente.

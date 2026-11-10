@@ -1029,3 +1029,17 @@ model SpecialistVersion {
   @@unique([specialistId, version])
   @@index([tenantId, specialistId, version])
 }
+
+/// Cuántas imágenes se analizaron con el camino antiguo (sin especialista
+/// ACTIVE), por bot y día UTC. Sirve para decidir cuándo retirarlo. Sin claves
+/// foráneas a propósito: no debe bloquear el borrado de un bot ni de un tenant.
+model LegacyImageUsage {
+  tenantId    String
+  botConfigId String
+  day         DateTime @db.Date
+  calls       Int      @default(0)
+  lastAt      DateTime
+
+  @@id([botConfigId, day])
+  @@index([tenantId, day])
+}
