@@ -1,7 +1,7 @@
 import { GroundingValue } from './rule-evaluator';
 
 const FORBIDDEN_SEGMENTS = new Set(['__proto__', 'constructor', 'prototype']);
-const MAX_TEXT_LENGTH = 200;
+export const MAX_GROUNDING_TEXT_LENGTH = 1000;
 
 export function readPath(root: unknown, path: string): unknown {
   let current: unknown = root;
@@ -28,7 +28,8 @@ export function toGroundingValue(value: unknown): GroundingValue | undefined {
   if (typeof value === 'boolean') return value;
   if (typeof value === 'string') {
     const trimmed = value.trim();
-    if (trimmed === '' || trimmed.length > MAX_TEXT_LENGTH) return undefined;
+    if (trimmed === '' || trimmed.length > MAX_GROUNDING_TEXT_LENGTH)
+      return undefined;
     return trimmed;
   }
   return undefined;

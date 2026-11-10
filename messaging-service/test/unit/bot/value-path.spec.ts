@@ -62,13 +62,18 @@ describe('toGroundingValue', () => {
     expect(toGroundingValue('  Spa Demo  ')).toBe('Spa Demo');
   });
 
+  it('acepta un texto de hasta 1000 caracteres, como unas instrucciones de pago', () => {
+    expect(toGroundingValue('x'.repeat(1000))).toBe('x'.repeat(1000));
+    expect(toGroundingValue('x'.repeat(201))).toBe('x'.repeat(201));
+  });
+
   it('rechaza lo que no es escalar o no es seguro', () => {
     for (const bad of [
       NaN,
       Infinity,
       '',
       '   ',
-      'x'.repeat(201),
+      'x'.repeat(1001),
       {},
       [],
       null,

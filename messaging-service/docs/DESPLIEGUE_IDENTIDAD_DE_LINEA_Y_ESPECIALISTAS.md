@@ -111,7 +111,7 @@ Las reglas pueden compararse con datos del negocio mediante `ref: "grounding.<cl
 - `TOOL`: una herramienta del mismo bot, **solo de lectura** (GET o HEAD, sin imagen adjunta ni pausa del bot). Exige `valuePath` (por ejemplo `data.anticipo.monto`). Se llama con la identidad verificada del chat (cabeceras `X-Conduit-*` y el teléfono en el parámetro configurado).
 - `EXTERNAL_MAPPING`: una variable externa del bot, con nombre `<espacio>.<clave>` (por ejemplo `vars.titular`). Si se da `valuePath`, se lee dentro de un JSON guardado.
 
-Las consultas corren en paralelo al modelo, con tiempo máximo y una caché en memoria por conversación (vigencia `maxAgeSeconds`, 0 la desactiva). Un dato que no se puede obtener nunca produce `VALID`: la regla pide revisión (`GROUNDING_UNAVAILABLE`). Una fuente `required` caída convierte un `VALID` en `NEEDS_REVIEW`. Una regla que cita una clave sin declarar deja al especialista en error (`RULES_INVALID`) y queda en el log.
+Las consultas corren en paralelo al modelo, con tiempo máximo y una caché en memoria por conversación (vigencia `maxAgeSeconds`, 0 la desactiva). Un dato que no se puede obtener nunca produce `VALID`: la regla pide revisión (`GROUNDING_UNAVAILABLE`). Una fuente `required` caída convierte un `VALID` en `NEEDS_REVIEW`. Un dato de texto de más de 1000 caracteres se descarta como no disponible (la regla pide revisión). Una regla que cita una clave sin declarar deja al especialista en error (`RULES_INVALID`) y queda en el log.
 
 ## 5. Herramientas con puerta de verificación
 
