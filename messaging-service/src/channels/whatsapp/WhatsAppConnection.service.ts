@@ -1,4 +1,9 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import {
   Prisma,
   WhatsAppCampaignPolicy,
@@ -7,45 +12,87 @@ import {
 } from '@prisma/client';
 import { PrismaService } from 'src/shared/prisma.service';
 import { CreateWhatsAppConnectionDto } from './dto/create-whatsapp-connection.dto';
+import { resolveUniqueKey, slugifyKey } from 'src/shared/stable-key';
 import * as QRCode from 'qrcode';
 
 @Injectable()
 export class WhatsAppConnectionService {
+  private readonly logger = new Logger(WhatsAppConnectionService.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
   async create(tenantId: string, dto: CreateWhatsAppConnectionDto) {
-    if (!dto.botConfigId) {
-      return this.prisma.whatsAppConnection.create({
-        data: {
-          tenantId,
-          name: dto.name,
-          status: WhatsAppConnectionStatus.DISCONNECTED,
-          warmupLevel: dto.warmupLevel ?? WhatsAppWarmupLevel.NORMAL,
-        },
-      });
-    }
+    const key = await this.resolveKey(tenantId, dto.key, dto.name);
 
-    return this.prisma.$transaction(async (tx) => {
-      const botConfig = await tx.botConfig.findFirst({
-        where: { id: dto.botConfigId, tenantId },
-        select: { id: true },
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        let botConfigId: string | undefined;
+        if (dto.botConfigId) {
+          const botConfig = await tx.botConfig.findFirst({
+            where: { id: dto.botConfigId, tenantId },
+            select: { id: true },
+          });
+          if (!botConfig) {
+            throw new NotFoundException(
+              'BotConfig no encontrado para este tenant.',
+            );
+          }
+          botConfigId = botConfig.id;
+        }
+
+        return tx.whatsAppConnection.create({
+          data: {
+            tenantId,
+            key,
+            botConfigId,
+            name: dto.name,
+            status: WhatsAppConnectionStatus.DISCONNECTED,
+            warmupLevel: dto.warmupLevel ?? WhatsAppWarmupLevel.NORMAL,
+          },
+        });
       });
-      if (!botConfig) {
-        throw new NotFoundException(
-          'BotConfig no encontrado para este tenant.',
+    } catch (err) {
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2002'
+      ) {
+        throw new ConflictException(
+          `Ya existe una conexión con la clave "${key}" en este tenant.`,
         );
       }
+      throw err;
+    }
+  }
 
-      return tx.whatsAppConnection.create({
-        data: {
-          tenantId,
-          botConfigId: botConfig.id,
-          name: dto.name,
-          status: WhatsAppConnectionStatus.DISCONNECTED,
-          warmupLevel: dto.warmupLevel ?? WhatsAppWarmupLevel.NORMAL,
-        },
-      });
+  async findByKey(key: string, tenantId: string) {
+    const connection = await this.prisma.whatsAppConnection.findFirst({
+      where: { tenantId, key },
     });
+    if (!connection) {
+      throw new NotFoundException(`Conexión con clave "${key}" no encontrada.`);
+    }
+    return connection;
+  }
+
+  private async resolveKey(
+    tenantId: string,
+    requested: string | undefined,
+    name: string,
+  ): Promise<string> {
+    const taken = async (candidate: string) =>
+      (await this.prisma.whatsAppConnection.count({
+        where: { tenantId, key: candidate },
+      })) > 0;
+
+    if (requested) {
+      if (await taken(requested)) {
+        throw new ConflictException(
+          `Ya existe una conexión con la clave "${requested}" en este tenant.`,
+        );
+      }
+      return requested;
+    }
+    return resolveUniqueKey(slugifyKey(name, 'line'), taken);
   }
 
   async assignBotConfig(id: string, tenantId: string, botConfigId: string) {
@@ -253,17 +300,49 @@ export class WhatsAppConnectionService {
     });
   }
 
-  markConnected(id: string, phoneNumber: string | null) {
-    return this.prisma.whatsAppConnection.update({
-      where: { id },
-      data: {
-        status: WhatsAppConnectionStatus.CONNECTED,
-        phoneNumber,
-        connectedAt: new Date(),
-        disconnectedAt: null,
-        lastQr: null,
-      },
+  findByPhoneNumber(tenantId: string, phoneNumber: string) {
+    return this.prisma.whatsAppConnection.findFirst({
+      where: { tenantId, phoneNumber },
+      select: { id: true, key: true, name: true, status: true },
     });
+  }
+
+  async markConnected(
+    id: string,
+    phoneNumber: string | null,
+  ): Promise<{ numberConflict: boolean }> {
+    const base = {
+      status: WhatsAppConnectionStatus.CONNECTED,
+      connectedAt: new Date(),
+      disconnectedAt: null,
+      lastQr: null,
+    };
+
+    try {
+      await this.prisma.whatsAppConnection.update({
+        where: { id },
+        data: { ...base, phoneNumber },
+      });
+      return { numberConflict: false };
+    } catch (err) {
+      if (
+        phoneNumber &&
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2002'
+      ) {
+        this.logger.error(
+          `El número ${phoneNumber} ya está registrado en otra conexión del mismo tenant; ` +
+            `la conexión ${id} queda conectada sin guardar el número. ` +
+            `Fusiónala con POST whatsapp/connections/:keepId/adopt/:retireId.`,
+        );
+        await this.prisma.whatsAppConnection.update({
+          where: { id },
+          data: base,
+        });
+        return { numberConflict: true };
+      }
+      throw err;
+    }
   }
 
   private async updateStatusForTenant(

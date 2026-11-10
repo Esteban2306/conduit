@@ -402,7 +402,7 @@ export class MessageOrchestrator {
 
       if (
         payload.options?.category === 'MARKETING' &&
-        (await this.contacts.isOptedOut(payload.connectionId, address))
+        (await this.contacts.isOptedOutForTenant(tenantId, address))
       ) {
         throw new BadRequestException(
           `El contacto ${address} pidió no recibir más mensajes: no se envían mensajes de marketing.`,
@@ -445,6 +445,7 @@ export class MessageOrchestrator {
           channel: payload.recipient.channel,
           recipient: payload.recipient.address,
           connectionId: payload.connectionId ?? null,
+          category: payload.options?.category ?? null,
           templateId: payload.template.id ?? null,
           variables: (payload.variables ?? {}) as Prisma.InputJsonValue,
           meta: payload.meta

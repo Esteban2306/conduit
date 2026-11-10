@@ -1,4 +1,16 @@
-import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
+import { LegacyImageUsageService } from '../ai/LegacyImageUsage.service';
+import {
+  IMAGE_NOT_ANALYZED,
+  IMAGE_WARNING_KEY,
+  ImageNotAnalyzedReason,
+} from '../conversation/image-warning';
+import {
+  forwardRef,
+  Inject,
+  Injectable,
+  Logger,
+  Optional,
+} from '@nestjs/common';
 import { BotConfigService } from '../config/BotConfigService';
 import { ConversationService } from '../conversation/ConversationService';
 import { downloadMediaMessage, WAMessage } from '@whiskeysockets/baileys';
@@ -6,7 +18,28 @@ import { BotStatus, ReasoningMode } from '@prisma/client';
 import { EventBusService } from 'src/infra/events/event.service';
 import { EVENT_TYPES } from 'src/infra/events/constants/event.types';
 import { AiOrchestrator } from '../ai/AiOrchestrator';
-import { ImageAnalysisService } from '../ai/ImageAnalysisService';
+import {
+  ImageAnalysisResult,
+  ImageAnalysisService,
+} from '../ai/ImageAnalysisService';
+import {
+  PreparedImage,
+  SpecialistRunOutcome,
+  SpecialistRuntime,
+  prepareImage,
+} from '../specialists/SpecialistRuntime';
+import { MAX_TIMEOUT_MS } from '../specialists/contracts';
+import {
+  IMAGE_ANALYSIS_CAPABILITY,
+  SPECIALIST_BLOCK_TEXT,
+} from '../specialists/constants';
+import {
+  FACTS_KEY,
+  buildFact,
+  markConsumed,
+  mergeFacts,
+} from '../specialists/facts';
+import { ConversationContext } from '../conversation/interfaces/ConversationContext';
 import { BaileysSessionManager } from 'src/channels/whatsapp/baileys/BaileysSessionManager';
 import { messageReceiptTracker } from 'src/channels/whatsapp/baileys/MessageReceiptTracker';
 import { MessageDebouncer } from './MessageDebouncer';
@@ -21,6 +54,7 @@ import {
   AttachedImage,
 } from '../tools/ToolExecutor.service';
 import { HandoffService } from '../handoff/Handoff.service';
+import { SystemPauseService } from '../pause/SystemPause.service';
 import { FAILURE_STREAKS_KEY } from '../handoff/handoff-defaults';
 import { promisesHumanContact } from '../handoff/handoff-promise';
 import { TurnBudget } from '../ai/turn-budget';
@@ -33,6 +67,7 @@ import {
 import { IntentHandler } from '../intent/IntentHandler';
 import { isTaskDone } from '../intent/intent-turn';
 import { AiOutageDigestService } from '../tools/AiOutageDigest.service';
+import { ImagePrefetchService } from './ImagePrefetch.service';
 import { BotEscalationService } from '../tools/BotEscalation.service';
 import { ConversationSummarizer } from '../conversation/ConversationSummarizer';
 import { isIgnorableAcknowledgement } from './acknowledgement';
@@ -76,6 +111,28 @@ export interface IncomingMessageDto {
   imageUrl?: string;
 }
 
+type CapabilityOutcome = Extract<SpecialistRunOutcome, { executed: true }> & {
+  capability: string;
+};
+
+export type ImageBundle =
+  | { kind: 'LEGACY'; result: ImageAnalysisResult }
+  | { kind: 'ACTIVE'; outcomes: CapabilityOutcome[] }
+  | { kind: 'UNANALYZED' }
+  | { kind: 'SKIPPED' };
+
+interface ImageJob {
+  botConfigId: string;
+  systemPrompt: string;
+  conversationId: string;
+  tenantId: string;
+  phoneNumber: string;
+}
+
+type ImageApplication =
+  | { kind: 'REPLY'; text: string }
+  | { kind: 'CONTINUE'; prefix: string | null; imageVerified?: boolean };
+
 @Injectable()
 export class BotRouter {
   private readonly logger = new Logger(BotRouter.name);
@@ -113,6 +170,10 @@ export class BotRouter {
     private readonly aiOutageDigest: AiOutageDigestService,
     private readonly intentHandler: IntentHandler,
     private readonly handoffService: HandoffService,
+    private readonly systemPause: SystemPauseService,
+    private readonly specialistRuntime: SpecialistRuntime,
+    private readonly imagePrefetch: ImagePrefetchService<ImageBundle>,
+    @Optional() private readonly legacyUsage?: LegacyImageUsageService,
   ) {}
 
   async route(
@@ -168,35 +229,17 @@ export class BotRouter {
       return;
     }
 
-    if (botConfig.status !== BotStatus.ACTIVE) {
-      const activeBot =
-        await this.botConfigService.findActiveForTenant(tenantId);
-
-      if (!activeBot) {
-        this.logger.warn(
-          `Tenant ${tenantId} no tiene ningún bot registrado como ACTIVE. ` +
-            `El bot vinculado a esta conexión ("${botConfig.name}", ${botConfig.id}) ` +
-            `está en estado ${botConfig.status}. Actívalo desde el panel para que ` +
-            `responda a los mensajes. Mensaje de ${phoneNumber} ignorado.`,
-        );
-      } else if (activeBot.id === botConfig.id) {
-        this.logger.warn(
-          `Estado inconsistente detectado para el bot ${botConfig.id}: se ` +
-            `reporta como activo en otra consulta pero como "${botConfig.status}" aquí. ` +
-            `Posible condición de carrera — reintenta el mensaje.`,
-        );
-      } else {
-        this.logger.warn(
-          `El bot vinculado a esta conexión ("${botConfig.name}", ${botConfig.id}) ` +
-            `está en estado ${botConfig.status}, no ACTIVE. Este tenant SÍ tiene un ` +
-            `bot activo — "${activeBot.name}" (${activeBot.id}) — pero no está ` +
-            `vinculado a esta conexión (${connectionId}). Verifica ` +
-            `WhatsAppConnection.botConfigId o activa "${botConfig.name}" si es el ` +
-            `bot correcto para esta conexión. Mensaje de ${phoneNumber} ignorado.`,
-        );
-      }
-      return;
+    const botInactive = botConfig.status !== BotStatus.ACTIVE;
+    if (botInactive) {
+      this.logger.warn(
+        `El bot "${botConfig.name}" (${botConfig.id}) de la conexión ${connectionId} ` +
+          `está en estado ${botConfig.status}, no ACTIVE: el mensaje de ${phoneNumber} ` +
+          `se guarda sin respuesta automática. Actívalo desde el panel para que responda.`,
+      );
     }
+
+    const paused = await this.systemPause.isPaused(tenantId);
+    const silent = botInactive || paused;
 
     const messageTimestap = Number(message.messageTimestamp ?? 0) * 1000;
     const messageAgeMs = Date.now() - messageTimestap;
@@ -207,14 +250,14 @@ export class BotRouter {
         `Mensage de ${phoneNumber} igonrado: anguedad ${Math.round(messageAgeMs / 60000)} min > limite ${botConfig.maxMessageAgeMinutes} min`,
       );
 
-      await this.markAsRead(message, connectionId);
+      if (!silent) await this.markAsRead(message, connectionId);
       return;
     }
 
     const { text, hasImage } = this.extractContent(message);
 
     if (!text && !hasImage) {
-      await this.markAsRead(message, connectionId);
+      if (!silent) await this.markAsRead(message, connectionId);
       return;
     }
 
@@ -246,12 +289,19 @@ export class BotRouter {
       connectionId,
       {
         waMessageId: messageId,
-        processedBy: ignorable ? IGNORED_INBOUND : undefined,
+        processedBy: ignorable || silent ? IGNORED_INBOUND : undefined,
       },
     );
     if (!saved.created) {
       this.logger.debug(
         `Mensaje ${messageId} ya guardado; se ignora el duplicado.`,
+      );
+      return;
+    }
+
+    if (silent) {
+      this.logger.debug(
+        `${paused ? 'Sistema en pausa' : 'Bot apagado'}: mensaje de ${phoneNumber} guardado sin respuesta automática.`,
       );
       return;
     }
@@ -264,7 +314,36 @@ export class BotRouter {
       return;
     }
 
-    if (hasImage) this.retainedImages.keep(conversation.id, message);
+    if (hasImage) {
+      this.retainedImages.keep(conversation.id, message);
+      const routing = botConfig as {
+        id: string;
+        systemPrompt: string;
+        imageAnalysisEnabled?: boolean | null;
+        botResponseDelaySeconds?: number | null;
+        humanTakeoverMinutes?: number | null;
+      };
+      if (
+        routing.imageAnalysisEnabled &&
+        !this.conversationService.isBotPaused(
+          conversation.context as ConversationContext,
+        )
+      ) {
+        this.imagePrefetch.schedule(conversation.id, messageId, async () => {
+          if (!(await this.teamIsAway(routing, sessionKey, phoneNumber))) {
+            return { kind: 'SKIPPED' };
+          }
+          return this.buildImageBundle({
+            message,
+            botConfigId: routing.id,
+            systemPrompt: routing.systemPrompt,
+            conversationId: conversation.id,
+            tenantId,
+            phoneNumber,
+          });
+        });
+      }
+    }
 
     const turn: TurnContext = {
       tenantId,
@@ -373,6 +452,13 @@ export class BotRouter {
   private async respond(turn: TurnContext): Promise<void> {
     const id = turn.conversationId;
 
+    if (await this.systemPause.isPaused(turn.tenantId)) {
+      this.logger.debug(
+        `Sistema en pausa: no se responde la conversación ${id}.`,
+      );
+      return;
+    }
+
     if (this.processingConversations.has(id)) {
       this.rerunRequested.add(id);
       this.logger.debug(
@@ -430,6 +516,34 @@ export class BotRouter {
     );
   }
 
+  private ownerWindowMs(botConfig: {
+    botResponseDelaySeconds?: number | null;
+  }): number {
+    return ((botConfig.botResponseDelaySeconds ?? 15) + 5) * 1000;
+  }
+
+  private async teamIsAway(
+    botConfig: {
+      id: string;
+      botResponseDelaySeconds?: number | null;
+      humanTakeoverMinutes?: number | null;
+    },
+    sessionKey: string,
+    phoneNumber: string,
+  ): Promise<boolean> {
+    if (
+      this.receiptTracker.msSinceActive(sessionKey) <
+      this.ownerWindowMs(botConfig)
+    ) {
+      return false;
+    }
+    return !(await this.isHumanActive(
+      botConfig.id,
+      phoneNumber,
+      botConfig.humanTakeoverMinutes ?? 10,
+    ));
+  }
+
   private scheduleRetry(turn: TurnContext, delayMs: number): void {
     if (this.debouncer.hasPending(turn.sessionKey)) return;
     this.debouncer.schedule(turn.sessionKey, delayMs, () => this.respond(turn));
@@ -439,8 +553,7 @@ export class BotRouter {
     const { tenantId, sessionKey, phoneNumber, botConfig, connectionId } = turn;
     const conversationId = turn.conversationId;
 
-    const ownerWindowMs =
-      ((botConfig.botResponseDelaySeconds ?? 15) + 5) * 1000;
+    const ownerWindowMs = this.ownerWindowMs(botConfig);
     const sinceOwner = this.receiptTracker.msSinceActive(sessionKey);
     if (sinceOwner < ownerWindowMs) {
       this.logger.log(
@@ -571,44 +684,28 @@ export class BotRouter {
     let imageVerified: boolean | undefined;
 
     if (hasImage && imageMessage && botConfig.imageAnalysisEnabled) {
-      const analysisResult = await this.imageAnalysisService.analyzeFromMessage(
-        imageMessage,
-        botConfig.id,
-        botConfig.systemPrompt,
-      );
-
-      if (analysisResult.status === 'SUCCESS') {
-        imageVerified = analysisResult.valid;
-
-        await this.conversationService.updateContext(conversationId, {
-          contextPatch: {
-            imageVerified: analysisResult.valid,
-            lastImageDetails: analysisResult.details?.slice(0, 100),
-          },
-        });
-
-        const imageCtx = `[imagen: válida=${analysisResult.valid}, confianza=${analysisResult.confidence}${analysisResult.details ? `, ${analysisResult.details.slice(0, 80)}` : ''}]`;
-        userMessageForAI = combinedText
-          ? `${imageCtx}\n${combinedText}`
-          : imageCtx;
-      } else if (analysisResult.status === 'PROVIDER_UNAVAILABLE') {
-        this.logger.warn(
-          `Análisis de imagen no disponible para ${phoneNumber}. Respondiendo con mensaje de espera.`,
-        );
-
-        await this.sendReply(
-          turn,
-          'No pude analizar tu imagen en este momento por alta demanda. Por favor intenta enviarla de nuevo en unos minutos. 🙏',
-          0,
-        );
+      const routing = botConfig as { id: string; systemPrompt: string };
+      const bundle = await this.resolveImageBundle(imageMessage, {
+        botConfigId: routing.id,
+        systemPrompt: routing.systemPrompt,
+        conversationId,
+        tenantId,
+        phoneNumber,
+      });
+      const applied = await this.applyImageBundle(bundle, {
+        conversationId,
+        phoneNumber,
+        aiData,
+      });
+      if (applied.kind === 'REPLY') {
+        await this.sendReply(turn, applied.text, 0);
         return;
-      } else {
-        this.logger.warn(
-          `Error de análisis para ${phoneNumber}. Continuando sin contexto de imagen.`,
-        );
+      }
+      imageVerified = applied.imageVerified;
+      if (applied.prefix) {
         userMessageForAI = combinedText
-          ? `[imagen recibida, no analizada]\n${combinedText}`
-          : '[imagen recibida, no analizada]';
+          ? `${applied.prefix}\n${combinedText}`
+          : applied.prefix;
       }
     }
 
@@ -709,11 +806,11 @@ export class BotRouter {
             }
 
             try {
-              const buffer = (await downloadMediaMessage(
+              const buffer = await downloadMediaMessage(
                 imageMessage,
                 'buffer',
                 {},
-              )) as Buffer;
+              );
 
               attachedImage = {
                 dataUri: `data:image/jpeg;base64,${buffer.toString('base64')}`,
@@ -759,6 +856,13 @@ export class BotRouter {
 
           if (resolved.requiresImageAttachment && outcome.status === 'SUCCESS')
             imageConsumed = true;
+          if (resolved.verificationCapability && outcome.status === 'SUCCESS') {
+            await this.markFactConsumed(
+              conversationId,
+              resolved.verificationCapability,
+              aiData,
+            );
+          }
           const limited = limitToolData(outcome.responseBody);
           toolTraces.push({
             name: req.name,
@@ -1027,7 +1131,10 @@ export class BotRouter {
         ],
       }),
     );
-    if (imageConsumed) this.retainedImages.consume(conversationId);
+    if (imageConsumed) {
+      this.retainedImages.consume(conversationId);
+      this.imagePrefetch.discard(conversationId);
+    }
     if (slim) {
       await this.intentHandler.afterSlimTurn(
         conversationId,
@@ -1174,6 +1281,372 @@ export class BotRouter {
     }
     this.replyMetrics.increment('truncatedCut');
     return { ...result, content: cutAtSentence(result.content) };
+  }
+
+  private async markFactConsumed(
+    conversationId: string,
+    capability: string,
+    aiData: { context: ConversationContext },
+  ): Promise<void> {
+    const facts = markConsumed(aiData.context[FACTS_KEY], capability);
+    if (!facts) return;
+    aiData.context = { ...aiData.context, [FACTS_KEY]: facts };
+    try {
+      await this.conversationService.updateContext(conversationId, {
+        contextPatch: { [FACTS_KEY]: facts },
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        `No se pudo marcar la verificación como utilizada: ${maskSecrets(error instanceof Error ? error.message : String(error))}`,
+      );
+    }
+  }
+
+  private async resolveImageBundle(
+    message: WAMessage,
+    job: ImageJob,
+  ): Promise<ImageBundle> {
+    const messageId = message.key.id;
+    if (messageId) {
+      const waitMs =
+        this.imagePrefetch.downloadTimeoutMs() + MAX_TIMEOUT_MS + 3000;
+      const taken = await this.imagePrefetch.take(
+        job.conversationId,
+        messageId,
+        waitMs,
+      );
+      if (taken.status === 'READY' && taken.value.kind !== 'SKIPPED') {
+        if (taken.waitedMs > 0) {
+          this.logger.debug(
+            `Análisis de imagen adelantado: se esperó ${taken.waitedMs} ms para completarlo.`,
+          );
+        }
+        return taken.value;
+      }
+      if (taken.status === 'TIMEOUT') {
+        this.logger.warn(
+          `El análisis adelantado de la imagen no terminó tras ${taken.waitedMs} ms: se sigue sin analizarla.`,
+        );
+        return { kind: 'UNANALYZED' };
+      }
+    }
+    return this.buildImageBundle({ ...job, message });
+  }
+
+  private async buildImageBundle(
+    job: ImageJob & { message: WAMessage },
+  ): Promise<ImageBundle> {
+    const { message } = job;
+    const bindings = await this.specialistRuntime.findBindings(
+      job.tenantId,
+      job.botConfigId,
+    );
+    const active = bindings.filter((binding) => binding.mode === 'ACTIVE');
+    const shadow = bindings.filter((binding) => binding.mode === 'SHADOW');
+
+    const legacyOnly = (): Promise<ImageBundle> => {
+      this.countLegacyImage(job);
+      return this.imageAnalysisService
+        .analyzeFromMessage(message, job.botConfigId, job.systemPrompt)
+        .then((result) => ({ kind: 'LEGACY' as const, result }));
+    };
+
+    if (bindings.length === 0) return legacyOnly();
+
+    let original: Buffer;
+    try {
+      original = await new TurnBudget(
+        this.imagePrefetch.downloadTimeoutMs(),
+      ).race(this.imageAnalysisService.downloadOriginal(message));
+    } catch {
+      return active.length > 0 ? { kind: 'UNANALYZED' } : legacyOnly();
+    }
+
+    const prepared = prepareImage(original);
+    prepared.catch(() => undefined);
+
+    if (active.length === 0) {
+      this.countLegacyImage(job);
+      const legacy = this.imageAnalysisService.analyzeBuffer(
+        original,
+        job.botConfigId,
+      );
+      this.launchShadows(job, shadow, original, prepared, legacy);
+      return { kind: 'LEGACY', result: await legacy };
+    }
+
+    this.launchShadows(job, shadow, original, prepared);
+
+    const settled = await Promise.all(
+      active.map(async (binding) => {
+        try {
+          const outcome = await this.specialistRuntime.run({
+            tenantId: job.tenantId,
+            botConfigId: job.botConfigId,
+            conversationId: job.conversationId,
+            capability: binding.capability,
+            image: original,
+            prepared,
+            contactAddress: job.phoneNumber,
+          });
+          return { capability: binding.capability, outcome, failed: false };
+        } catch (error: unknown) {
+          this.logger.warn(
+            `La verificación con especialista (${binding.capability}) falló: ${maskSecrets(error instanceof Error ? error.message : String(error))}`,
+          );
+          return {
+            capability: binding.capability,
+            outcome: null,
+            failed: true,
+          };
+        }
+      }),
+    );
+
+    const outcomes: CapabilityOutcome[] = [];
+    for (const entry of settled) {
+      if (entry.outcome?.executed) {
+        outcomes.push({ ...entry.outcome, capability: entry.capability });
+      }
+    }
+    for (const outcome of outcomes) this.alertPendingReview(job, outcome);
+
+    if (outcomes.length > 0) return { kind: 'ACTIVE', outcomes };
+    if (settled.some((entry) => entry.failed)) return { kind: 'UNANALYZED' };
+
+    return {
+      kind: 'LEGACY',
+      result: await this.imageAnalysisService.analyzeBuffer(
+        original,
+        job.botConfigId,
+      ),
+    };
+  }
+
+  private alertPendingReview(job: ImageJob, outcome: CapabilityOutcome): void {
+    const { result } = outcome;
+    if (
+      outcome.mode !== 'ACTIVE' ||
+      (result.verdict !== 'NEEDS_REVIEW' && result.verdict !== 'ERROR')
+    ) {
+      return;
+    }
+    try {
+      void this.botEscalation
+        .notifyVerificationReview({
+          tenantId: job.tenantId,
+          botConfigId: job.botConfigId,
+          conversationId: job.conversationId,
+          contactAddress: job.phoneNumber,
+          verdict: result.verdict,
+          reasonCodes: result.reasonCodes,
+          recordId: outcome.recordId,
+        })
+        .catch(() => undefined);
+    } catch {
+      this.logger.warn(
+        'No se pudo avisar de una imagen pendiente de revisión.',
+      );
+    }
+  }
+
+  private launchShadows(
+    job: ImageJob,
+    shadows: Array<{ capability: string }>,
+    image: Buffer,
+    prepared: Promise<PreparedImage>,
+    legacyResult?: Promise<ImageAnalysisResult>,
+  ): void {
+    const verdict = legacyResult?.then(
+      (result) =>
+        result.status === 'SUCCESS'
+          ? { valid: result.valid, confidence: result.confidence }
+          : undefined,
+      () => undefined,
+    );
+    for (const binding of shadows) {
+      void this.specialistRuntime
+        .run({
+          tenantId: job.tenantId,
+          botConfigId: job.botConfigId,
+          conversationId: job.conversationId,
+          capability: binding.capability,
+          image,
+          prepared,
+          contactAddress: job.phoneNumber,
+          ...(binding.capability === IMAGE_ANALYSIS_CAPABILITY && verdict
+            ? { legacy: verdict }
+            : {}),
+        })
+        .catch((error: unknown) => {
+          this.logger.warn(
+            `Especialista en SHADOW falló sin afectar la respuesta: ${maskSecrets(error instanceof Error ? error.message : String(error))}`,
+          );
+        });
+    }
+  }
+
+  /** El conteo nunca puede afectar al turno. */
+  private countLegacyImage(job: ImageJob): void {
+    try {
+      this.legacyUsage?.record(job.tenantId, job.botConfigId);
+    } catch (error: unknown) {
+      this.logger.warn(
+        `No se pudo contar el uso del camino antiguo: ${maskSecrets(error instanceof Error ? error.message : String(error))}`,
+      );
+    }
+  }
+
+  private warningOf(reason: ImageNotAnalyzedReason) {
+    return { code: IMAGE_NOT_ANALYZED, reason, at: new Date().toISOString() };
+  }
+
+  /** Limpia la advertencia solo si había una, para no escribir de más. */
+  private clearedWarning(ctx: {
+    aiData: { context: ConversationContext };
+  }): Record<string, null> {
+    return ctx.aiData.context[IMAGE_WARNING_KEY]
+      ? { [IMAGE_WARNING_KEY]: null }
+      : {};
+  }
+
+  private async setImageWarning(
+    ctx: { conversationId: string },
+    warning: { reason: ImageNotAnalyzedReason },
+  ): Promise<void> {
+    try {
+      await this.conversationService.updateContext(ctx.conversationId, {
+        contextPatch: {
+          [IMAGE_WARNING_KEY]: this.warningOf(warning.reason),
+        },
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        `No se pudo guardar la advertencia de imagen sin analizar: ${maskSecrets(error instanceof Error ? error.message : String(error))}`,
+      );
+    }
+  }
+
+  private async applyImageBundle(
+    bundle: ImageBundle,
+    ctx: {
+      conversationId: string;
+      phoneNumber: string;
+      aiData: { context: ConversationContext };
+    },
+  ): Promise<ImageApplication> {
+    const unanalyzed: ImageApplication = {
+      kind: 'CONTINUE',
+      prefix: '[imagen recibida, no analizada]',
+    };
+    // Un fallo del análisis nunca corta el turno: la conversación sigue, la
+    // imagen llega al panel como siempre y la conversación queda marcada con
+    // una advertencia que el panel muestra.
+    const notAnalyzed = async (
+      reason: ImageNotAnalyzedReason,
+    ): Promise<ImageApplication> => {
+      await this.setImageWarning(ctx, { reason });
+      return unanalyzed;
+    };
+
+    if (bundle.kind === 'UNANALYZED' || bundle.kind === 'SKIPPED') {
+      return notAnalyzed('NOT_RUN');
+    }
+
+    if (bundle.kind === 'LEGACY') {
+      const analysis = bundle.result;
+      if (analysis.status === 'SUCCESS') {
+        await this.conversationService.updateContext(ctx.conversationId, {
+          contextPatch: {
+            imageVerified: analysis.valid,
+            lastImageDetails: analysis.details?.slice(0, 100),
+            ...this.clearedWarning(ctx),
+          },
+        });
+        return {
+          kind: 'CONTINUE',
+          imageVerified: analysis.valid,
+          prefix: `[imagen: válida=${analysis.valid}, confianza=${analysis.confidence}${analysis.details ? `, ${analysis.details.slice(0, 80)}` : ''}]`,
+        };
+      }
+      this.logger.warn(
+        `Análisis de imagen no disponible (${analysis.status}) para ${ctx.phoneNumber}. Continuando sin contexto de imagen.`,
+      );
+      return notAnalyzed(
+        analysis.status === 'PROVIDER_UNAVAILABLE'
+          ? 'PROVIDER_UNAVAILABLE'
+          : 'ANALYSIS_ERROR',
+      );
+    }
+
+    let facts: unknown = ctx.aiData.context[FACTS_KEY];
+    for (const outcome of bundle.outcomes) {
+      facts = mergeFacts(
+        facts,
+        outcome.capability,
+        buildFact(
+          outcome.result,
+          outcome.recordId,
+          new Date(outcome.validUntil),
+          outcome.exposedVariables,
+        ),
+      );
+    }
+    ctx.aiData.context = { ...ctx.aiData.context, [FACTS_KEY]: facts };
+
+    const verdicts = bundle.outcomes.map((outcome) => outcome.result.verdict);
+    const imageVerified = verdicts.includes('INVALID')
+      ? false
+      : verdicts.every((verdict) => verdict === 'VALID')
+        ? true
+        : undefined;
+    const hasError = verdicts.includes('ERROR');
+    const details = bundle.outcomes
+      .map((outcome) => outcome.result.humanSummary)
+      .join(' | ')
+      .slice(0, 100);
+
+    try {
+      await this.conversationService.updateContext(ctx.conversationId, {
+        contextPatch: {
+          [FACTS_KEY]: facts,
+          ...(imageVerified !== undefined && { imageVerified }),
+          lastImageDetails: details,
+          ...(hasError
+            ? { imageAnalysisWarning: this.warningOf('SPECIALIST_ERROR') }
+            : this.clearedWarning(ctx)),
+        },
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        `No se pudo guardar el resultado de la verificación en la conversación: ${maskSecrets(error instanceof Error ? error.message : String(error))}`,
+      );
+    }
+
+    const blocking = bundle.outcomes.find(
+      (outcome) =>
+        outcome.result.verdict === 'ERROR' && outcome.onFailure === 'BLOCK',
+    );
+    if (blocking) {
+      this.logger.warn(
+        `Verificación no disponible para ${ctx.phoneNumber} y el vínculo exige bloquear: se responde el texto de espera.`,
+      );
+      return {
+        kind: 'REPLY',
+        text: blocking.blockMessage ?? SPECIALIST_BLOCK_TEXT,
+      };
+    }
+
+    const single = bundle.outcomes.length === 1;
+    const lines = bundle.outcomes.map((outcome) => {
+      const codes =
+        outcome.result.reasonCodes.length > 0
+          ? `, ${outcome.result.reasonCodes.join(',')}`
+          : '';
+      const label = single ? '' : ` · ${outcome.capability}`;
+      return `[imagen verificada por el sistema${label}: ${outcome.result.verdict}${codes}]`;
+    });
+    return { kind: 'CONTINUE', imageVerified, prefix: lines.join('\n') };
   }
 
   private async sendReply(

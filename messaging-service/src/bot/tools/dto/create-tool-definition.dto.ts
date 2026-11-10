@@ -1,4 +1,7 @@
 import {
+  ArrayNotEmpty,
+  ArrayUnique,
+  IsArray,
   IsBoolean,
   IsIn,
   IsInt,
@@ -9,8 +12,14 @@ import {
   IsUrl,
   Matches,
   Max,
+  MaxLength,
   Min,
 } from 'class-validator';
+import { ACCEPTABLE_TOOL_VERDICTS } from '../../specialists/constants';
+import {
+  STABLE_KEY_MAX_LENGTH,
+  STABLE_KEY_PATTERN,
+} from 'src/shared/stable-key';
 
 export class CreateToolDefinitionDto {
   @IsString()
@@ -75,4 +84,50 @@ export class CreateToolDefinitionDto {
   @Min(1)
   @Max(7 * 24 * 60)
   pausesBotMinutes?: number;
+
+  /**
+   * Capacidad de verificación que debe aprobar el comprobante adjunto antes
+   * de ejecutar la herramienta. Sin un veredicto aceptado, vigente y sin
+   * usar para esa misma imagen, la herramienta se rechaza.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(STABLE_KEY_MAX_LENGTH)
+  @Matches(STABLE_KEY_PATTERN)
+  verificationCapability?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayNotEmpty()
+  @ArrayUnique()
+  @IsIn([...ACCEPTABLE_TOOL_VERDICTS], { each: true })
+  acceptedVerdicts?: string[];
+
+  /**
+   * Campo del cuerpo donde Conduit coloca el pasaporte firmado, además de
+   * las cabeceras. El modelo no ve ese campo.
+   */
+  @IsOptional()
+  @IsString()
+  @Matches(/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/)
+  verificationParamName?: string;
+
+  /**
+   * Ruta del parámetro -> variable verificada de la capacidad de la
+   * herramienta. Conduit escribe el valor desde el registro verificado y
+   * el modelo no ve esos campos.
+   */
+  @IsOptional()
+  @IsObject()
+  verifiedParams?: Record<string, string>;
+
+  /**
+   * Qué hacer si el análisis falló por motivos técnicos. `REFUSE` (por
+   * defecto) rechaza; `PROCEED_UNVERIFIED` ejecuta sin pasaporte y lo avisa
+   * al backend con una cabecera. Un INVALID o un resultado dudoso real nunca
+   * se salta la puerta.
+   */
+  @IsOptional()
+  @IsIn(['REFUSE', 'PROCEED_UNVERIFIED'])
+  onTechnicalFailure?: 'REFUSE' | 'PROCEED_UNVERIFIED';
 }

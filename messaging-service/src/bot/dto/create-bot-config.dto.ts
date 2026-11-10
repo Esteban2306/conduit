@@ -6,13 +6,33 @@ import {
   IsOptional,
   Min,
   Max,
+  Matches,
+  MaxLength,
+  MinLength,
 } from 'class-validator';
+import {
+  STABLE_KEY_MAX_LENGTH,
+  STABLE_KEY_MESSAGE,
+  STABLE_KEY_PATTERN,
+} from 'src/shared/stable-key';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class CreateBotConfigDto {
   @ApiProperty({ example: 'Bot Beauty Studio Ana' })
   @IsString()
   name: string;
+
+  @ApiPropertyOptional({
+    example: 'bot-reservas',
+    description:
+      'Clave estable única por tenant. Si no se envía, se genera a partir del nombre.',
+  })
+  @IsOptional()
+  @IsString()
+  @MinLength(2)
+  @MaxLength(STABLE_KEY_MAX_LENGTH)
+  @Matches(STABLE_KEY_PATTERN, { message: STABLE_KEY_MESSAGE })
+  key?: string;
 
   @ApiProperty({
     example: 'Eres Sofia, asistente virtual de Beauty Studio...',

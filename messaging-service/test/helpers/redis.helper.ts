@@ -1,42 +1,32 @@
-import { Queue, Worker, QueueEvents } from 'bullmq';
+import { Queue, QueueEvents } from 'bullmq';
 
-export const TEST_REDIS = {
-  host: 'localhost',
-  port: 6380,
-};
+export interface RedisConnection {
+  host: string;
+  port: number;
+  password?: string;
+}
 
-export async function clearQueue(queueName: string): Promise<void> {
-  const queue = new Queue(queueName, { connection: TEST_REDIS });
+export async function clearQueue(
+  queueName: string,
+  connection: RedisConnection,
+): Promise<void> {
+  const queue = new Queue(queueName, { connection });
   await queue.obliterate({ force: true });
   await queue.close();
 }
 
-export function waitForJob(
-  queueName: string,
+export async function finished(
+  events: QueueEvents,
+  queue: Queue,
+  jobId: string,
   timeoutMs = 10000,
-): Promise<{
-  jobId: string;
-  success: boolean;
-  data?: unknown;
-  error?: string;
-}> {
-  return new Promise((res, rej) => {
-    const events = new QueueEvents(queueName, { connection: TEST_REDIS });
-    const timeout = setTimeout(() => {
-      events.close();
-      rej(new Error(`Timeout waiting job on queue ${queueName}`));
-    }, timeoutMs);
-
-    events.on('completed', ({ jobId, returnvalue }) => {
-      clearTimeout(timeout);
-      events.close();
-      res({ jobId, success: true, data: returnvalue });
-    });
-
-    events.on('failed', ({ jobId, failedReason }) => {
-      clearTimeout(timeout);
-      events.close();
-      res({ jobId, success: false, error: failedReason });
-    });
-  });
+): Promise<{ success: boolean; error?: string }> {
+  const job = await queue.getJob(jobId);
+  if (!job) throw new Error(`El job ${jobId} no existe en la cola`);
+  try {
+    await job.waitUntilFinished(events, timeoutMs);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: (error as Error).message };
+  }
 }

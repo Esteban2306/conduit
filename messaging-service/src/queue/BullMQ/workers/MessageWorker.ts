@@ -24,11 +24,12 @@ export class MessageWorker implements OnModuleInit, OnModuleDestroy {
   onModuleInit() {
     this.worker = new Worker<SignedJobPayload>(
       QUEUE_NAMES.MESSAGES,
-      (job) => this.processor.process(job),
+      (job, token) => this.processor.process(job, token),
       {
         connection: {
           host: this.config.get<string>('redis.host'),
           port: this.config.get<number>('redis.port'),
+          password: this.config.get<string>('redis.password'),
         },
         concurrency: 5,
       },

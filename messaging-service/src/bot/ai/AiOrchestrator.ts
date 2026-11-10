@@ -5,7 +5,11 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { AiModelConfig, AiModelRole } from '@prisma/client';
-import { AiModelSelectorService } from './AiModelSelectorService';
+import {
+  AiModelOwner,
+  AiModelSelectorService,
+  ownerOf,
+} from './AiModelSelectorService';
 import { AiProviderFactory } from './AiProviderFactory';
 import { ConversationContext } from '../conversation/interfaces/ConversationContext';
 import { GenerateTextResult } from './interface/AiProvider';
@@ -13,6 +17,7 @@ import {
   AnalyzeImageInput,
   GenerateResponseInput,
   OrchestratorResult,
+  SpecialistImageInput,
 } from './interface/AiOrchestator.types';
 import { AiProviderType } from './interface/AiProviderType';
 import { resolveModel } from '../helper/model-resolver';
@@ -147,8 +152,22 @@ export class AiOrchestrator {
   }
 
   async analyzeImage(input: AnalyzeImageInput): Promise<OrchestratorResult> {
+    return this.runImageAnalysis(input.botConfigId, input);
+  }
+
+  async analyzeImageForSpecialist(
+    specialistId: string,
+    input: SpecialistImageInput,
+  ): Promise<OrchestratorResult> {
+    return this.runImageAnalysis({ specialistId }, input);
+  }
+
+  private async runImageAnalysis(
+    owner: AiModelOwner,
+    input: SpecialistImageInput,
+  ): Promise<OrchestratorResult> {
     const modelConfig = await this.selector.selectModel(
-      input.botConfigId,
+      owner,
       AiModelRole.IMAGE_ANALYSIS,
     );
 
@@ -160,7 +179,7 @@ export class AiOrchestrator {
 
     return this.executeWithFallback(
       modelConfig,
-      input.botConfigId,
+      owner,
       AiModelRole.IMAGE_ANALYSIS,
       new TurnBudget(),
       async (config) => {
@@ -170,14 +189,14 @@ export class AiOrchestrator {
 
         const result = await provider.analyzeImage({
           prompt: input.prompt,
-          botConfigId: input.botConfigId,
           systemPrompt: input.systemPrompt,
           imageBuffer: input.imageBuffer,
           mimeType: input.mimeType,
           model: config.model,
           apiKey: await this.selector.resolveApiKey(config),
           baseUrl: config.baseUrl ?? undefined,
-          maxTokens: 1024,
+          maxTokens: input.maxTokens ?? 1024,
+          effort: input.effort,
         });
 
         return { result, config };
@@ -213,14 +232,14 @@ export class AiOrchestrator {
       return { ok: true };
     } catch (error: unknown) {
       const classified = this.errorClassifier.classify(error);
-      await this.registerFailure(config, config.botConfigId, classified);
+      await this.registerFailure(config, ownerOf(config), classified);
       return { ok: false, error: classified };
     }
   }
 
   private async executeWithFallback(
     initialModel: AiModelConfig,
-    botConfigId: string,
+    owner: AiModelOwner,
     role: AiModelRole,
     budget: TurnBudget,
     execute: (
@@ -303,7 +322,7 @@ export class AiOrchestrator {
             budget.remaining() >= MIN_RETRY_MS
           ) {
             prefetched = await this.selector.selectModel(
-              botConfigId,
+              owner,
               role,
               attempted,
             );
@@ -313,7 +332,7 @@ export class AiOrchestrator {
             }
           }
 
-          await this.registerFailure(currentModel, botConfigId, classified);
+          await this.registerFailure(currentModel, owner, classified);
           break;
         }
       }
@@ -321,8 +340,7 @@ export class AiOrchestrator {
       if (budget.expired()) break;
 
       const next =
-        prefetched ??
-        (await this.selector.selectModel(botConfigId, role, attempted));
+        prefetched ?? (await this.selector.selectModel(owner, role, attempted));
       if (!next || attempted.has(next.id)) break;
 
       this.logger.warn(
@@ -342,7 +360,7 @@ export class AiOrchestrator {
 
   private async registerFailure(
     model: AiModelConfig,
-    botConfigId: string,
+    owner: AiModelOwner,
     classified: ClassifiedAiError,
   ): Promise<void> {
     try {
@@ -352,11 +370,17 @@ export class AiOrchestrator {
           classified.type,
         );
         if (first) {
-          await this.escalation.notifyAiCredentialInvalid(
-            botConfigId,
-            `${model.provider}/${model.model}`,
-            maskSecrets(classified.message),
-          );
+          if (typeof owner === 'string') {
+            await this.escalation.notifyAiCredentialInvalid(
+              owner,
+              `${model.provider}/${model.model}`,
+              maskSecrets(classified.message),
+            );
+          } else {
+            this.logger.error(
+              `Credencial inválida en ${model.provider}/${model.model} del especialista ${owner.specialistId}`,
+            );
+          }
         }
         return;
       }

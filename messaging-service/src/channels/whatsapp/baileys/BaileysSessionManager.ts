@@ -40,6 +40,15 @@ import {
 } from '../utils/jid.util';
 import { chatKey } from '../utils/chat-key';
 
+export interface NumberConflict {
+  tenantId: string;
+  newConnectionId: string;
+  existing: { id: string; key: string | null; status: string };
+  phoneNumber: string;
+}
+
+export type NumberConflictHandler = (conflict: NumberConflict) => void;
+
 interface SocketState {
   botConfigId: string | null;
   tenantId: string;
@@ -98,6 +107,7 @@ export class BaileysSessionManager implements OnApplicationShutdown {
   private readonly FORBIDDEN_RECHECK_MS = 120_000;
 
   private readonly lastRiskReportAt = new Map<string, number>();
+  private numberConflictHandler?: NumberConflictHandler;
   private readonly RISK_REPORT_COOLDOWN_MS = 5 * 60 * 1000;
 
   constructor(
@@ -138,6 +148,10 @@ export class BaileysSessionManager implements OnApplicationShutdown {
 
   setBotRouter(router: BotRouter): void {
     this.botRouter = router;
+  }
+
+  setNumberConflictHandler(handler: NumberConflictHandler): void {
+    this.numberConflictHandler = handler;
   }
 
   async start(connectionId: string): Promise<void> {
@@ -488,7 +502,13 @@ export class BaileysSessionManager implements OnApplicationShutdown {
 
           const phoneNumber =
             socket.user?.id?.split('@')[0].split(':')[0] ?? null;
-          await this.connections.markConnected(connectionId, phoneNumber);
+          const { numberConflict } = await this.connections.markConnected(
+            connectionId,
+            phoneNumber,
+          );
+          if (numberConflict && phoneNumber) {
+            await this.reportNumberConflict(connectionId, state, phoneNumber);
+          }
           if (state.botConfigId) {
             void this.botRouter
               ?.recoverPending(connectionId, state.botConfigId, state.tenantId)
@@ -776,6 +796,39 @@ export class BaileysSessionManager implements OnApplicationShutdown {
       if (phone) return chatKey(connectionId, phoneToJid(phone));
     }
     return chatKey(connectionId, jid);
+  }
+
+  private async reportNumberConflict(
+    connectionId: string,
+    state: SocketState,
+    phoneNumber: string,
+  ): Promise<void> {
+    const other = await this.connections
+      .findByPhoneNumber(state.tenantId, phoneNumber)
+      .catch(() => null);
+    const otherLabel = other
+      ? `${other.id}${other.key ? ` (${other.key})` : ''}, estado ${other.status}`
+      : 'otra conexión del mismo tenant';
+    this.alertTeam(
+      connectionId,
+      state,
+      `el número ${phoneNumber} ya pertenece a ${otherLabel}; esta conexión quedó conectada sin guardar el número. ` +
+        `Fusiónala con POST whatsapp/connections/${other?.id ?? '<id-existente>'}/adopt/${connectionId} para conservar el id, bot y bajas de la línea original`,
+    );
+    if (other && this.numberConflictHandler) {
+      try {
+        this.numberConflictHandler({
+          tenantId: state.tenantId,
+          newConnectionId: connectionId,
+          existing: other,
+          phoneNumber,
+        });
+      } catch (error) {
+        this.logger.error(
+          `El manejador de conflicto de número falló: ${this.errorMessage(error)}`,
+        );
+      }
+    }
   }
 
   private alertTeam(

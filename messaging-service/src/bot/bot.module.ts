@@ -1,3 +1,4 @@
+import { WebhookModule } from 'src/webhooks/webhook.module';
 import { Module } from '@nestjs/common';
 import { BotConfigModule } from './config/BotConfig.module';
 import { AiModelSelectorService } from './ai/AiModelSelectorService';
@@ -17,8 +18,23 @@ import { BotRouter } from './router/BotRouter';
 import { ChannelsModule } from 'src/channels/channels.module';
 import { forwardRef } from '@nestjs/common';
 import { ImageAnalysisService } from './ai/ImageAnalysisService';
+import { LegacyImageUsageService } from './ai/LegacyImageUsage.service';
+import { LegacyImageUsageController } from './ai/LegacyImageUsage.controller';
+import { SpecialistRuntime } from './specialists/SpecialistRuntime';
+import { VerificationLedger } from './specialists/VerificationLedger';
+import { GroundingResolver } from './specialists/GroundingResolver';
+import { SpecialistAdminService } from './specialists/admin/SpecialistAdminService';
+import { SpecialistController } from './specialists/admin/Specialist.controller';
+import { SpecialistModelService } from './specialists/admin/SpecialistModelService';
+import { SpecialistModelController } from './specialists/admin/SpecialistModel.controller';
+import { SpecialistBindingService } from './specialists/admin/SpecialistBindingService';
+import { SpecialistBindingController } from './specialists/admin/SpecialistBinding.controller';
+import { SpecialistVerificationService } from './specialists/admin/SpecialistVerificationService';
+import { SpecialistMetricsService } from './specialists/admin/SpecialistMetricsService';
+import { SpecialistVerificationController } from './specialists/admin/SpecialistVerification.controller';
 import { MessageDebouncer } from './router/MessageDebouncer';
 import { ReplyMetricsService } from './router/reply-metrics.service';
+import { ImagePrefetchService } from './router/ImagePrefetch.service';
 import { OpenRouterProvider } from './ai/providers/OpenRouterProvider';
 import { PromptModule } from './prompt/Prompt.module';
 import { ToolDefinitionService } from './tools/ToolDefinitionService';
@@ -39,6 +55,8 @@ import { OrchestratorModule } from 'src/core/orchestrator/orchestrator.module';
 import { AiErrorClassifier } from './ai/AiErrorClassifier';
 import { ToolDefinitionController } from './tools/ToolDefinition.controller';
 import { ConversationAdminController } from './admin/ConversationAdmin.controller';
+import { SystemPauseController } from './pause/SystemPause.controller';
+import { SystemPauseService } from './pause/SystemPause.service';
 
 @Module({
   imports: [
@@ -48,14 +66,22 @@ import { ConversationAdminController } from './admin/ConversationAdmin.controlle
     SecurityModule,
     OrchestratorModule,
     WhatsAppContactModule,
+    WebhookModule,
   ],
   controllers: [
     AiModelController,
     ToolDefinitionController,
     ConversationAdminController,
     IntentController,
+    SystemPauseController,
+    SpecialistController,
+    SpecialistModelController,
+    SpecialistBindingController,
+    SpecialistVerificationController,
+    LegacyImageUsageController,
   ],
   providers: [
+    SystemPauseService,
     ConversationService,
     ConversationSummarizer,
     ProactiveMessageRecorder,
@@ -71,8 +97,18 @@ import { ConversationAdminController } from './admin/ConversationAdmin.controlle
     MistralProvider,
     CustomProvider,
     ImageAnalysisService,
+    LegacyImageUsageService,
+    SpecialistRuntime,
+    VerificationLedger,
+    GroundingResolver,
+    SpecialistAdminService,
+    SpecialistModelService,
+    SpecialistBindingService,
+    SpecialistVerificationService,
+    SpecialistMetricsService,
     MessageDebouncer,
     ReplyMetricsService,
+    ImagePrefetchService,
     ToolDefinitionService,
     ToolExecutorService,
     BotEscalationService,
@@ -92,6 +128,8 @@ import { ConversationAdminController } from './admin/ConversationAdmin.controlle
     BotRouter,
     AiOrchestrator,
     AiModelSelectorService,
+    SpecialistRuntime,
+    VerificationLedger,
     MessageDebouncer,
     ReplyMetricsService,
     IntentMetricsService,

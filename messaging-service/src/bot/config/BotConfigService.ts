@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   Logger,
   NotFoundException,
@@ -17,6 +18,7 @@ import {
 import { CreateAiModelDto } from '../dto/create-ai-model.dto';
 import { SecretEncryptionService } from 'src/shared/security/secret-encryption.service';
 import { AI_MODEL_PUBLIC_SELECT } from '../dto/ai-model-public';
+import { resolveUniqueKey, slugifyKey } from 'src/shared/stable-key';
 import { findUnknownToolReferences } from '../prompt/tool-references';
 
 @Injectable()
@@ -30,9 +32,11 @@ export class BotConfigService {
   ) {}
 
   async create(tenantId: string, dto: CreateBotConfigDto) {
+    const key = await this.resolveKey(tenantId, dto.key, dto.name);
     return this.prisma.botConfig.create({
       data: {
         tenantId,
+        key,
         name: dto.name,
         systemPrompt: dto.systemPrompt,
         imageAnalysisEnabled: dto.imageAnalysisEnabled ?? false,
@@ -49,6 +53,43 @@ export class BotConfigService {
 
       select: this.safeSelect(),
     });
+  }
+
+  async findByKey(key: string, tenantId: string) {
+    const config = await this.prisma.botConfig.findFirst({
+      where: { tenantId, key },
+      select: this.safeSelect(),
+    });
+    if (!config) {
+      throw new NotFoundException(`Bot con clave "${key}" no encontrado`);
+    }
+    return config;
+  }
+
+  private async resolveKey(
+    tenantId: string,
+    requested: string | undefined,
+    name: string,
+    excludeId?: string,
+  ): Promise<string> {
+    const taken = async (candidate: string) =>
+      (await this.prisma.botConfig.count({
+        where: {
+          tenantId,
+          key: candidate,
+          ...(excludeId ? { id: { not: excludeId } } : {}),
+        },
+      })) > 0;
+
+    if (requested) {
+      if (await taken(requested)) {
+        throw new ConflictException(
+          `Ya existe un bot con la clave "${requested}" en este tenant.`,
+        );
+      }
+      return requested;
+    }
+    return resolveUniqueKey(slugifyKey(name, 'bot'), taken);
   }
 
   async findAll(tenantId: string) {
@@ -108,6 +149,8 @@ export class BotConfigService {
     const data: Prisma.BotConfigUpdateInput = {};
 
     if (dto.name !== undefined) data.name = dto.name;
+    if (dto.key !== undefined)
+      data.key = await this.resolveKey(tenantId, dto.key, dto.name ?? '', id);
     if (dto.systemPrompt !== undefined) data.systemPrompt = dto.systemPrompt;
     if (dto.imageAnalysisEnabled !== undefined)
       data.imageAnalysisEnabled = dto.imageAnalysisEnabled;
@@ -320,6 +363,7 @@ export class BotConfigService {
     return {
       id: true,
       tenantId: true,
+      key: true,
       name: true,
       status: true,
       systemPrompt: true,

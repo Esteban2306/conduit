@@ -7,7 +7,7 @@ import { registerMessageQueues } from 'src/queue/message-queues.registration';
 import { OpsAlertService } from './whatsapp/alerts/OpsAlert.service';
 import { WebhookModule } from 'src/webhooks/webhook.module';
 import { OrchestratorModule } from 'src/core/orchestrator/orchestrator.module';
-import { forwardRef, Module, OnModuleInit } from '@nestjs/common';
+import { forwardRef, Logger, Module, OnModuleInit } from '@nestjs/common';
 import { GmailResendPlugin } from './email/resend/GmailResendPlugin';
 import { SmtpPlugin } from './email/smtp/SmtpBrevoPlugin';
 import { BaileysPlugin } from './whatsapp/baileys/BaileysPlugin';
@@ -22,6 +22,9 @@ import { BaileysMessageSender } from './whatsapp/baileys/BaileysMessageSender';
 import { messageReceiptTracker } from './whatsapp/baileys/MessageReceiptTracker';
 import { ConnectionController } from './whatsapp/Connection.controller';
 import { WhatsAppConnectionService } from './whatsapp/WhatsAppConnection.service';
+import { LineAdoptionService } from './whatsapp/LineAdoption.service';
+import { NumberConflictHandler } from './whatsapp/NumberConflictHandler';
+import { restoreSessions } from './whatsapp/restore-sessions';
 import { WhatsAppConnectionOrchestrator } from './whatsapp/WhatsAppConnectionOrchestrator';
 import { BotSentMessageRegistry } from 'src/channels/whatsapp/baileys/BotSentMessageRegistry';
 import { AuthModule } from 'src/auth/auth.module';
@@ -49,6 +52,8 @@ import { SentMessageStore } from './whatsapp/baileys/SentMessageStore';
     BaileysMessageSender,
     ChannelPluginFactory,
     WhatsAppConnectionOrchestrator,
+    LineAdoptionService,
+    NumberConflictHandler,
     BaileysSessionManager,
     WhatsAppConnectionService,
     messageReceiptTracker,
@@ -72,20 +77,19 @@ import { SentMessageStore } from './whatsapp/baileys/SentMessageStore';
   ],
 })
 export class ChannelsModule implements OnModuleInit {
+  private readonly logger = new Logger(ChannelsModule.name);
+
   constructor(
     private readonly sessionManager: BaileysSessionManager,
     private readonly botRouter: BotRouter,
     private readonly connections: WhatsAppConnectionService,
+    private readonly numberConflicts: NumberConflictHandler,
   ) {}
 
   async onModuleInit() {
     this.sessionManager.setBotRouter(this.botRouter);
+    this.sessionManager.setNumberConflictHandler(this.numberConflicts.handle);
 
-    const connections = await this.connections.findConnectionsToRestore();
-    await Promise.all(
-      connections.map(({ id }) =>
-        this.sessionManager.start(id).catch(() => {}),
-      ),
-    );
+    await restoreSessions(this.connections, this.sessionManager, this.logger);
   }
 }

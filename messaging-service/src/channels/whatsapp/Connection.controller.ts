@@ -15,6 +15,7 @@ import type { JwtPayload } from 'src/auth/types/jwt.types';
 import { CreateWhatsAppConnectionDto } from './dto/create-whatsapp-connection.dto';
 import { AssignBotConfigDto } from './dto/assign-bot-config.dto';
 import { WhatsAppConnectionService } from './WhatsAppConnection.service';
+import { LineAdoptionService } from './LineAdoption.service';
 import { WhatsAppConnectionOrchestrator } from './WhatsAppConnectionOrchestrator';
 import { UpdateWarmupLevelDto } from './dto/update-warmup-level.dto';
 import { ApiAuthGuard } from 'src/auth/guards/api-auth.guard';
@@ -29,6 +30,7 @@ export class ConnectionController {
     private readonly connections: WhatsAppConnectionService,
     private readonly orchestrator: WhatsAppConnectionOrchestrator,
     private readonly contacts: WhatsAppContactService,
+    private readonly adoption: LineAdoptionService,
   ) {}
 
   @Patch(':id/campaign-policy')
@@ -83,6 +85,27 @@ export class ConnectionController {
   @ApiOperation({ summary: 'Listar las conexiones de WhatsApp del tenant' })
   findAll(@CurrentUser() user: JwtPayload) {
     return this.connections.findAll(user.tenantId);
+  }
+
+  @Get('by-key/:key')
+  @ApiOperation({ summary: 'Obtener una conexión por su clave estable' })
+  findByKey(@Param('key') key: string, @CurrentUser() user: JwtPayload) {
+    return this.connections.findByKey(key, user.tenantId);
+  }
+
+  @Post(':keepId/adopt/:retireId')
+  @ApiOperation({
+    summary:
+      'Fusiona una conexión duplicada en la existente, conservando el id',
+    description:
+      'La conexión :keepId conserva su id, clave, bot, calentamiento y riesgo, y recibe las credenciales, contactos y bajas de :retireId, que se elimina. Ambas deben ser del mismo tenant y del mismo número. Todo ocurre en una transacción.',
+  })
+  adopt(
+    @Param('keepId') keepId: string,
+    @Param('retireId') retireId: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.adoption.adopt(user.tenantId, keepId, retireId, user.sub);
   }
 
   @Get(':id/qr')

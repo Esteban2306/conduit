@@ -153,6 +153,13 @@ export class OpenAIProvider implements AiProvider {
     return {
       content,
       tokensUsed,
+      usage: {
+        input: response.usage?.prompt_tokens ?? 0,
+        output: response.usage?.completion_tokens ?? 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        thinking: 0,
+      },
       model: response.model,
       provider: this.providerName,
       latencyMs: Date.now() - start,

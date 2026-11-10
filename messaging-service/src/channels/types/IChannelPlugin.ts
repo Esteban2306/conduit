@@ -44,4 +44,5 @@ export interface IChannelPlugin {
 
   send(payload: ChannelSendPayload): Promise<ChannelSendResult>;
   validateRecipient(address: string): boolean;
+  isAvailable?(connectionId?: string): boolean;
 }

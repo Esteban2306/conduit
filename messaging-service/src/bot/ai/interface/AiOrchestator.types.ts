@@ -31,7 +31,11 @@ export interface AnalyzeImageInput {
   prompt: string;
   imageBuffer: Buffer;
   mimeType: string;
+  maxTokens?: number;
+  effort?: 'low';
 }
+
+export type SpecialistImageInput = Omit<AnalyzeImageInput, 'botConfigId'>;
 
 export interface OrchestratorResult {
   content: string;

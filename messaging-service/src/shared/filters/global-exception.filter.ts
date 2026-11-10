@@ -13,6 +13,7 @@ interface ErrorResponseBody {
   statusCode: number;
   message: string | string[];
   error: string;
+  details?: unknown;
   timestamp: string;
   path: string;
 }
@@ -26,12 +27,14 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     const response = ctx.getResponse<Response>();
     const request = ctx.getRequest<Request>();
 
-    const { statusCode, message, error } = this.resolveException(exception);
+    const { statusCode, message, error, details } =
+      this.resolveException(exception);
 
     const body: ErrorResponseBody = {
       statusCode,
       message,
       error,
+      ...(details !== undefined ? { details } : {}),
       timestamp: new Date().toISOString(),
       path: request.url,
     };
@@ -45,6 +48,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     statusCode: number;
     message: string | string[];
     error: string;
+    details?: unknown;
   } {
     if (exception instanceof HttpException) {
       const status = exception.getStatus();
@@ -57,12 +61,16 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       const payloadObj = payload as {
         message?: string | string[];
         error?: string;
+        details?: unknown;
       };
 
       return {
         statusCode: status,
         message: payloadObj.message ?? exception.message,
         error: payloadObj.error ?? exception.name,
+        ...(payloadObj.details !== undefined && status < 500
+          ? { details: payloadObj.details }
+          : {}),
       };
     }
 

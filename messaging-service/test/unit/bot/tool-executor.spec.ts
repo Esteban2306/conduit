@@ -65,6 +65,7 @@ describe('ToolExecutorService', () => {
   const service = new ToolExecutorService(
     prisma as any,
     { decrypt: () => 'secret-key' } as any,
+    {} as any,
   );
   const originalFetch = global.fetch;
 

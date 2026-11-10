@@ -132,6 +132,7 @@ model Tenant {
   slug      String   @unique
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
+  systemPausedAt DateTime?
 
   templates        Template[]
   users            User[]
@@ -139,6 +140,9 @@ model Tenant {
   webhookEndpoints WebhookEndpoint[]
   tags             Tag[]
   botContig        BotConfig[]
+  specialists      Specialist[]
+  specialistBindings BotSpecialistBinding[]
+  verificationRecords VerificationRecord[]
   whatsappConnections WhatsAppConnection[]
 }
 
@@ -236,6 +240,7 @@ model Message {
   templateId  String?
   connectionId String?
   botConfigId String?
+  category    String?
   channel     MessageChannel    
   recipient   String
   variables   Json      @default("{}")
@@ -276,7 +281,8 @@ model Message {
 }
 model AiModelConfig {
   id          String @id @default(uuid())
-  botConfigId String
+  botConfigId String?
+  specialistId String?
   
   provider  AiProvider
   model     String   
@@ -308,14 +314,17 @@ model AiModelConfig {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   
-  botConfig BotConfig @relation(fields: [botConfigId], references: [id])
+  botConfig BotConfig? @relation(fields: [botConfigId], references: [id], onDelete: Restrict)
+  specialist Specialist? @relation(fields: [specialistId], references: [id], onDelete: Restrict)
   
   @@index([botConfigId, role, priority])
   @@index([botConfigId, isActive])
+  @@index([specialistId, role, priority])
 }
 model BotConfig {
   id          String    @id @default(uuid())
   tenantId    String    @default("default")
+  key         String?
   name        String
   status      BotStatus @default(INACTIVE)
   
@@ -348,6 +357,10 @@ model BotConfig {
   toolDefinitions ToolDefinition[]
   escalationContacts BotEscalationContact[]
   intents BotIntent[]
+  specialistBindings BotSpecialistBinding[]
+
+  @@unique([tenantId, key])
+  @@unique([id, tenantId])
 }
 
 model BotAiSettings {
@@ -611,6 +624,7 @@ model WhatsAppConnection {
   id              String      @id @default(uuid())
   tenantId        String      
   botConfigId     String?
+  key             String?
   name            String
   phoneNumber     String?
   status          WhatsAppConnectionStatus  @default(DISCONNECTED)
@@ -635,6 +649,8 @@ model WhatsAppConnection {
   sessions        WhatsAppSession[] 
   contacts        WhatsAppContact[]
 
+  @@unique([tenantId, key])
+  @@unique([tenantId, phoneNumber])
   @@index([tenantId])
   @@index([tenantId, status])
   @@index([botConfigId])
@@ -658,6 +674,23 @@ model WhatsAppContact {
 
   @@unique([connectionId, address])
   @@index([connectionId, lid])
+  @@index([address])
+}
+
+/// Rastro de las operaciones que fusionan conexiones. No tiene relación con
+/// WhatsAppConnection a propósito: debe sobrevivir al borrado de la fila retirada.
+model WhatsAppConnectionAudit {
+  id                  String   @id @default(uuid())
+  tenantId            String
+  action              String
+  keptConnectionId    String
+  retiredConnectionId String
+  retiredKey          String?
+  counts              Json
+  actor               String?
+  createdAt           DateTime @default(now())
+
+  @@index([tenantId, createdAt])
 }
 
 model ExternalIntegration {
@@ -709,6 +742,17 @@ model ToolDefinition {
   requiresImageAttachment Boolean @default(false)
   imageParamName          String? @default("imageBase64")
   maxImageSizeBytes       Int?    @default(8388608)
+
+  verificationCapability  String?
+  acceptedVerdicts        VerificationVerdict[] @default([])
+  verificationParamName   String?
+  /// Ruta del parámetro -> nombre de la variable verificada de la capacidad
+  /// de la herramienta. Conduit escribe el valor del registro verificado; el
+  /// modelo no lo ve ni lo llena.
+  verifiedParams          Json    @default("{}")
+  /// Qué hace la puerta si el análisis falló por motivos técnicos (nunca ante
+  /// un INVALID ni un resultado dudoso real): rechazar o seguir sin verificar.
+  onTechnicalFailure      ToolVerificationFallback @default(REFUSE)
 
   injectPhoneParamName    String?
   /// Si la llamada sale bien, el bot se pausa en esa conversación durante
@@ -839,4 +883,163 @@ model OutboundReply {
   @@index([conversationId, status])
   @@index([groupId])
   @@index([status, expiresAt])
+}
+
+enum SpecialistStatus {
+  ACTIVE
+  INACTIVE
+}
+enum SpecialistBindingMode {
+  OFF
+  SHADOW
+  ACTIVE
+}
+enum SpecialistFailurePolicy {
+  DEGRADE
+  BLOCK
+}
+
+model Specialist {
+  id String @id @default(uuid())
+  tenantId String
+  key String
+  name String
+  capability String
+  status SpecialistStatus @default(INACTIVE)
+  promptTemplate String @db.Text
+  rules Json @default("{\"version\":1,\"rules\":[]}")
+  contextSources Json @default("{\"version\":1,\"sources\":[]}")
+  outputSchema Json @default("{\"version\":1,\"variables\":[],\"uniqueBy\":[]}")
+  outputVersion Int @default(1)
+  version Int @default(1)
+  archivedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  models AiModelConfig[]
+  bindings BotSpecialistBinding[]
+  verificationRecords VerificationRecord[]
+  versions SpecialistVersion[]
+
+  @@unique([tenantId, key])
+  @@unique([id, tenantId, capability])
+  @@index([tenantId, capability])
+}
+
+model BotSpecialistBinding {
+  id String @id @default(uuid())
+  tenantId String
+  botConfigId String
+  capability String
+  specialistId String
+  mode SpecialistBindingMode @default(OFF)
+  timeoutMs Int @default(12000)
+  onFailure SpecialistFailurePolicy @default(DEGRADE)
+  blockMessage String? @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  botConfig BotConfig @relation(fields: [botConfigId, tenantId], references: [id, tenantId], onDelete: Restrict)
+  specialist Specialist @relation(fields: [specialistId, tenantId, capability], references: [id, tenantId, capability], onDelete: Restrict)
+
+  @@unique([botConfigId, capability])
+  @@index([specialistId])
+  @@index([tenantId])
+}
+
+enum ToolVerificationFallback {
+  REFUSE
+  PROCEED_UNVERIFIED
+}
+
+enum VerificationVerdict {
+  VALID
+  INVALID
+  NEEDS_REVIEW
+  UNREADABLE
+  NOT_APPLICABLE
+  ERROR
+}
+
+model VerificationRecord {
+  id             String   @id @default(uuid())
+  tenantId       String
+  conversationId String
+  botConfigId    String
+  specialistId   String
+  capability     String
+  subjectHash    String
+  hashVersion    Int      @default(1)
+  fingerprint    String?
+  consumedAt     DateTime?
+  specialistVersion Int?
+  inputTokens    Int?
+  outputTokens   Int?
+  reviewedAt     DateTime?
+  reviewedBy     String?
+  reviewDecision VerificationReviewDecision?
+  reviewNote     String?  @db.Text
+  verdict        VerificationVerdict
+  confidence     Float    @default(0)
+  fields         Json     @default("{}")
+  reasonCodes    String[]
+  modelUsed      String?
+  tokens         Int      @default(0)
+  latencyMs      Int      @default(0)
+  mode           SpecialistBindingMode
+  comparison     Json?
+  createdAt      DateTime @default(now())
+  expiresAt      DateTime
+
+  tenant     Tenant     @relation(fields: [tenantId], references: [id])
+  specialist Specialist @relation(fields: [specialistId, tenantId, capability], references: [id, tenantId, capability], onDelete: Restrict)
+
+  @@index([tenantId, createdAt])
+  @@index([tenantId, verdict, createdAt])
+  @@index([tenantId, subjectHash])
+  @@index([tenantId, fingerprint])
+  @@index([tenantId, conversationId, createdAt])
+  @@index([specialistId, createdAt])
+  @@index([expiresAt])
+}
+
+enum VerificationReviewDecision {
+  APPROVED
+  REJECTED
+}
+
+model SpecialistVersion {
+  id             String   @id @default(uuid())
+  specialistId   String
+  tenantId       String
+  capability     String
+  version        Int
+  promptTemplate String   @db.Text
+  rules          Json
+  contextSources Json
+  outputSchema   Json      @default("{\"version\":1,\"variables\":[],\"uniqueBy\":[]}")
+  changeNote     String?
+  createdBy      String?
+  createdAt      DateTime @default(now())
+
+  specialist Specialist @relation(fields: [specialistId, tenantId, capability], references: [id, tenantId, capability], onDelete: Restrict)
+
+  @@unique([specialistId, version])
+  @@index([tenantId, specialistId, version])
+}
+
+/// Cuántas imágenes se analizaron con el camino antiguo (sin especialista
+/// ACTIVE), por bot y día UTC. Sirve para decidir cuándo retirarlo. Sin claves
+/// foráneas a propósito: no debe bloquear el borrado de un bot ni de un tenant.
+model LegacyImageUsage {
+  tenantId    String
+  botConfigId String
+  day         DateTime @db.Date
+  calls       Int      @default(0)
+  lastAt      DateTime
+
+  @@id([botConfigId, day])
+  @@index([tenantId, day])
 }

@@ -13,6 +13,30 @@ const PROBE_WINDOW_MS = 30_000;
 const DAY_MS = 86_400_000;
 const MINUTE_MS = 60_000;
 
+export function isPlaceholderKey(stored: string | null | undefined): boolean {
+  if (!stored || stored.length < 20) return true;
+  const upper = stored.toUpperCase();
+  return (
+    upper.includes('_KEY') ||
+    upper.includes('YOUR_') ||
+    stored === 'placeholder'
+  );
+}
+
+export type AiModelOwner = string | { specialistId: string };
+
+export function ownerFilter(
+  owner: AiModelOwner,
+): { botConfigId: string } | { specialistId: string } {
+  return typeof owner === 'string' ? { botConfigId: owner } : owner;
+}
+
+export function ownerOf(model: AiModelConfig): AiModelOwner {
+  if (model.botConfigId) return model.botConfigId;
+  if (model.specialistId) return { specialistId: model.specialistId };
+  throw new Error(`El modelo ${model.id} no tiene dueño`);
+}
+
 @Injectable()
 export class AiModelSelectorService {
   private readonly logger = new Logger(AiModelSelectorService.name);
@@ -24,12 +48,17 @@ export class AiModelSelectorService {
   ) {}
 
   async selectModel(
-    botConfigId: string,
+    owner: AiModelOwner,
     role: AiModelRole,
     exclude: ReadonlySet<string> = new Set(),
   ): Promise<AiModelConfig | null> {
     const candidates = await this.prisma.aiModelConfig.findMany({
-      where: { botConfigId, role, isActive: true, credentialInvalidAt: null },
+      where: {
+        ...ownerFilter(owner),
+        role,
+        isActive: true,
+        credentialInvalidAt: null,
+      },
 
       orderBy: { priority: 'asc' },
     });
@@ -43,7 +72,7 @@ export class AiModelSelectorService {
     }
 
     if (role !== AiModelRole.FALLBACK) {
-      return this.selectModel(botConfigId, AiModelRole.FALLBACK, exclude);
+      return this.selectModel(owner, AiModelRole.FALLBACK, exclude);
     }
 
     return null;
@@ -51,15 +80,15 @@ export class AiModelSelectorService {
 
   async resolveApiKey(model: AiModelConfig): Promise<string> {
     const stored = this.openStoredKey(model);
-    const isPlaceholder =
-      !stored ||
-      stored.length < 20 ||
-      stored.toUpperCase().includes('_KEY') ||
-      stored.toUpperCase().includes('YOUR_') ||
-      stored === 'placeholder';
 
-    if (!isPlaceholder) {
+    if (!isPlaceholderKey(stored)) {
       return stored;
+    }
+
+    if (model.specialistId) {
+      throw new Error(
+        `El modelo ${model.id} del especialista no tiene una API key válida y los especialistas no usan claves del sistema. Configura una key real para este modelo.`,
+      );
     }
 
     const envKeyMap: Record<string, string> = {

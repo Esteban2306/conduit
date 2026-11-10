@@ -32,6 +32,22 @@ export function setByPath(
   node[parts[parts.length - 1]] = value;
 }
 
+/** Borra `path` de los parámetros si existe; no crea nada. */
+export function unsetByPath(
+  target: Record<string, unknown>,
+  path: string,
+): void {
+  const parts = segments(path);
+  let node: unknown = target;
+  for (const key of parts.slice(0, -1)) {
+    if (!node || typeof node !== 'object') return;
+    node = (node as Record<string, unknown>)[key];
+  }
+  if (node && typeof node === 'object') {
+    delete (node as Record<string, unknown>)[parts[parts.length - 1]];
+  }
+}
+
 /**
  * Quita `path` del JSON Schema expuesto al modelo (propiedad y `required`).
  * Los objetos intermedios se conservan.

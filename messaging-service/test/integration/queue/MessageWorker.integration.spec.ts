@@ -1,299 +1,238 @@
 jest.mock('@whiskeysockets/baileys', () => ({
-  default: jest.fn().mockReturnValue({
-    ev: { on: jest.fn() },
-    sendMessage: jest.fn().mockResolvedValue({ key: { id: 'mock-msg-id' } }),
-    logout: jest.fn(),
-  }),
-  useMultiFileAuthState: jest.fn().mockResolvedValue({
-    state: {},
-    saveCreds: jest.fn(),
-  }),
+  __esModule: true,
+  default: jest.fn(),
   DisconnectReason: { loggedOut: 401 },
 }));
 
-jest.mock('qrcode-terminal', () => ({ generate: jest.fn() }));
-
-import { Test, TestingModule } from '@nestjs/testing';
-import { BullModule } from '@nestjs/bullmq';
-import { Queue } from 'bullmq';
-import { getQueueToken } from '@nestjs/bullmq';
-import { QUEUE_NAMES, MessageJobPayload } from 'src/queue/queues';
+import { randomBytes, randomUUID } from 'crypto';
+import { Queue, QueueEvents } from 'bullmq';
+import { PrismaClient, MessageStatus } from '@prisma/client';
 import { MessageWorker } from 'src/queue/BullMQ/workers/MessageWorker';
-import { DLQHandler } from 'src/queue/Orchestrator/deadletter/DLQHandler';
-import { ConfigService } from '@nestjs/config';
-import { TEST_REDIS, clearQueue, waitForJob } from '../../helpers/redis.helper';
-import { cleanDatabase, prisma } from '../../helpers/prisma.helper';
-import { MessageStatus } from '@prisma/client';
-import { ChannelPluginFactory } from 'src/channels/factories/ChannelPluginFactory';
-import { TemplateService } from 'src/core/templates/TemplateService';
-import { TemplateEngine } from 'src/core/templates/TemplateEngine';
-import { PrismaService } from 'src/shared/prisma.service';
+import { MessageProcessor } from 'src/queue/processors/MessageProcessor';
+import { JobSigner } from 'src/queue/security/JobSigner';
+import { QUEUE_NAMES, MessageJobPayload } from 'src/queue/queues';
+import { isolatedInfra } from '../../helpers/isolated-env';
+import { clearQueue, finished } from '../../helpers/redis.helper';
+import {
+  createTestPrisma,
+  createTestTenant,
+  deleteTestTenant,
+} from '../../helpers/prisma.helper';
+
+const infra = isolatedInfra();
+const suite = infra ? describe : describe.skip;
 
 jest.setTimeout(30000);
 
-describe('messageWorker - integration', () => {
-  let module: TestingModule;
-  let queue: Queue<MessageJobPayload>;
+suite('MessageWorker con MessageProcessor real, Redis y base aislados', () => {
+  const { redis, databaseUrl } = infra ?? {
+    redis: { host: '', port: 0 },
+    databaseUrl: '',
+  };
+  const tenantId = `it-${randomUUID()}`;
+  const signingSecret = randomBytes(32).toString('hex');
 
-  const mockChannelFactory = {
-    getPlugin: jest.fn().mockReturnValue({
-      send: jest.fn().mockResolvedValue({
-        success: true,
-        provider: 'mock',
-        providerMessageId: 'ext-123',
-      }),
-      validateRecipient: jest.fn().mockReturnValue(true),
-    }),
+  let prisma: PrismaClient;
+  let queue: Queue;
+  let events: QueueEvents;
+  let worker: MessageWorker;
+
+  const sentResults: Array<() => Record<string, unknown>> = [];
+  const plugin = {
+    send: jest.fn(() => Promise.resolve(sentResults.shift()?.())),
+  };
+  const dlq = { handle: jest.fn().mockResolvedValue(undefined) };
+  const webhooks = { dispatch: jest.fn().mockResolvedValue(undefined) };
+
+  const config = {
+    get: (key: string) =>
+      ({
+        'redis.host': redis.host,
+        'redis.port': redis.port,
+        'redis.password': redis.password,
+        'webhook.signingSecret': signingSecret,
+        'queue.disconnectWaitMs': 0,
+        'queue.disconnectPollMs': 100,
+      })[key],
+  };
+  const signer = new JobSigner(config as never);
+
+  const createMessage = (recipient: string) =>
+    prisma.message.create({
+      data: {
+        tenantId,
+        channel: 'EMAIL',
+        recipient,
+        variables: {},
+        status: MessageStatus.PENDING,
+        scheduledAt: new Date(),
+        maxAttempts: 3,
+        renderedSubject: 'Asunto',
+      },
+    });
+
+  const payloadFor = (
+    messageId: string,
+    recipient: string,
+  ): MessageJobPayload => ({
+    messageId,
+    tenantId,
+    channel: 'EMAIL',
+    recipient,
+    connectionId: undefined,
+    templateId: '',
+    inlineBody: '<p>Hola</p>',
+    inlineSubject: 'Asunto',
+    variables: {},
+  });
+
+  const enqueue = async (
+    data: unknown,
+    messageId: string,
+    attempts = 1,
+  ): Promise<string> => {
+    const job = await queue.add('message.EMAIL', data, {
+      jobId: `msg-${messageId}`,
+      attempts,
+      backoff: { type: 'fixed', delay: 100 },
+    });
+    return job.id as string;
   };
 
-  const mockTemplateEngine = {
-    render: jest.fn().mockReturnValue({
-      subject: 'Asunto renderizado',
-      body: '<h1>Cuerpo renderizado</h1>',
-    }),
-  };
-
-  const mockTemplateService = {
-    findOne: jest.fn().mockResolvedValue({
-      id: 'tmpl-123',
-      bodyHandlebars: '<h1>Hola {{nombre}}</h1>',
-      subject: 'Hola {{nombre}}',
-    }),
-  };
-
-  const mockPrisma = {
-    message: {
-      create: jest.fn(),
-      update: jest.fn(),
-      findUnique: jest.fn(),
-    },
-    messageAttempt: {
-      create: jest.fn(),
-    },
-  };
-
-  const mockDLQHandler = {
-    handle: jest.fn().mockResolvedValue(undefined),
-  };
+  const message = (id: string) => prisma.message.findUnique({ where: { id } });
 
   beforeAll(async () => {
-    module = await Test.createTestingModule({
-      imports: [
-        BullModule.forRoot({ connection: TEST_REDIS }),
-        BullModule.registerQueue(
-          { name: QUEUE_NAMES.MESSAGES },
-          { name: QUEUE_NAMES.DEAD_LETTER },
-        ),
-      ],
-      providers: [
-        MessageWorker,
-        {
-          provide: PrismaService,
-          useValue: prisma,
-        },
-        { provide: ChannelPluginFactory, useValue: mockChannelFactory },
-        { provide: TemplateEngine, useValue: mockTemplateEngine },
-        { provide: TemplateService, useValue: mockTemplateService },
-        { provide: DLQHandler, useValue: mockDLQHandler },
-        {
-          provide: ConfigService,
-          useValue: {
-            get: (key: string) => {
-              const values: Record<string, unknown> = {
-                'redis.host': 'localhost',
-                'redis.port': 6380,
-                'queue.maxAttempts': 3,
-              };
-              return values[key];
-            },
-          },
-        },
-      ],
-    }).compile();
+    prisma = createTestPrisma(databaseUrl);
+    await createTestTenant(prisma, tenantId);
+    await clearQueue(QUEUE_NAMES.MESSAGES, redis);
 
-    queue = module.get<Queue>(getQueueToken(QUEUE_NAMES.MESSAGES));
-    await module.init();
+    queue = new Queue(QUEUE_NAMES.MESSAGES, { connection: redis });
+    events = new QueueEvents(QUEUE_NAMES.MESSAGES, { connection: redis });
+    await events.waitUntilReady();
+
+    const processor = new MessageProcessor(
+      config as never,
+      prisma as never,
+      { getPlugin: () => plugin } as never,
+      {} as never,
+      {
+        render: (body: string, _v: unknown, subject?: string) => ({
+          subject,
+          body,
+        }),
+      } as never,
+      dlq as never,
+      webhooks as never,
+      signer,
+      { publish: jest.fn() } as never,
+      {} as never,
+    );
+    worker = new MessageWorker(config as never, processor);
+    worker.onModuleInit();
   });
 
   afterAll(async () => {
-    await module.close();
-    await clearQueue(QUEUE_NAMES.MESSAGES);
-    await clearQueue(QUEUE_NAMES.DEAD_LETTER);
+    await worker?.onModuleDestroy();
+    await events?.close();
+    await queue?.close();
+    await clearQueue(QUEUE_NAMES.MESSAGES, redis);
+    await deleteTestTenant(prisma, tenantId);
+    await prisma.$disconnect();
   });
 
-  beforeEach(async () => {
-    await cleanDatabase();
-    await clearQueue(QUEUE_NAMES.MESSAGES);
+  beforeEach(() => {
     jest.clearAllMocks();
+    sentResults.length = 0;
   });
 
-  it('deberia pasar un job exitosamente y actualizarse en al DB', async () => {
-    const message = await prisma.message.create({
-      data: {
-        tenantId: 'default',
-        channel: 'EMAIL',
-        recipient: 'test@gmail.com',
-        variables: {},
-        status: MessageStatus.PENDING,
-        scheduledAt: new Date(),
-        maxAttempts: 3,
-        renderedSubject: 'Test Subject',
-      },
-    });
+  it('marca el mensaje como enviado cuando el canal responde bien', async () => {
+    const msg = await createMessage('ok@example.test');
+    sentResults.push(() => ({
+      success: true,
+      provider: 'mock',
+      providerMessageId: 'ext-ok',
+    }));
 
-    await queue.add('message.Email', {
-      messageId: message.id,
-      tenantId: 'default',
-      channel: 'EMAIL',
-      recipient: 'test@gmail.com',
-      templateId: 'tmpl-123',
-      variables: { nombre: 'Juan' },
-      inlineBody: '<h1>Cuerpo renderizado</h1>',
-      inlineSubject: 'Asunto renderizado',
-      connectionId: undefined,
-    } as MessageJobPayload);
+    const jobId = await enqueue(
+      signer.sign(payloadFor(msg.id, msg.recipient)),
+      msg.id,
+    );
+    const result = await finished(events, queue, jobId);
 
-    const result = await waitForJob(QUEUE_NAMES.MESSAGES);
     expect(result.success).toBe(true);
-
-    const updated = await prisma.message.findUnique({
-      where: { id: message.id },
-    });
-
-    expect(updated?.status).toBe(MessageStatus.SENT);
-    expect(updated?.sentAt).not.toBeNull();
-    expect(updated?.provider).toBe('mock');
+    const saved = await message(msg.id);
+    expect(saved?.status).toBe(MessageStatus.SENT);
+    expect(saved?.sentAt).not.toBeNull();
+    expect(saved?.provider).toBe('mock');
+    expect(webhooks.dispatch).toHaveBeenCalledWith('message.sent', msg.id);
   });
 
-  it('deberia mover a DLQ cuando devuelve error', async () => {
-    // hacer una fallo a proposito
-    mockChannelFactory.getPlugin.mockReturnValue({
-      send: jest.fn().mockResolvedValue({
-        success: false,
-        provider: 'mock',
-        retryable: false,
-        errorCode: 'INVALID_RECIPIENT',
-        error: 'Numero invalido',
-      }),
-    });
+  it('manda a la DLQ y marca DEAD ante un error no reintentable', async () => {
+    const msg = await createMessage('malo@example.test');
+    sentResults.push(() => ({
+      success: false,
+      provider: 'mock',
+      retryable: false,
+      errorCode: 'INVALID_RECIPIENT',
+      error: 'Destinatario inválido',
+    }));
 
-    // se crea el mensaje con el fallo
-    const message = await prisma.message.create({
-      data: {
-        tenantId: 'default',
-        channel: 'WHATSAPP',
-        recipient: 'numero invalid',
-        variables: {},
-        status: MessageStatus.PENDING,
-        scheduledAt: new Date(),
-        maxAttempts: 3,
-        renderedSubject: 'Test Subject',
-      },
-    });
+    const jobId = await enqueue(
+      signer.sign(payloadFor(msg.id, msg.recipient)),
+      msg.id,
+    );
+    await finished(events, queue, jobId);
 
-    //lo enviamos a la cola para ver que responde
-    await queue.add('message.WHATSAPP', {
-      messageId: message.id,
-      tenantId: 'default',
-      channel: 'WHATSAPP',
-      recipient: 'numero-invalido',
-      templateId: 'tmpl-123',
-      inlineBody: '<p>Hola {{nombre}}</p>',
-      inlineSubject: 'Test Subject',
-      variables: { nombre: 'Test' },
-      connectionId: undefined,
-    } as MessageJobPayload);
-
-    // esperamos el mensaje que no manda el Job y esperamos un fallo aqui
-    await waitForJob(QUEUE_NAMES.MESSAGES);
-
-    // deberia soltar un error
-    expect(mockDLQHandler.handle).toHaveBeenCalledWith(
-      message.id,
+    expect(dlq.handle).toHaveBeenCalledWith(
+      msg.id,
       expect.any(String),
       'INVALID_RECIPIENT',
     );
-
-    //ademas deberia cmabiar el estado en prisma del mensaje a DEAD ya que paso por el DLQ
-    const updated = await prisma.message.findUnique({
-      where: { id: message.id },
-    });
-    expect(updated?.status).toBe(MessageStatus.DEAD);
+    expect((await message(msg.id))?.status).toBe(MessageStatus.DEAD);
   });
 
-  it('deberia reintentar cuando el canal devuelve un error transitorio', async () => {
-    //se crea variable de callCOunt para documentar cuantos intentos se realizan antes de succes
-    let callCount = 0;
-
-    // se hace el mock para probar encolado
-    mockChannelFactory.getPlugin.mockReturnValue({
-      send: jest.fn().mockImplementation(() => {
-        callCount++;
-        // se dice que hasta que llegue a 3 intentos nos devuelba true
-        if (callCount < 3) {
-          return Promise.resolve({
-            success: false,
-            provider: 'mock',
-            retryable: true,
-            errorCode: 'NETWORK_ERROR',
-            error: 'Red caída temporalmente',
-          });
-        }
-        return Promise.resolve({
-          success: true,
-          provider: 'mock',
-          providerMessageId: 'ext-ok',
-        });
-      }),
-      validateRecipient: jest.fn().mockReturnValue(true),
+  it('reintenta ante un error transitorio y termina enviando', async () => {
+    const msg = await createMessage('retry@example.test');
+    const transient = () => ({
+      success: false,
+      provider: 'mock',
+      retryable: true,
+      errorCode: 'NETWORK_ERROR',
+      error: 'Red caída temporalmente',
     });
+    sentResults.push(transient, transient, () => ({
+      success: true,
+      provider: 'mock',
+      providerMessageId: 'ext-retry',
+    }));
 
-    // despues se crea el mensaje en db solo se debe ver uno en db y es el que este en proceso
-    const message = await prisma.message.create({
-      data: {
-        tenantId: 'default',
-        channel: 'EMAIL',
-        recipient: 'test@gmail.com',
-        variables: {},
-        status: MessageStatus.PENDING,
-        scheduledAt: new Date(),
-        maxAttempts: 3,
-        renderedSubject: 'Test Subject',
-      },
-    });
-
-    // se agrega a cola en espera de respuesta y aprovacion
-    await queue.add(
-      'message.EMAIL',
-      {
-        messageId: message.id,
-        tenantId: 'default',
-        channel: 'EMAIL',
-        recipient: 'test@gmail.com',
-        inlineBody: '<p>Test</p>',
-        variables: {},
-      } as MessageJobPayload,
-      {
-        attempts: 3,
-        backoff: {
-          type: 'fixed',
-          delay: 100,
-        },
-      },
+    const jobId = await enqueue(
+      signer.sign(payloadFor(msg.id, msg.recipient)),
+      msg.id,
+      3,
     );
+    const result = await finished(events, queue, jobId, 15000);
 
-    // se espera resultado si falla tarda 20000 ms en reencolarse y volver a reintentarse
-    const result = await waitForJob(QUEUE_NAMES.MESSAGES, 10000);
-    // como resultado se espera un succes: true
     expect(result.success).toBe(true);
+    expect(plugin.send).toHaveBeenCalledTimes(3);
+    expect((await message(msg.id))?.status).toBe(MessageStatus.SENT);
+  });
 
-    // se espera ver 3 intentos en el callCount
-    expect(callCount).toBe(3);
+  it('rechaza un job con la firma alterada sin enviar nada', async () => {
+    const msg = await createMessage('firma@example.test');
+    const signed = signer.sign(payloadFor(msg.id, msg.recipient));
 
-    // despues de el proceso se actualiza estado en db se espera estado de SENT
-    const updated = await prisma.message.findUnique({
-      where: { id: message.id },
-    });
-    expect(updated?.status).toBe(MessageStatus.SENT);
+    const jobId = await enqueue(
+      { ...signed, recipient: 'otro@example.test' },
+      msg.id,
+    );
+    await finished(events, queue, jobId);
+
+    expect(plugin.send).not.toHaveBeenCalled();
+    expect(dlq.handle).toHaveBeenCalledWith(
+      msg.id,
+      expect.any(String),
+      'INVALID_JOB_SIGNATURE',
+    );
   });
 });

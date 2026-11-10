@@ -1,3 +1,4 @@
+import { warningsOf } from './image-warning';
 import {
   BadRequestException,
   Injectable,
@@ -562,6 +563,7 @@ export class ConversationService {
         botPaused: this.isBotPaused(ctx),
         botPausedUntil: this.isBotPaused(ctx) ? ctx.botPausedUntil : null,
         botPauseReason: this.isBotPaused(ctx) ? ctx.botPauseReason : null,
+        warnings: warningsOf(ctx),
         lastMessage: messages[0] ?? null,
         // Esperando respuesta: el último mensaje es del cliente.
         awaitingReply:

@@ -15,11 +15,53 @@ export const configValidationSchema = Joi.object({
   // REGISTRATION_TOKEN en el header x-registration-token.
   ALLOW_PUBLIC_REGISTRATION: Joi.boolean().default(false),
   REGISTRATION_TOKEN: Joi.string().min(24).optional(),
+  LINE_AUTO_ADOPT: Joi.boolean().default(false),
+  SPECIALISTS_ENABLED: Joi.boolean().default(false),
+  SPECIALISTS_PASSPORT_TTL_MINUTES: Joi.number()
+    .integer()
+    .min(1)
+    .max(1440)
+    .default(60),
+  SPECIALISTS_GROUNDING_TIMEOUT_MS: Joi.number()
+    .integer()
+    .min(500)
+    .max(15000)
+    .default(5000),
+  SPECIALISTS_RETENTION_DAYS: Joi.number()
+    .integer()
+    .min(1)
+    .max(3650)
+    .default(90),
+  SPECIALISTS_DRY_RUN_PER_MINUTE: Joi.number()
+    .integer()
+    .min(1)
+    .max(600)
+    .default(10),
+  IMAGE_PREFETCH_ENABLED: Joi.boolean().default(true),
+  IMAGE_PREFETCH_SETTLE_MS: Joi.number()
+    .integer()
+    .min(0)
+    .max(10000)
+    .default(1500),
+  IMAGE_DOWNLOAD_TIMEOUT_MS: Joi.number()
+    .integer()
+    .min(1000)
+    .max(60000)
+    .default(10000),
+  SPECIALISTS_REVIEW_ALERT_THROTTLE_MINUTES: Joi.number()
+    .integer()
+    .min(1)
+    .max(1440)
+    .default(30),
+  SPECIALISTS_PRICE_TABLE: Joi.string().allow('').optional(),
+  QUEUE_DISCONNECT_WAIT_MS: Joi.number().integer().min(0).default(21600000),
+  QUEUE_DISCONNECT_POLL_MS: Joi.number().integer().min(100).default(30000),
 
   DATABASE_URL: Joi.string().required(),
 
   REDIS_HOST: Joi.string().default('localhost'),
   REDIS_PORT: Joi.number().default(6379),
+  REDIS_PASSWORD: Joi.string().optional(),
 
   DEFAULT_TENANT_ID: Joi.string().default('default'),
 
@@ -75,12 +117,30 @@ export interface AppConfig {
     allowPublicRegistration: boolean;
     registrationToken?: string;
   };
+  channels: {
+    lineAutoAdopt: boolean;
+  };
+  imagePrefetch: {
+    enabled: boolean;
+    settleMs: number;
+    downloadTimeoutMs: number;
+  };
+  specialists: {
+    enabled: boolean;
+    retentionDays: number;
+    passportTtlMinutes: number;
+    groundingTimeoutMs: number;
+    dryRunPerMinute: number;
+    reviewAlertThrottleMinutes: number;
+    priceTable?: string;
+  };
   database: {
     url: string;
   };
   redis: {
     host: string;
     port: number;
+    password?: string;
   };
   tenant: {
     defaultId: string;
@@ -116,6 +176,8 @@ export interface AppConfig {
   queue: {
     maxAttempts: number;
     backoffDelay: number;
+    disconnectWaitMs: number;
+    disconnectPollMs: number;
   };
   messaging: {
     maxFileUploadRows: number;
@@ -136,12 +198,45 @@ export const configFactory = (): AppConfig => ({
     allowPublicRegistration: process.env.ALLOW_PUBLIC_REGISTRATION === 'true',
     registrationToken: process.env.REGISTRATION_TOKEN || undefined,
   },
+  channels: {
+    lineAutoAdopt: process.env.LINE_AUTO_ADOPT === 'true',
+  },
+  imagePrefetch: {
+    enabled: process.env.IMAGE_PREFETCH_ENABLED !== 'false',
+    settleMs: parseInt(process.env.IMAGE_PREFETCH_SETTLE_MS ?? '1500', 10),
+    downloadTimeoutMs: parseInt(
+      process.env.IMAGE_DOWNLOAD_TIMEOUT_MS ?? '10000',
+      10,
+    ),
+  },
+  specialists: {
+    enabled: process.env.SPECIALISTS_ENABLED === 'true',
+    retentionDays: parseInt(process.env.SPECIALISTS_RETENTION_DAYS ?? '90', 10),
+    passportTtlMinutes: parseInt(
+      process.env.SPECIALISTS_PASSPORT_TTL_MINUTES ?? '60',
+      10,
+    ),
+    groundingTimeoutMs: parseInt(
+      process.env.SPECIALISTS_GROUNDING_TIMEOUT_MS ?? '5000',
+      10,
+    ),
+    dryRunPerMinute: parseInt(
+      process.env.SPECIALISTS_DRY_RUN_PER_MINUTE ?? '10',
+      10,
+    ),
+    reviewAlertThrottleMinutes: parseInt(
+      process.env.SPECIALISTS_REVIEW_ALERT_THROTTLE_MINUTES ?? '30',
+      10,
+    ),
+    priceTable: process.env.SPECIALISTS_PRICE_TABLE,
+  },
   database: {
     url: process.env.DATABASE_URL ?? '',
   },
   redis: {
     host: process.env.REDIS_HOST ?? '',
     port: parseInt(process.env.REDIS_PORT ?? '6379', 10),
+    password: process.env.REDIS_PASSWORD || undefined,
   },
   tenant: {
     defaultId: process.env.DEFAULT_TENANT_ID ?? '',
@@ -183,6 +278,14 @@ export const configFactory = (): AppConfig => ({
   queue: {
     maxAttempts: parseInt(process.env.QUEUE_MAX_ATTEMPTS ?? '5', 10),
     backoffDelay: parseInt(process.env.QUEUE_BACKOFF_DELAY ?? '120000', 10),
+    disconnectWaitMs: parseInt(
+      process.env.QUEUE_DISCONNECT_WAIT_MS ?? '21600000',
+      10,
+    ),
+    disconnectPollMs: parseInt(
+      process.env.QUEUE_DISCONNECT_POLL_MS ?? '30000',
+      10,
+    ),
   },
 
   messaging: {

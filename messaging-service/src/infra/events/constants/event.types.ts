@@ -35,6 +35,8 @@ export const EVENT_TYPES = {
   // Mensaje de plantilla/campaña entregado a WhatsApp (no es respuesta del bot).
   PROACTIVE_MESSAGE_SENT: 'proactive.message.sent',
 
+  SPECIALIST_COMPLETED: 'specialist.completed',
+
   // orchestration
 
   MESSAGE_DISPATCH_REQUESTED: 'message.dispatch.requested',
@@ -231,6 +233,16 @@ export interface EventPayloadMap {
   [EVENT_TYPES.MAPPING_UPDATED]: {
     botConfigId: string;
     eventType: string;
+  };
+  [EVENT_TYPES.SPECIALIST_COMPLETED]: {
+    tenantId: string;
+    botConfigId: string;
+    specialistId: string;
+    capability: string;
+    verdict: string;
+    mode: string;
+    latencyMs: number;
+    tokens: number;
   };
 }
 
