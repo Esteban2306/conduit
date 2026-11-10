@@ -60,6 +60,12 @@ function build(
   };
   const prisma = {
     toolDefinition: { findUnique: jest.fn().mockResolvedValue(tool) },
+    verificationRecord: {
+      findFirst: jest.fn().mockResolvedValue(null),
+    },
+    conversation: {
+      findFirst: jest.fn().mockResolvedValue({ context: {} }),
+    },
     toolInvocation: {
       upsert: jest.fn(({ create }: { create: Record<string, unknown> }) =>
         Promise.resolve({ id: 'inv-1', ...create }),
@@ -521,6 +527,139 @@ describe('puerta de verificación del ejecutor de herramientas', () => {
       const b = build({ verifiedParams: { monto: 'amount' } });
       await call(b, { params: { monto: 2 } });
       expect(fetched()[0][1].headers['X-Conduit-Idempotency-Key']).toBe(keyA);
+    });
+  });
+
+  describe('onTechnicalFailure: PROCEED_UNVERIFIED', () => {
+    beforeEach(() => respond(200));
+    const none = { findAcceptable: jest.fn().mockResolvedValue(null) };
+    const proceed = (over: Record<string, unknown> = {}) =>
+      build({ onTechnicalFailure: 'PROCEED_UNVERIFIED', ...over }, none);
+    const sentBody = () =>
+      JSON.parse(fetched()[0][1].body) as Record<string, unknown>;
+    const withLatest = (w: ReturnType<typeof build>, verdict: string | null) =>
+      w.prisma.verificationRecord.findFirst.mockResolvedValue(
+        verdict ? { verdict } : null,
+      );
+    const withWarning = (w: ReturnType<typeof build>) =>
+      w.prisma.conversation.findFirst.mockResolvedValue({
+        context: {
+          imageAnalysisWarning: { reason: 'NOT_RUN', at: 'x' },
+        },
+      });
+
+    it('con REFUSE (valor por defecto) un ERROR registrado sigue rechazando', async () => {
+      const w = build({}, none);
+      withLatest(w, 'ERROR');
+      const outcome = await call(w);
+      expect(outcome).toMatchObject({ httpStatus: 422 });
+      expect(global.fetch).not.toHaveBeenCalled();
+      expect(w.prisma.verificationRecord.findFirst).not.toHaveBeenCalled();
+    });
+
+    it('si el último resultado de esa imagen es un ERROR, ejecuta sin pasaporte y lo avisa', async () => {
+      const w = proceed({
+        verificationParamName: 'verificacion',
+        verifiedParams: { monto: 'amount' },
+      });
+      withLatest(w, 'ERROR');
+      const outcome = await call(w, {
+        params: {
+          verificacion: 'APROBADO',
+          monto: 999,
+          nota: 'dato',
+        },
+      });
+
+      expect(outcome).toMatchObject({
+        status: 'SUCCESS',
+        errorDetail: expect.stringContaining('sin verificación'),
+      });
+      const headers = fetched()[0][1].headers;
+      expect(headers['X-Conduit-Verification-Status']).toBe('UNVERIFIED');
+      expect(headers['X-Conduit-Verification-Reason']).toBe('ANALYSIS_ERROR');
+      expect(headers[VERIFICATION_HEADER]).toBeUndefined();
+      expect(headers[VERIFICATION_SIGNATURE_HEADER]).toBeUndefined();
+      const body = sentBody();
+      expect(body).not.toHaveProperty('verificacion');
+      expect(body).not.toHaveProperty('monto');
+      expect(body.nota).toBe('dato');
+      expect(w.ledger.claim).not.toHaveBeenCalled();
+    });
+
+    it('sin ningún registro y con la advertencia de imagen sin analizar, ejecuta', async () => {
+      const w = proceed();
+      withLatest(w, null);
+      withWarning(w);
+      await call(w);
+      expect(fetched()[0][1].headers['X-Conduit-Verification-Reason']).toBe(
+        'NOT_ANALYZED',
+      );
+    });
+
+    it('sin registro ni advertencia no hay prueba de un fallo y se rechaza', async () => {
+      const w = proceed();
+      withLatest(w, null);
+      const outcome = await call(w);
+      expect(outcome).toMatchObject({ httpStatus: 422 });
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      'INVALID',
+      'NEEDS_REVIEW',
+      'UNREADABLE',
+      'NOT_APPLICABLE',
+      'VALID',
+    ])(
+      'un resultado real (%s) se rechaza aunque exista la advertencia',
+      async (verdict) => {
+        const w = proceed();
+        withLatest(w, verdict);
+        withWarning(w);
+        const outcome = await call(w);
+        expect(outcome).toMatchObject({ httpStatus: 422 });
+        expect(global.fetch).not.toHaveBeenCalled();
+      },
+    );
+
+    it('si la comprobación falla, se rechaza', async () => {
+      const w = proceed();
+      w.prisma.verificationRecord.findFirst.mockRejectedValue(
+        new Error('db caída'),
+      );
+      const outcome = await call(w);
+      expect(outcome).toMatchObject({ httpStatus: 422 });
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it('con un veredicto aceptado sigue el camino verificado normal', async () => {
+      const w = build({ onTechnicalFailure: 'PROCEED_UNVERIFIED' });
+      await call(w);
+      const headers = fetched()[0][1].headers;
+      expect(headers[VERIFICATION_HEADER]).toBeDefined();
+      expect(headers['X-Conduit-Verification-Status']).toBeUndefined();
+      expect(w.ledger.claim).toHaveBeenCalled();
+      expect(w.prisma.verificationRecord.findFirst).not.toHaveBeenCalled();
+    });
+
+    it('sin imagen adjunta se rechaza igual', async () => {
+      const w = proceed();
+      withLatest(w, 'ERROR');
+      const outcome = await call(w, {
+        attachedImage: undefined,
+        imageParamName: undefined,
+      });
+      expect(outcome).toMatchObject({ httpStatus: 422 });
+    });
+
+    it('si el backend falla, no se anota "sin verificación" como si hubiera salido bien', async () => {
+      respond(400);
+      const w = proceed();
+      withLatest(w, 'ERROR');
+      const outcome = await call(w);
+      expect(outcome.status).not.toBe('SUCCESS');
+      expect(outcome.errorDetail ?? '').not.toContain('sin verificación');
     });
   });
 });

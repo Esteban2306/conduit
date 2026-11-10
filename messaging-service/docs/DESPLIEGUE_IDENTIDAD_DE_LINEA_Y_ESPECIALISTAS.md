@@ -15,6 +15,7 @@ Resume lo que añade la rama `feat/line-identity-and-queue-resilience` y el orde
 | `20261109110000_specialist_admin` | Versión y archivado del especialista, tabla `SpecialistVersion` (con la versión 1 de los especialistas existentes), y en `VerificationRecord` la versión usada, el desglose de tokens y los campos de revisión humana |
 | `20261109120000_specialist_output_schema` | `outputSchema` en `Specialist` y `SpecialistVersion` (las filas existentes reciben la declaración equivalente a los seis campos anteriores, como datos) y `blockMessage` en `BotSpecialistBinding` |
 | `20261110120000_tool_verified_params` | Columna `verifiedParams` (JSONB, por defecto `{}`) en `ToolDefinition`, con restricción de que sea un objeto. Aditiva: las herramientas existentes no cambian |
+| `20261111120000_tool_unverified_fallback` | Enum `ToolVerificationFallback` y columna `onTechnicalFailure` (por defecto `REFUSE`) en `ToolDefinition`, con restricción de que `PROCEED_UNVERIFIED` exija `verificationCapability`. Aditiva: las herramientas existentes no cambian |
 | `20261109100000_attachment_verification` | Huella de campos, versión de hash y marca de consumo en `VerificationRecord`; campos de verificación y CHECK en `ToolDefinition` |
 
 Todas son aditivas. Antes de `stable_keys` en cada base, buscar números duplicados por tenant:
@@ -104,6 +105,7 @@ Una herramienta puede exigir que el comprobante adjunto esté verificado antes d
 | `verificationCapability` | Cualquier capacidad que el bot tenga vinculada (clave en minúsculas con guiones). Crear o actualizar la herramienta falla con 400 si el bot no tiene el vínculo |
 | `acceptedVerdicts` | `VALID` y/o `NEEDS_REVIEW` (nunca `INVALID` ni `ERROR`) |
 | `verificationParamName` | Opcional: campo del cuerpo donde además va el pasaporte. El modelo no lo ve ni puede pisarlo |
+| `onTechnicalFailure` | `REFUSE` (por defecto, como siempre) o `PROCEED_UNVERIFIED`: si el análisis falló por motivos técnicos, la herramienta se ejecuta sin pasaporte y se avisa al backend (ver "Seguir sin verificar ante un fallo técnico") |
 | `verifiedParams` | Opcional: mapa `ruta del parámetro → variable` (p. ej. `{"monto":"amount","pago.ref":"reference"}`). Conduit escribe en esos campos el valor del registro verificado, pisa lo que envíe el modelo y se los quita del esquema que ve. Solo variables de la capacidad de la propia herramienta |
 
 Reglas que Conduit valida al configurar: la herramienta debe exigir imagen adjunta, no ser de solo lectura, tener `acceptedVerdicts` y tener `authSecret` (con él se firma el pasaporte). La base lo refuerza con un CHECK.
@@ -121,6 +123,23 @@ Reglas que Conduit valida al configurar: la herramienta debe exigir imagen adjun
 - Si la variable no se leyó en la imagen (ausente o nula), el campo **no se envía**, incluso si el modelo lo había enviado. El backend decide qué hacer.
 - No se interpreta ninguna plantilla: un texto con `{{...}}` escrito por el cliente o el modelo viaja como texto.
 - Si luego se quita esa variable del especialista, actualizar la herramienta falla con 400 hasta corregir el mapa. Mientras tanto, en ejecución el campo simplemente no se envía.
+
+### Seguir sin verificar ante un fallo técnico
+
+Con `onTechnicalFailure: "PROCEED_UNVERIFIED"` la herramienta se ejecuta sin pasaporte **solo** en estos dos casos, ambos de esa misma imagen, conversación y capacidad:
+
+1. El último resultado de un vínculo `ACTIVE` para esa imagen fue `ERROR` (razón `ANALYSIS_ERROR`).
+2. No hay ningún resultado y la conversación quedó marcada con la advertencia `IMAGE_NOT_ANALYZED` (razón `NOT_ANALYZED`).
+
+**Nunca** se salta la puerta un `INVALID`, `NEEDS_REVIEW`, `UNREADABLE`, `NOT_APPLICABLE` ni un `VALID` ya usado o vencido, aunque la conversación tenga la advertencia. Sin prueba del fallo (sin registro y sin advertencia) o si la comprobación falla, se rechaza como siempre.
+
+Qué recibe el backend en ese caso:
+- Cabeceras `X-Conduit-Verification-Status: UNVERIFIED` y `X-Conduit-Verification-Reason: ANALYSIS_ERROR | NOT_ANALYZED`. **No** van `X-Conduit-Verification` ni `X-Conduit-Verification-Signature`.
+- El campo `verificationParamName` y los de `verifiedParams` no se envían, ni siquiera con lo que hubiera puesto el modelo: sin pasaporte no hay valores verificados.
+- La invocación queda con la nota "Ejecutada sin verificación…" en `errorDetail` cuando sale bien.
+- No consume ningún veredicto. Dos llamadas a la herramienta con la misma imagen pueden ejecutarse las dos; el backend deduplica con `X-Conduit-Idempotency-Key`.
+
+Tu backend decide qué hacer con una solicitud `UNVERIFIED` (por ejemplo, dejarla pendiente de revisión). Es una decisión de cada tenant: quita justo la protección que da la puerta, así que solo debe activarse en herramientas donde sea aceptable.
 
 ### Qué recibe el backend
 

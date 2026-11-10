@@ -750,6 +750,9 @@ model ToolDefinition {
   /// de la herramienta. Conduit escribe el valor del registro verificado; el
   /// modelo no lo ve ni lo llena.
   verifiedParams          Json    @default("{}")
+  /// Qué hace la puerta si el análisis falló por motivos técnicos (nunca ante
+  /// un INVALID ni un resultado dudoso real): rechazar o seguir sin verificar.
+  onTechnicalFailure      ToolVerificationFallback @default(REFUSE)
 
   injectPhoneParamName    String?
   /// Si la llamada sale bien, el bot se pausa en esa conversación durante
@@ -944,6 +947,11 @@ model BotSpecialistBinding {
   @@unique([botConfigId, capability])
   @@index([specialistId])
   @@index([tenantId])
+}
+
+enum ToolVerificationFallback {
+  REFUSE
+  PROCEED_UNVERIFIED
 }
 
 enum VerificationVerdict {

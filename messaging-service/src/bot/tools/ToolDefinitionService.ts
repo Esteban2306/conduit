@@ -63,6 +63,7 @@ export class ToolDefinitionService {
     this.validateVerification({
       verificationCapability: dto.verificationCapability ?? null,
       verifiedParams: dto.verifiedParams ?? {},
+      onTechnicalFailure: dto.onTechnicalFailure ?? 'REFUSE',
       variables,
       imageParamName: dto.imageParamName ?? 'imageBase64',
       injectPhoneParamName: dto.injectPhoneParamName ?? null,
@@ -95,6 +96,7 @@ export class ToolDefinitionService {
         acceptedVerdicts: (dto.acceptedVerdicts ?? []) as VerificationVerdict[],
         verificationParamName: dto.verificationParamName,
         verifiedParams: dto.verifiedParams ?? {},
+        onTechnicalFailure: dto.onTechnicalFailure ?? 'REFUSE',
       },
       select: this.safeSelect(),
     });
@@ -119,6 +121,7 @@ export class ToolDefinitionService {
     const variables = await this.requireBinding(botConfigId, capability);
     this.validateVerification({
       verificationCapability: capability,
+      onTechnicalFailure: dto.onTechnicalFailure ?? existing.onTechnicalFailure,
       verifiedParams:
         dto.verifiedParams ??
         (existing.verifiedParams as Record<string, string>),
@@ -295,12 +298,21 @@ export class ToolDefinitionService {
     httpMethod: string;
     hasSecret: boolean;
     verifiedParams: Record<string, string>;
+    onTechnicalFailure: string;
     variables: ReadonlySet<string>;
     imageParamName: string;
     injectPhoneParamName: string | null;
     verificationParamName: string | null;
   }): void {
     const mapped = Object.keys(state.verifiedParams ?? {});
+    if (
+      !state.verificationCapability &&
+      (state.onTechnicalFailure ?? 'REFUSE') !== 'REFUSE'
+    ) {
+      throw new BadRequestException(
+        'onTechnicalFailure solo se permite en herramientas con verificación (verificationCapability).',
+      );
+    }
     if (!state.verificationCapability) {
       if (mapped.length > 0) {
         throw new BadRequestException(
@@ -394,6 +406,7 @@ export class ToolDefinitionService {
       acceptedVerdicts: true,
       verificationParamName: true,
       verifiedParams: true,
+      onTechnicalFailure: true,
       createdAt: true,
       updatedAt: true,
     };

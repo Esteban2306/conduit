@@ -5,6 +5,7 @@ import { PrismaService } from 'src/shared/prisma.service';
 import { SecretEncryptionService } from 'src/shared/security/secret-encryption.service';
 import { canonicalJson, setByPath, unsetByPath } from './json-path.util';
 import { readVerifiedParams } from './verified-params';
+import { IMAGE_WARNING_KEY } from '../conversation/image-warning';
 import { createHmac } from 'crypto';
 import { variablesRecordSchema } from '../specialists/contracts';
 import { hashImage, NORMALIZED_HASH_VERSION } from '../specialists/image-hash';
@@ -26,6 +27,13 @@ export const CORRELATION_HEADER = 'X-Correlation-Id';
 export const VERIFICATION_HEADER = 'X-Conduit-Verification';
 export const VERIFICATION_SIGNATURE_HEADER = 'X-Conduit-Verification-Signature';
 export const VERIFICATION_REQUIRED = 'VERIFICATION_REQUIRED';
+export const VERIFICATION_STATUS_HEADER = 'X-Conduit-Verification-Status';
+export const VERIFICATION_REASON_HEADER = 'X-Conduit-Verification-Reason';
+export const UNVERIFIED_NOTE =
+  'Ejecutada sin verificación: el análisis de la imagen no estuvo disponible.';
+
+/** Por qué una herramienta con `PROCEED_UNVERIFIED` siguió sin pasaporte. */
+export type UnverifiedReason = 'ANALYSIS_ERROR' | 'NOT_ANALYZED';
 export const PASSPORT_VERSION = 1;
 
 export interface AttachedImage {
@@ -72,7 +80,8 @@ interface Granted {
 }
 
 type Decision =
-  | { ok: true; granted: Granted }
+  | { ok: true; granted: Granted; unverified?: undefined }
+  | { ok: true; granted: null; unverified: UnverifiedReason }
   | { ok: false; outcome: ToolCallOutcome };
 
 @Injectable()
@@ -119,10 +128,12 @@ export class ToolExecutorService {
     }
 
     let granted: Granted | null = null;
+    let unverified: UnverifiedReason | undefined;
     if (tool.verificationCapability) {
       const decision = await this.authorize(tool, request);
       if (!decision.ok) return decision.outcome;
       granted = decision.granted;
+      unverified = decision.unverified;
     }
 
     const finalParams = { ...request.params };
@@ -159,6 +170,16 @@ export class ToolExecutorService {
         }
       }
     }
+    if (unverified) {
+      // Sin pasaporte no hay valores verificados: lo que el modelo hubiera
+      // puesto en esos campos no se envía.
+      if (tool.verificationParamName) {
+        unsetByPath(finalParams, tool.verificationParamName);
+      }
+      for (const path of Object.keys(readVerifiedParams(tool.verifiedParams))) {
+        unsetByPath(finalParams, path);
+      }
+    }
     if (request.injectedPhone && request.phoneParamName) {
       setByPath(finalParams, request.phoneParamName, request.injectedPhone);
     }
@@ -184,6 +205,10 @@ export class ToolExecutorService {
     }
 
     Object.assign(headers, passportHeaders);
+    if (unverified) {
+      headers[VERIFICATION_STATUS_HEADER] = 'UNVERIFIED';
+      headers[VERIFICATION_REASON_HEADER] = unverified;
+    }
 
     let idempotencyKey: string | null = null;
     if (!isReadOnly) {
@@ -240,7 +265,9 @@ export class ToolExecutorService {
         status,
         body,
         response.status,
-        null,
+        unverified && status === ToolInvocationStatus.SUCCESS
+          ? UNVERIFIED_NOTE
+          : null,
       );
     } catch (err) {
       const isTimeout = err.name === 'AbortError';
@@ -412,6 +439,7 @@ export class ToolExecutorService {
       verificationCapability: string | null;
       acceptedVerdicts: string[] | null;
       authSecretEncrypted: string | null;
+      onTechnicalFailure?: string | null;
       botConfig: { tenantId: string };
     },
     request: ToolCallRequest,
@@ -462,8 +490,21 @@ export class ToolExecutorService {
       hash: hash.hash,
       acceptedVerdicts: (tool.acceptedVerdicts ?? []) as never,
     });
-    if (!record)
+    if (!record) {
+      const reason =
+        tool.onTechnicalFailure === 'PROCEED_UNVERIFIED'
+          ? await this.technicalFailureOf(
+              tenantId,
+              request.conversationId,
+              tool.verificationCapability as string,
+              hash.hash,
+            )
+          : null;
+      if (reason) {
+        return { ok: true, granted: null, unverified: reason };
+      }
       return refuse('Sin veredicto aceptado y vigente para la imagen');
+    }
 
     if (!(await this.ledger.claim(record.id, tenantId))) {
       return refuse('El veredicto ya fue utilizado');
@@ -482,6 +523,49 @@ export class ToolExecutorService {
         ),
       },
     };
+  }
+
+  /**
+   * ¿Esta imagen quedó sin veredicto por un fallo técnico? Solo entonces una
+   * herramienta con `PROCEED_UNVERIFIED` puede seguir. Cualquier resultado
+   * real (inválido, dudoso, ilegible, ya usado) se rechaza siempre, y sin
+   * prueba de que el sistema registró el fallo tampoco se sigue.
+   */
+  private async technicalFailureOf(
+    tenantId: string,
+    conversationId: string,
+    capability: string,
+    hash: string,
+  ): Promise<UnverifiedReason | null> {
+    try {
+      const latest = await this.prisma.verificationRecord.findFirst({
+        where: {
+          tenantId,
+          conversationId,
+          capability,
+          hashVersion: NORMALIZED_HASH_VERSION,
+          subjectHash: hash,
+          mode: 'ACTIVE',
+        },
+        orderBy: { createdAt: 'desc' },
+        select: { verdict: true },
+      });
+      if (latest) return latest.verdict === 'ERROR' ? 'ANALYSIS_ERROR' : null;
+
+      const conversation = await this.prisma.conversation.findFirst({
+        where: { id: conversationId, tenantId },
+        select: { context: true },
+      });
+      const marked = (
+        conversation?.context as Record<string, unknown> | null | undefined
+      )?.[IMAGE_WARNING_KEY];
+      return marked ? 'NOT_ANALYZED' : null;
+    } catch (error) {
+      this.logger.warn(
+        `No se pudo comprobar si el análisis falló: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return null;
+    }
   }
 
   private decodeImage(dataUri: string | undefined): Buffer | null {

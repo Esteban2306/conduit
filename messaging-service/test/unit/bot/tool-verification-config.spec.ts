@@ -441,3 +441,63 @@ describe('verifiedParams: configuración', () => {
     ).rejects.toThrow(/no declara la variable/);
   });
 });
+
+describe('onTechnicalFailure: configuración', () => {
+  it.each(['REFUSE', 'PROCEED_UNVERIFIED'])(
+    'el DTO acepta %s',
+    async (value) => {
+      expect(await errorsOf({ ...gated, onTechnicalFailure: value })).toEqual(
+        [],
+      );
+    },
+  );
+
+  it.each(['proceed', 'IGNORE', '', 1])('el DTO rechaza %j', async (value) => {
+    expect(await errorsOf({ ...gated, onTechnicalFailure: value })).toContain(
+      'onTechnicalFailure',
+    );
+  });
+
+  it('se guarda y por defecto es REFUSE', async () => {
+    const w = build();
+    await w.service.create('bot', 'tenant', {
+      ...gated,
+      onTechnicalFailure: 'PROCEED_UNVERIFIED',
+    } as never);
+    expect(w.prisma.toolDefinition.create.mock.calls[0][0].data).toMatchObject({
+      onTechnicalFailure: 'PROCEED_UNVERIFIED',
+    });
+    const d = build();
+    await d.service.create('bot', 'tenant', gated as never);
+    expect(d.prisma.toolDefinition.create.mock.calls[0][0].data).toMatchObject({
+      onTechnicalFailure: 'REFUSE',
+    });
+  });
+
+  it('exige que la herramienta tenga puerta', async () => {
+    await expect(
+      build().service.create('bot', 'tenant', {
+        ...base,
+        onTechnicalFailure: 'PROCEED_UNVERIFIED',
+      } as never),
+    ).rejects.toThrow(/onTechnicalFailure solo se permite/);
+  });
+
+  it('quitar la puerta a una herramienta que sigue sin verificar se rechaza', async () => {
+    const w = build({
+      ...base,
+      id: 't1',
+      botConfigId: 'bot',
+      verificationCapability: 'image-analysis',
+      acceptedVerdicts: ['VALID'],
+      authSecretEncrypted: 'enc',
+      verifiedParams: {},
+      onTechnicalFailure: 'PROCEED_UNVERIFIED',
+    } as never);
+    await expect(
+      w.service.update('bot', 't1', 'tenant', {
+        verificationCapability: null,
+      } as never),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+});

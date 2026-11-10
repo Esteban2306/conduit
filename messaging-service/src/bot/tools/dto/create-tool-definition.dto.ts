@@ -120,4 +120,14 @@ export class CreateToolDefinitionDto {
   @IsOptional()
   @IsObject()
   verifiedParams?: Record<string, string>;
+
+  /**
+   * Qué hacer si el análisis falló por motivos técnicos. `REFUSE` (por
+   * defecto) rechaza; `PROCEED_UNVERIFIED` ejecuta sin pasaporte y lo avisa
+   * al backend con una cabecera. Un INVALID o un resultado dudoso real nunca
+   * se salta la puerta.
+   */
+  @IsOptional()
+  @IsIn(['REFUSE', 'PROCEED_UNVERIFIED'])
+  onTechnicalFailure?: 'REFUSE' | 'PROCEED_UNVERIFIED';
 }

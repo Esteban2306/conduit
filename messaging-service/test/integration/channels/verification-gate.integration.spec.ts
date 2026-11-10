@@ -95,7 +95,7 @@ suite(
         tenantId?: string;
         specialistId?: string;
         conversationId: string;
-        verdict?: 'VALID' | 'NEEDS_REVIEW' | 'INVALID';
+        verdict?: 'VALID' | 'NEEDS_REVIEW' | 'INVALID' | 'ERROR';
         mode?: 'ACTIVE' | 'SHADOW';
         createdAt?: Date;
       },
@@ -519,6 +519,139 @@ suite(
       expect(
         seen[0].headers[VERIFICATION_HEADER.toLowerCase()],
       ).toBeUndefined();
+    });
+
+    describe('seguir sin verificar ante un fallo técnico (PROCEED_UNVERIFIED)', () => {
+      let lenient: string;
+      beforeAll(async () => {
+        const base = await prisma.toolDefinition.findUniqueOrThrow({
+          where: { id: strictTool },
+        });
+        lenient = (
+          await prisma.toolDefinition.create({
+            data: {
+              botConfigId: botA,
+              name: `subir_degradable_${run}`,
+              description: 'd',
+              parametersSchema: { type: 'object', properties: {} },
+              endpointUrl: base.endpointUrl,
+              httpMethod: 'POST',
+              authHeaderName: 'X-Api-Key',
+              authSecretEncrypted: base.authSecretEncrypted,
+              requiresImageAttachment: true,
+              imageParamName: 'imageBase64',
+              verificationCapability: CAP,
+              acceptedVerdicts: ['VALID'],
+              verificationParamName: 'verificacion',
+              onTechnicalFailure: 'PROCEED_UNVERIFIED',
+            },
+          })
+        ).id;
+      });
+
+      it('por defecto una herramienta nace en REFUSE y la base no admite seguir sin puerta', async () => {
+        const row = await prisma.toolDefinition.findUniqueOrThrow({
+          where: { id: strictTool },
+        });
+        expect(row.onTechnicalFailure).toBe('REFUSE');
+        await expect(
+          prisma.toolDefinition.create({
+            data: {
+              botConfigId: botA,
+              name: `sin_puerta_${run}`,
+              description: 'd',
+              parametersSchema: { type: 'object', properties: {} },
+              endpointUrl: 'https://backend.test/x',
+              onTechnicalFailure: 'PROCEED_UNVERIFIED',
+            },
+          }),
+        ).rejects.toThrow();
+      });
+
+      it('un ERROR registrado de esa imagen deja ejecutar sin pasaporte y con la cabecera de aviso', async () => {
+        const image = await png(40);
+        const conversationId = await nextConversation();
+        await record(image, { conversationId, verdict: 'ERROR' });
+        const before = seen.length;
+
+        const outcome = await call(image, conversationId, lenient, {
+          verificacion: 'APROBADO POR EL MODELO',
+        });
+
+        expect(outcome.status).toBe('SUCCESS');
+        const request = seen[before];
+        expect(request.headers['x-conduit-verification-status']).toBe(
+          'UNVERIFIED',
+        );
+        expect(request.headers['x-conduit-verification-reason']).toBe(
+          'ANALYSIS_ERROR',
+        );
+        expect(
+          request.headers[VERIFICATION_HEADER.toLowerCase()],
+        ).toBeUndefined();
+        expect(request.body).not.toHaveProperty('verificacion');
+      });
+
+      it('sin registro, solo sigue si la conversación quedó marcada como imagen sin analizar', async () => {
+        const image = await png(41);
+        const unmarked = await nextConversation();
+        const refused = await call(image, unmarked, lenient);
+        expect(refused.responseBody).toMatchObject({
+          code: 'VERIFICATION_REQUIRED',
+        });
+
+        const marked = await nextConversation();
+        await prisma.conversation.update({
+          where: { id: marked },
+          data: {
+            context: {
+              imageAnalysisWarning: { reason: 'NOT_RUN', at: 'x' },
+            },
+          },
+        });
+        const before = seen.length;
+        const outcome = await call(image, marked, lenient);
+        expect(outcome.status).toBe('SUCCESS');
+        expect(seen[before].headers['x-conduit-verification-reason']).toBe(
+          'NOT_ANALYZED',
+        );
+      });
+
+      it.each(['INVALID', 'NEEDS_REVIEW'] as const)(
+        'un %s real nunca se salta la puerta, ni con la conversación marcada',
+        async (verdict) => {
+          const image = await png(42);
+          const conversationId = await nextConversation();
+          await prisma.conversation.update({
+            where: { id: conversationId },
+            data: {
+              context: {
+                imageAnalysisWarning: { reason: 'NOT_RUN', at: 'x' },
+              },
+            },
+          });
+          await record(image, { conversationId, verdict });
+          const before = seen.length;
+
+          const outcome = await call(image, conversationId, lenient);
+
+          expect(outcome.responseBody).toMatchObject({
+            code: 'VERIFICATION_REQUIRED',
+          });
+          expect(seen).toHaveLength(before);
+        },
+      );
+
+      it('un resultado de otro chat no cuenta como fallo de este', async () => {
+        const image = await png(43);
+        const other = await nextConversation();
+        await record(image, { conversationId: other, verdict: 'ERROR' });
+        const mine = await nextConversation();
+        const outcome = await call(image, mine, lenient);
+        expect(outcome.responseBody).toMatchObject({
+          code: 'VERIFICATION_REQUIRED',
+        });
+      });
     });
 
     it('una herramienta con verificación llamada sin imagen (por ejemplo desde otro flujo) se rechaza', async () => {

@@ -195,6 +195,7 @@ Para acciones sensibles (registrar un pago, subir un documento): la herramienta 
 - **Pasaporte firmado:** cada llamada lleva `X-Conduit-Verification` (JSON canónico en base64url) y `X-Conduit-Verification-Signature` (HMAC-SHA256 con el `authSecret`). Tu backend debe recalcular la firma en tiempo constante, rechazar si `expiresAt` ya pasó, no aceptar el mismo `verificationId` dos veces y usar `fields` y `verdict` del pasaporte, no valores que lleguen por otro lado.
 - **`verifiedParams`**: mapa `ruta del parámetro → variable`. Conduit escribe en esos campos el valor leído y verificado, pisa lo que haya enviado el modelo y los oculta del esquema que ve. Así el monto, la referencia o lo que sea llega sin que el modelo lo copie. Si la variable no se leyó, el campo no se envía. Solo variables de la capacidad de la propia herramienta.
 - No puedes quitar un vínculo mientras una herramienta lo use (409).
+- **`onTechnicalFailure`** (`REFUSE` por defecto): con `PROCEED_UNVERIFIED`, si el análisis falló por motivos técnicos (un `ERROR` registrado de esa imagen, o la conversación marcada con `IMAGE_NOT_ANALYZED` y sin resultado), la herramienta se ejecuta **sin pasaporte** con las cabeceras `X-Conduit-Verification-Status: UNVERIFIED` y `X-Conduit-Verification-Reason`. Un `INVALID`, un resultado dudoso real o un veredicto ya usado **nunca** se saltan la puerta. Tu backend debe tratar esas solicitudes con cuidado (por ejemplo, dejarlas pendientes de revisión). Úsalo solo en acciones donde perder la verificación sea aceptable.
 
 ## 5. Que tu backend reaccione al resultado (webhooks)
 
@@ -221,7 +222,7 @@ No avisa desde `SHADOW`, ni cuando se reutiliza un veredicto ya registrado, ni c
 
 ### Si el análisis falla
 
-La conversación **nunca se detiene** por un fallo de análisis: el bot sigue y la imagen llega al panel como siempre para que una persona la vea. El panel recibe `warnings` en cada conversación del listado (`GET /bots/:botId/conversations`) con `code: IMAGE_NOT_ANALYZED` y el motivo; úsalo para mostrar una advertencia. No se manda ningún mensaje al administrador. Las acciones con puerta de verificación sí quedan sin ejecutar mientras no haya un veredicto aceptado: esa es la protección, y la conversación sigue.
+La conversación **nunca se detiene** por un fallo de análisis: el bot sigue y la imagen llega al panel como siempre para que una persona la vea. Las herramientas con `onTechnicalFailure: PROCEED_UNVERIFIED` pueden seguir sin verificación en ese caso. El panel recibe `warnings` en cada conversación del listado (`GET /bots/:botId/conversations`) con `code: IMAGE_NOT_ANALYZED` y el motivo; úsalo para mostrar una advertencia. No se manda ningún mensaje al administrador. Las acciones con puerta de verificación quedan sin ejecutar mientras no haya un veredicto aceptado (esa es la protección, y la conversación sigue), salvo las configuradas con `PROCEED_UNVERIFIED`.
 
 ### Qué mirar en las métricas
 
@@ -260,6 +261,7 @@ La conversación **nunca se detiene** por un fallo de análisis: el bot sigue y 
 | 400 al crear una herramienta con `verificationCapability` | El bot no tiene un vínculo para esa capacidad |
 | 400 en `verifiedParams` | Variable inexistente en el especialista, ruta que choca con imagen/teléfono/pasaporte, o rutas solapadas |
 | 409 al eliminar un vínculo | Sigue en `SHADOW`/`ACTIVE` o una herramienta lo usa |
+| 400 con `onTechnicalFailure` | La herramienta no tiene `verificationCapability`; `PROCEED_UNVERIFIED` solo existe en herramientas con puerta |
 | La herramienta responde `VERIFICATION_REQUIRED` | No hay veredicto `ACTIVE` aceptado, vigente y sin usar para esa misma imagen en esa conversación; o la imagen fue reenviada y ya se consumió |
 | El bot no ve una variable de texto | Es lo esperado: solo ve las de tipo cerrado y las marcadas `exposeToBot` |
 | No llegan webhooks de resultados | El vínculo está en `SHADOW`, no estás suscrito al evento, o fue una reutilización de un veredicto ya registrado |
