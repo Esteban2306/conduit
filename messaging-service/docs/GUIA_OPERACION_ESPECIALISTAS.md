@@ -74,7 +74,7 @@ Cada regla apunta a una variable (`field`) y tiene un operador según su tipo, u
 |---|---|
 | `number` | `gte`, `lte`, `eq` |
 | `date` | `within_days`, `eq` |
-| `string` | `eq`, `contains`, `fuzzy`, `in` |
+| `string` | `eq`, `contains`, `fuzzy`, `in`, `within` (el valor leído aparece dentro de un texto de referencia; mínimo 6 letras o números) |
 | `boolean` | `eq` |
 | `enum` | `eq`, `in` |
 

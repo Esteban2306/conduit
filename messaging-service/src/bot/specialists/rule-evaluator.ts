@@ -10,7 +10,12 @@ import {
   Variables,
   findVariable,
 } from './contracts';
-import { containsTokens, fuzzySimilarity, normalizeText } from './text-match';
+import {
+  containsTokens,
+  fuzzySimilarity,
+  normalizeText,
+  withinText,
+} from './text-match';
 
 export type GroundingValue = string | number | boolean | null | undefined;
 export type GroundingValues = Record<string, GroundingValue>;
@@ -147,6 +152,9 @@ function compare(
     case 'contains':
       if (typeof operand !== 'string') return 'INVALID_OPERAND';
       return containsTokens(String(value), operand) ? 'PASS' : 'FAIL';
+    case 'within':
+      if (typeof operand !== 'string') return 'INVALID_OPERAND';
+      return withinText(String(value), operand) ? 'PASS' : 'FAIL';
     case 'fuzzy': {
       if (typeof operand !== 'string') return 'INVALID_OPERAND';
       const threshold = rule.threshold ?? DEFAULT_FUZZY_THRESHOLD;

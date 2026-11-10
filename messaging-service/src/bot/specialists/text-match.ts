@@ -76,3 +76,19 @@ export function containsTokens(haystack: string, needle: string): boolean {
   if (normalizedNeedle === '') return false;
   return ` ${normalizeText(haystack)} `.includes(` ${normalizedNeedle} `);
 }
+
+export const MIN_WITHIN_LENGTH = 6;
+
+export function compactText(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+}
+
+export function withinText(value: string, text: string): boolean {
+  const needle = compactText(value);
+  if (needle.length < MIN_WITHIN_LENGTH) return false;
+  return compactText(text).includes(needle);
+}

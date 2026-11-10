@@ -9,9 +9,12 @@ import {
 } from 'src/bot/specialists/contracts';
 import { LEGACY_IMAGE_OUTPUT_SCHEMA } from 'src/bot/specialists/backfill/backfill-specialists';
 import {
+  MIN_WITHIN_LENGTH,
+  compactText,
   containsTokens,
   fuzzySimilarity,
   normalizeText,
+  withinText,
 } from 'src/bot/specialists/text-match';
 
 type Fields = Record<string, unknown>;
@@ -250,6 +253,89 @@ describe('evaluador de reglas', () => {
     });
   });
 
+  describe('within', () => {
+    const TEXT =
+      'Paga por Nequi al 314 445 5235 a nombre de Spa Demo, o a la cuenta Bancolombia 123-456789-01.';
+    const within = (
+      value: unknown,
+      ref: unknown = { literal: TEXT },
+      ctx: EvaluationContext = context(),
+    ) =>
+      run(
+        [rule({ field: 'reference', op: 'within', ref })],
+        { reference: value },
+        ctx,
+      );
+
+    it('encuentra el número aunque el texto lo escriba con espacios o guiones', () => {
+      expect(within('3144455235').verdict).toBe('VALID');
+      expect(within('314-445-5235').verdict).toBe('VALID');
+      expect(within('12345678901').verdict).toBe('VALID');
+    });
+
+    it('no importan mayúsculas, tildes ni separadores', () => {
+      expect(within('NEQUI al 314').verdict).toBe('VALID');
+      expect(within('Bancolómbia 123').verdict).toBe('VALID');
+    });
+
+    it('un número distinto no coincide', () => {
+      const out = within('3144455236');
+      expect(out.verdict).toBe('INVALID');
+      expect(out.reasonCodes).toEqual(['REFERENCE_WITHIN_FAILED']);
+    });
+
+    it('un fragmento demasiado corto no prueba nada', () => {
+      expect(MIN_WITHIN_LENGTH).toBe(6);
+      expect(within('5235').verdict).toBe('INVALID');
+      expect(within('44552').verdict).toBe('INVALID');
+      expect(within('445523').verdict).toBe('VALID');
+    });
+
+    it('un valor vacío o solo símbolos no coincide', () => {
+      expect(within('').verdict).not.toBe('VALID');
+      expect(within('******').verdict).toBe('INVALID');
+    });
+
+    it('usa el texto del contexto y refleja un cambio de ese texto', () => {
+      const ref = 'grounding.instrucciones';
+      expect(
+        within('3144455235', ref, context({ instrucciones: TEXT })).verdict,
+      ).toBe('VALID');
+      expect(
+        within(
+          '3144455235',
+          ref,
+          context({ instrucciones: 'Nequi 3001112233' }),
+        ).verdict,
+      ).toBe('INVALID');
+    });
+
+    it('sin texto de contexto nunca da válido', () => {
+      const ref = 'grounding.instrucciones';
+      expect(within('3144455235', ref, context({})).verdict).not.toBe('VALID');
+      expect(
+        within('3144455235', ref, context({ instrucciones: '   ' })).verdict,
+      ).toBe('INVALID');
+    });
+
+    it('un contexto numérico es un operando inválido', () => {
+      expect(
+        within(
+          '3144455235',
+          'grounding.instrucciones',
+          context({ instrucciones: 3144455235 }),
+        ).reasonCodes,
+      ).not.toEqual([]);
+      expect(
+        within(
+          '3144455235',
+          'grounding.instrucciones',
+          context({ instrucciones: 3144455235 }),
+        ).verdict,
+      ).not.toBe('VALID');
+    });
+  });
+
   describe('fuzzy', () => {
     const fuzzy = (literal: string, extra: Fields = {}, threshold?: number) =>
       run(
@@ -460,6 +546,7 @@ describe('resúmenes de los códigos de regla', () => {
     'DATE_WITHIN_DAYS_FAILED',
     'RECIPIENT_FUZZY_FAILED',
     'RECIPIENT_CONTAINS_FAILED',
+    'REFERENCE_WITHIN_FAILED',
     'CURRENCY_EQ_FAILED',
     'GROUNDING_UNAVAILABLE',
     'RULE_OPERAND_INVALID',
@@ -521,4 +608,18 @@ describe('within_days con fechas que no existen', () => {
       expect(result.reasonCodes).toEqual(['RULE_OPERAND_INVALID']);
     },
   );
+});
+
+describe('texto compacto', () => {
+  it('compactText quita todo salvo letras y números', () => {
+    expect(compactText(' Cuenta 123-456.789 / Ñandú ')).toBe(
+      'cuenta123456789nandu',
+    );
+  });
+
+  it('withinText exige un mínimo de caracteres y busca dentro del texto', () => {
+    expect(withinText('123456', 'x 12 34 56 y')).toBe(true);
+    expect(withinText('12345', 'x 12 34 56 y')).toBe(false);
+    expect(withinText('999999', 'x 12 34 56 y')).toBe(false);
+  });
 });
