@@ -219,6 +219,10 @@ No avisa desde `SHADOW`, ni cuando se reutiliza un veredicto ya registrado, ni c
 - Para que el equipo se entere solo: agrega el disparador **`VERIFICATION_REVIEW`** a un contacto de escalamiento (`POST /bots/:botId/escalation-contacts` con `"notifyOn": ["VERIFICATION_REVIEW"]`). Es opt-in. El aviso lleva cliente, resultado, motivos e id, **sin** los datos de la imagen, y sale como máximo una vez por conversación y ventana.
 - `POST /verifications/:id/review` con `{"decision": "APPROVED" | "REJECTED", "note": "…"}` deja constancia (una sola vez por caso). **Es auditoría**: no cambia el veredicto ni habilita nada. Para que una imagen dudosa llegue a una herramienta estricta, la persona debe reenviarla y obtener `VALID`, o la herramienta debe aceptar `NEEDS_REVIEW` explícitamente.
 
+### Si el análisis falla
+
+La conversación **nunca se detiene** por un fallo de análisis: el bot sigue y la imagen llega al panel como siempre para que una persona la vea. El panel recibe `warnings` en cada conversación del listado (`GET /bots/:botId/conversations`) con `code: IMAGE_NOT_ANALYZED` y el motivo; úsalo para mostrar una advertencia. No se manda ningún mensaje al administrador. Las acciones con puerta de verificación sí quedan sin ejecutar mientras no haya un veredicto aceptado: esa es la protección, y la conversación sigue.
+
 ### Qué mirar en las métricas
 
 | Señal | Qué suele significar |
@@ -228,6 +232,7 @@ No avisa desde `SHADOW`, ni cuando se reutiliza un veredicto ya registrado, ni c
 | `ERROR` con `NO_MODEL` | El especialista no tiene un modelo utilizable (clave inválida o desactivada) |
 | `ALREADY_USED` / `REUSED_OTHER_CONTACT` | Reenvíos o intentos de reutilizar una imagen; revisa los casos `REUSED_OTHER_CONTACT` |
 | `RULES_INVALID` | Las reglas guardadas ya no cuadran con las variables; corrígelas |
+| Advertencia `IMAGE_NOT_ANALYZED` en una conversación del panel | La imagen llegó pero no se analizó (ver `reason`). El bot siguió y la imagen está en el panel para revisarla a mano. Se limpia sola con el siguiente análisis correcto |
 
 ### Cambiar un especialista en producción
 

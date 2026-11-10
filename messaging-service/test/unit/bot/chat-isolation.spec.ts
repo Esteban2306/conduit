@@ -1934,20 +1934,87 @@ describe('Rama de imagen del router (red de seguridad de la fase 3c)', () => {
     expect(contextOf(w, A).lastImageDetails).toBe('d'.repeat(100));
   });
 
-  it('con el proveedor saturado se responde con el mensaje de espera y no se llama al modelo', async () => {
+  it('con el proveedor saturado la conversación continúa, avisa que no se analizó y deja la advertencia', async () => {
     const w = world();
     w.setImageAnalysis(true, {
       status: 'PROVIDER_UNAVAILABLE',
       valid: false,
       confidence: 'LOW',
     });
-    w.inboundImage(A);
+    w.inboundImage(A, 'hola');
     await settle(DELAY_MS + 2_000);
 
-    expect(w.aiCalls).toEqual([]);
+    expect(w.aiCalls).toEqual(['[imagen recibida, no analizada]\nhola']);
     expect(w.sends).toHaveLength(1);
-    expect(w.sends[0].content).toContain('alta demanda');
+    expect(w.sends[0].content).not.toContain('alta demanda');
     expect(contextOf(w, A).imageVerified).toBeUndefined();
+    expect(contextOf(w, A).imageAnalysisWarning).toMatchObject({
+      code: 'IMAGE_NOT_ANALYZED',
+      reason: 'PROVIDER_UNAVAILABLE',
+    });
+  });
+
+  it.each(['ANALYSIS_ERROR', 'INVALID_IMAGE'])(
+    'con %s también queda la advertencia de imagen sin analizar',
+    async (status) => {
+      const w = world();
+      w.setImageAnalysis(true, { status, valid: false, confidence: 'LOW' });
+      w.inboundImage(A, 'hola');
+      await settle(DELAY_MS + 2_000);
+      expect(contextOf(w, A).imageAnalysisWarning).toMatchObject({
+        reason: 'ANALYSIS_ERROR',
+      });
+    },
+  );
+
+  it('un análisis posterior correcto limpia la advertencia', async () => {
+    const w = world();
+    w.setImageAnalysis(true, {
+      status: 'PROVIDER_UNAVAILABLE',
+      valid: false,
+      confidence: 'LOW',
+    });
+    w.inboundImage(A, 'uno');
+    await settle(DELAY_MS + 2_000);
+    expect(contextOf(w, A).imageAnalysisWarning).toBeTruthy();
+
+    w.setImageAnalysis(true, {
+      status: 'SUCCESS',
+      valid: true,
+      confidence: 'HIGH',
+    });
+    w.inboundImage(A, 'dos');
+    await settle(DELAY_MS + 2_000);
+    expect(contextOf(w, A).imageAnalysisWarning).toBeNull();
+  });
+
+  it('un análisis correcto sin advertencia previa no escribe la clave', async () => {
+    const w = world();
+    w.setImageAnalysis(true, {
+      status: 'SUCCESS',
+      valid: true,
+      confidence: 'HIGH',
+    });
+    w.inboundImage(A);
+    await settle(DELAY_MS + 2_000);
+    expect(contextOf(w, A)).not.toHaveProperty('imageAnalysisWarning');
+  });
+
+  it('la advertencia nunca llega al prompt del modelo', async () => {
+    const w = world();
+    w.setImageAnalysis(true, {
+      status: 'PROVIDER_UNAVAILABLE',
+      valid: false,
+      confidence: 'LOW',
+    });
+    w.inboundImage(A, 'uno');
+    await settle(DELAY_MS + 2_000);
+    w.inboundImage(A, 'dos');
+    await settle(DELAY_MS + 2_000);
+    for (const call of w.aiCalls) {
+      expect(call).not.toContain('IMAGE_NOT_ANALYZED');
+      expect(call).not.toContain('imageAnalysisWarning');
+    }
   });
 
   it.each(['ANALYSIS_ERROR', 'INVALID_IMAGE'])(
@@ -2448,6 +2515,42 @@ describe('Especialistas en ACTIVE dentro del router (fase 4d)', () => {
       ]);
       expect(w.sends[0].content).not.toBe(SPECIALIST_BLOCK_TEXT);
       expect(factsOf(w)['image-analysis'].pendingReview).toBe(true);
+    });
+
+    it('un ERROR deja la advertencia de imagen sin analizar y un VALID posterior la limpia', async () => {
+      const w = activeWorld('ERROR', {
+        confidence: 0,
+        fields: {},
+        reasonCodes: ['TIMEOUT'],
+      });
+      await send(w);
+      expect(
+        (w.store.conversationOf(A)?.context as Record<string, unknown>)
+          .imageAnalysisWarning,
+      ).toMatchObject({
+        code: 'IMAGE_NOT_ANALYZED',
+        reason: 'SPECIALIST_ERROR',
+      });
+
+      w.specialistRun.mockResolvedValue(w.activeOutcome('VALID'));
+      await send(w, 'otra');
+      expect(
+        (w.store.conversationOf(A)?.context as Record<string, unknown>)
+          .imageAnalysisWarning,
+      ).toBeNull();
+    });
+
+    it('con BLOCK también queda la advertencia', async () => {
+      const w = activeWorld(
+        'ERROR',
+        { confidence: 0, fields: {}, reasonCodes: ['PROVIDER_ERROR'] },
+        { onFailure: 'BLOCK' },
+      );
+      await send(w);
+      expect(
+        (w.store.conversationOf(A)?.context as Record<string, unknown>)
+          .imageAnalysisWarning,
+      ).toMatchObject({ reason: 'SPECIALIST_ERROR' });
     });
 
     it('con ERROR y BLOCK se responde el texto de espera y no se llama al modelo', async () => {

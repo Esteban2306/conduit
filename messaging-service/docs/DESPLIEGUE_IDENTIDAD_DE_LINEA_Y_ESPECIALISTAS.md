@@ -69,6 +69,12 @@ La espera por desconexión **está activa al desplegar** (no depende de una band
 
 Reversión: `SPECIALISTS_ENABLED=false`.
 
+### Si el análisis de la imagen falla
+
+Un fallo del análisis **nunca corta la conversación**: el bot continúa con el aviso `[imagen recibida, no analizada]`, y la imagen llega al panel por el mismo camino de siempre (no depende del análisis). Antes, con el proveedor saturado, el análisis antiguo respondía "intenta de nuevo" y no llamaba al modelo; eso ya no ocurre. La única excepción es un vínculo configurado explícitamente con `onFailure: BLOCK`, que responde su texto de espera.
+
+La conversación queda con una advertencia que el panel recibe en `GET /bots/:botId/conversations`, dentro de cada elemento: `warnings: [{ "code": "IMAGE_NOT_ANALYZED", "reason": "...", "since": "<fecha ISO>" }]` (lista vacía si no hay). `reason` es `NOT_RUN` (no se llegó a analizar), `PROVIDER_UNAVAILABLE`, `ANALYSIS_ERROR` o `SPECIALIST_ERROR`. Se limpia sola cuando una imagen posterior se analiza bien. No se envía ningún mensaje al administrador y el contexto nunca llega al prompt del modelo.
+
 ### Camino rápido de la imagen
 
 El análisis de la imagen **empieza cuando llega**, no cuando el bot decide responder. El retardo del bot (`botResponseDelaySeconds`, con su variación) no cambia, ni el "visto", ni los tiempos humanos de escritura, ni los reintentos por "está escribiendo": solo se solapa el análisis con esa espera, de modo que al responder el resultado ya está y el modelo conversacional recibe la información completa, no por partes.
@@ -282,7 +288,7 @@ Para los modelos de la familia 5.x, la extracción de imágenes se pide con `eff
 - Una herramienta con puerta exige que el bot tenga vínculo para su capacidad (cualquier modo). Eliminar ese vínculo responde 409 mientras alguna herramienta lo use. Pasarlo a OFF sí se permite: la puerta rechaza entonces la herramienta, que es el lado seguro.
 - El hash exacto de la imagen no detecta reenvíos recomprimidos (WhatsApp recomprime); eso lo cubre la huella de variables (`uniqueBy` del especialista), que solo existe si todas sus variables se leyeron y cada texto cumple su `identityMinLength`.
 - La detección de reutilización y el caché solo aplican a vínculos en `ACTIVE`; en `SHADOW` solo se registra.
-- El análisis legado conserva sus defectos (texto positivo no JSON se acepta como válido; el aviso de "alta demanda" no se muestra cuando caen todos los modelos).
+- El análisis legado conserva sus defectos (texto positivo no JSON se acepta como válido).
 - El proveedor de Anthropic no desactiva el razonamiento: parte de los tokens de salida se gasta en `thinking`.
 - La caché de datos de referencia vive en memoria del proceso; con una sola réplica es correcta, y con varias cada réplica tendría la suya.
 - Cada análisis adelantado gasta tokens aunque después el bot no responda (por ejemplo, si la persona escribe otra cosa o el equipo toma la conversación); la ventana de `IMAGE_PREFETCH_SETTLE_MS` y el "un análisis a la vez" acotan ese gasto, no lo eliminan. Una imagen que llega con otra ya analizándose no cancela la primera: su costo ya se gastó.

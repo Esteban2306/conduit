@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ConversationContext } from '../conversation/interfaces/ConversationContext';
 import { FACTS_KEY, renderFacts } from '../specialists/facts';
+import { IMAGE_WARNING_KEY } from '../conversation/image-warning';
 
 export interface BuiltContext {
   block: string | null;
@@ -9,6 +10,7 @@ export interface BuiltContext {
 
 const EXCLUDED = new Set([
   FACTS_KEY,
+  IMAGE_WARNING_KEY,
   'retryCount',
   'imageVerified',
   'lastImageAnalysis',

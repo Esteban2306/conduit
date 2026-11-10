@@ -1,3 +1,8 @@
+import {
+  IMAGE_NOT_ANALYZED,
+  IMAGE_WARNING_KEY,
+  ImageNotAnalyzedReason,
+} from '../conversation/image-warning';
 import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import { BotConfigService } from '../config/BotConfigService';
 import { ConversationService } from '../conversation/ConversationService';
@@ -1470,6 +1475,36 @@ export class BotRouter {
     }
   }
 
+  private warningOf(reason: ImageNotAnalyzedReason) {
+    return { code: IMAGE_NOT_ANALYZED, reason, at: new Date().toISOString() };
+  }
+
+  /** Limpia la advertencia solo si había una, para no escribir de más. */
+  private clearedWarning(ctx: {
+    aiData: { context: ConversationContext };
+  }): Record<string, null> {
+    return ctx.aiData.context[IMAGE_WARNING_KEY]
+      ? { [IMAGE_WARNING_KEY]: null }
+      : {};
+  }
+
+  private async setImageWarning(
+    ctx: { conversationId: string },
+    warning: { reason: ImageNotAnalyzedReason },
+  ): Promise<void> {
+    try {
+      await this.conversationService.updateContext(ctx.conversationId, {
+        contextPatch: {
+          [IMAGE_WARNING_KEY]: this.warningOf(warning.reason),
+        },
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        `No se pudo guardar la advertencia de imagen sin analizar: ${maskSecrets(error instanceof Error ? error.message : String(error))}`,
+      );
+    }
+  }
+
   private async applyImageBundle(
     bundle: ImageBundle,
     ctx: {
@@ -1482,9 +1517,18 @@ export class BotRouter {
       kind: 'CONTINUE',
       prefix: '[imagen recibida, no analizada]',
     };
+    // Un fallo del análisis nunca corta el turno: la conversación sigue, la
+    // imagen llega al panel como siempre y la conversación queda marcada con
+    // una advertencia que el panel muestra.
+    const notAnalyzed = async (
+      reason: ImageNotAnalyzedReason,
+    ): Promise<ImageApplication> => {
+      await this.setImageWarning(ctx, { reason });
+      return unanalyzed;
+    };
 
     if (bundle.kind === 'UNANALYZED' || bundle.kind === 'SKIPPED') {
-      return unanalyzed;
+      return notAnalyzed('NOT_RUN');
     }
 
     if (bundle.kind === 'LEGACY') {
@@ -1494,6 +1538,7 @@ export class BotRouter {
           contextPatch: {
             imageVerified: analysis.valid,
             lastImageDetails: analysis.details?.slice(0, 100),
+            ...this.clearedWarning(ctx),
           },
         });
         return {
@@ -1502,19 +1547,14 @@ export class BotRouter {
           prefix: `[imagen: válida=${analysis.valid}, confianza=${analysis.confidence}${analysis.details ? `, ${analysis.details.slice(0, 80)}` : ''}]`,
         };
       }
-      if (analysis.status === 'PROVIDER_UNAVAILABLE') {
-        this.logger.warn(
-          `Análisis de imagen no disponible para ${ctx.phoneNumber}. Respondiendo con mensaje de espera.`,
-        );
-        return {
-          kind: 'REPLY',
-          text: 'No pude analizar tu imagen en este momento por alta demanda. Por favor intenta enviarla de nuevo en unos minutos. 🙏',
-        };
-      }
       this.logger.warn(
-        `Error de análisis para ${ctx.phoneNumber}. Continuando sin contexto de imagen.`,
+        `Análisis de imagen no disponible (${analysis.status}) para ${ctx.phoneNumber}. Continuando sin contexto de imagen.`,
       );
-      return unanalyzed;
+      return notAnalyzed(
+        analysis.status === 'PROVIDER_UNAVAILABLE'
+          ? 'PROVIDER_UNAVAILABLE'
+          : 'ANALYSIS_ERROR',
+      );
     }
 
     let facts: unknown = ctx.aiData.context[FACTS_KEY];
@@ -1538,6 +1578,7 @@ export class BotRouter {
       : verdicts.every((verdict) => verdict === 'VALID')
         ? true
         : undefined;
+    const hasError = verdicts.includes('ERROR');
     const details = bundle.outcomes
       .map((outcome) => outcome.result.humanSummary)
       .join(' | ')
@@ -1549,6 +1590,9 @@ export class BotRouter {
           [FACTS_KEY]: facts,
           ...(imageVerified !== undefined && { imageVerified }),
           lastImageDetails: details,
+          ...(hasError
+            ? { imageAnalysisWarning: this.warningOf('SPECIALIST_ERROR') }
+            : this.clearedWarning(ctx)),
         },
       });
     } catch (error: unknown) {
