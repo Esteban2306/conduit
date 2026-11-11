@@ -51,13 +51,25 @@ export function billableTokens(usage: TokenUsage): number {
   );
 }
 
+const REJECTS_DISABLED_THINKING =
+  /^claude-(opus-5-5|sonnet-5-5|fable|mythos)(-|$)/;
+
+export function rejectsDisabledThinking(model: string | undefined): boolean {
+  return model !== undefined && REJECTS_DISABLED_THINKING.test(model);
+}
+
 export function reasoningParams(
   mode: ReasoningLevel | undefined,
+  model?: string,
 ): Pick<
   Anthropic.MessageCreateParamsNonStreaming,
   'thinking' | 'output_config'
 > {
-  if (mode === 'OFF') return { thinking: { type: 'disabled' } };
+  if (mode === 'OFF') {
+    return rejectsDisabledThinking(model)
+      ? { output_config: { effort: 'low' } }
+      : { thinking: { type: 'disabled' } };
+  }
   if (mode === 'LOW') return { output_config: { effort: 'low' } };
   return {};
 }
@@ -138,7 +150,7 @@ export class AnthropicProvider implements AiProvider {
         system,
         messages: input.systemBlocks ? withTailCache(messages) : messages,
         ...(tools && tools.length > 0 ? { tools } : {}),
-        ...reasoningParams(input.reasoningMode),
+        ...reasoningParams(input.reasoningMode, input.model),
       });
 
       usage.input += response.usage.input_tokens;

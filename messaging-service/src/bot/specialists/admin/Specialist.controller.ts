@@ -9,6 +9,7 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { ApiAuthGuard } from 'src/auth/guards/api-auth.guard';
 import { TenantAdminGuard } from 'src/auth/guards/tenant-admin.guard';
@@ -20,7 +21,20 @@ import { SpecialistAdminService } from './SpecialistAdminService';
 @ApiTags('Specialists')
 @Controller('specialists')
 export class SpecialistController {
-  constructor(private readonly specialists: SpecialistAdminService) {}
+  constructor(
+    private readonly specialists: SpecialistAdminService,
+    private readonly config: ConfigService,
+  ) {}
+
+  @Get('runtime')
+  @ApiOperation({
+    summary: 'Indica si los especialistas están encendidos en este servidor',
+  })
+  runtime() {
+    return {
+      enabled: this.config.get<boolean>('specialists.enabled') === true,
+    };
+  }
 
   @Get()
   @ApiOperation({ summary: 'Listar los especialistas del tenant' })
