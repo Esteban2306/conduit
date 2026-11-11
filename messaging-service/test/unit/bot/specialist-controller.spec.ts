@@ -44,7 +44,11 @@ describe('SpecialistController: delegación con el tenant del token', () => {
     listVersions: jest.fn(),
     getVersion: jest.fn(),
   };
-  const controller = new SpecialistController(service as never);
+  const settings = { get: jest.fn() };
+  const controller = new SpecialistController(
+    service as never,
+    settings as never,
+  );
   const user = { sub: 'user-1', tenantId: 'tenant-del-token', role: 'ADMIN' };
 
   beforeEach(() => jest.clearAllMocks());
@@ -97,4 +101,19 @@ describe('SpecialistController: delegación con el tenant del token', () => {
     expect(service.archive).toHaveBeenCalledWith('tenant-del-token', 'id-1');
     expect(service.unarchive).toHaveBeenCalledWith('tenant-del-token', 'id-1');
   });
+
+  it.each([
+    [true, true],
+    [false, false],
+    [undefined, false],
+    ['true', false],
+  ])(
+    'runtime con specialists.enabled=%j informa enabled=%j',
+    (value, enabled) => {
+      settings.get.mockReturnValue(value);
+      expect(controller.runtime()).toEqual({ enabled });
+      expect(settings.get).toHaveBeenCalledWith('specialists.enabled');
+      expect(service.get).not.toHaveBeenCalled();
+    },
+  );
 });
