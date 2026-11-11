@@ -1686,6 +1686,31 @@ describe('SpecialistRuntime: webhook del resultado al tenant', () => {
     expect(Object.keys(data)).not.toContain('image');
   });
 
+  it('el aviso lleva el contacto del chat para que el negocio sepa de quién es', async () => {
+    const webhooks = hook();
+    const w = build({ binding: binding('ACTIVE'), response: FULL, webhooks });
+    await w.runtime.run({
+      tenantId: TENANT,
+      botConfigId: BOT,
+      conversationId: 'conv-1',
+      capability: CAP,
+      image,
+      contactAddress: '573001112233',
+    });
+
+    const [, , data] = webhooks.dispatchSystem.mock.calls[0] as unknown[];
+    expect(data).toMatchObject({ contact: '573001112233' });
+  });
+
+  it('sin contacto el aviso lo declara null en vez de omitirlo', async () => {
+    const webhooks = hook();
+    const w = build({ binding: binding('ACTIVE'), response: FULL, webhooks });
+    await w.run();
+
+    const [, , data] = webhooks.dispatchSystem.mock.calls[0] as unknown[];
+    expect(data).toHaveProperty('contact', null);
+  });
+
   it('cada veredicto usa su propio evento', async () => {
     const webhooks = hook();
     const w = build({
