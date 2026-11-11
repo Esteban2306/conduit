@@ -92,3 +92,63 @@ describe('AnthropicProvider.analyzeImage: esfuerzo de razonamiento', () => {
     });
   });
 });
+
+describe('AnthropicProvider.generateText: razonamiento apagado', () => {
+  beforeEach(() => create.mockReset());
+
+  const generate = async (model: string, reasoningMode?: 'OFF' | 'LOW') => {
+    create.mockResolvedValue({
+      content: [{ type: 'text', text: 'hola' }],
+      usage: { input_tokens: 10, output_tokens: 5 },
+      stop_reason: 'end_turn',
+      model,
+    });
+    await new AnthropicProvider().generateText({
+      prompt: 'p',
+      systemPrompt: 's',
+      model,
+      apiKey: `sk-ant-${'x'.repeat(30)}`,
+      baseUrl: '',
+      maxTokens: 1024,
+      reasoningMode,
+    });
+    return (
+      create.mock.calls.at(-1) as unknown as [Record<string, unknown>]
+    )[0];
+  };
+
+  it.each([
+    'claude-haiku-5-5',
+    'claude-sonnet-5',
+    'claude-opus-5',
+    'claude-haiku-4-5',
+  ])('%s acepta desactivar el razonamiento', async (model) => {
+    const request = await generate(model, 'OFF');
+    expect(request.thinking).toEqual({ type: 'disabled' });
+    expect(request).not.toHaveProperty('output_config');
+  });
+
+  it.each([
+    'claude-sonnet-5-5',
+    'claude-opus-5-5',
+    'claude-fable-5-1',
+    'claude-fable-5',
+    'claude-mythos-5-1',
+  ])(
+    '%s lo rechaza, así que se usa esfuerzo bajo en vez de desactivarlo',
+    async (model) => {
+      const request = await generate(model, 'OFF');
+      expect(request).not.toHaveProperty('thinking');
+      expect(request.output_config).toEqual({ effort: 'low' });
+    },
+  );
+
+  it('con LOW o sin modo no cambia lo que ya se enviaba', async () => {
+    expect((await generate('claude-sonnet-5-5', 'LOW')).output_config).toEqual({
+      effort: 'low',
+    });
+    const plain = await generate('claude-sonnet-5-5');
+    expect(plain).not.toHaveProperty('thinking');
+    expect(plain).not.toHaveProperty('output_config');
+  });
+});
