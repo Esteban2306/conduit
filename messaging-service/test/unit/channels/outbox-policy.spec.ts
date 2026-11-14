@@ -2,6 +2,7 @@ import {
   backoffMs,
   OUTBOX_MAX_ATTEMPTS,
   OVERLIMIT_RETRY_MS,
+  TYPING_HOLD_RETRY_MS,
   verdictFor,
 } from 'src/channels/whatsapp/outbox/outbox-policy';
 
@@ -48,5 +49,29 @@ describe('outbox-policy', () => {
       1,
     );
     expect(verdict).toEqual({ action: 'retry', delayMs: OVERLIMIT_RETRY_MS });
+  });
+
+  it('una respuesta desactualizada se cancela sin contar como fallo ni gastar intentos', () => {
+    expect(
+      verdictFor(
+        { success: false, retryable: false, errorCode: 'SUPERSEDED' },
+        1,
+      ),
+    ).toEqual({ action: 'cancel' });
+    expect(
+      verdictFor(
+        { success: false, retryable: false, errorCode: 'SUPERSEDED' },
+        OUTBOX_MAX_ATTEMPTS,
+      ),
+    ).toEqual({ action: 'cancel' });
+  });
+
+  it('un cliente escribiendo hace esperar la respuesta unos segundos, sin gastar intentos', () => {
+    expect(
+      verdictFor(
+        { success: false, retryable: false, errorCode: 'CLIENT_TYPING' },
+        OUTBOX_MAX_ATTEMPTS,
+      ),
+    ).toEqual({ action: 'hold', delayMs: TYPING_HOLD_RETRY_MS });
   });
 });

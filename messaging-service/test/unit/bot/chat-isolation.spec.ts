@@ -147,16 +147,26 @@ class Store {
           return { created: true };
         },
       ),
-      saveOutbound: later((conversationId: string, content: string) => {
-        this.messages.push({
-          id: `m${++this.seq}`,
-          conversationId,
-          direction: 'OUTBOUND',
-          content,
-          processedBy: 'bot',
-          createdAt: Date.now(),
-        });
-      }),
+      saveOutbound: later(
+        (
+          conversationId: string,
+          content: string,
+          options?: { answeredUntil?: Date | null },
+        ) => {
+          this.messages.push({
+            id: `m${++this.seq}`,
+            conversationId,
+            direction: 'OUTBOUND',
+            content,
+            processedBy: 'bot',
+            // Igual que el servicio real: la respuesta queda justo después de
+            // lo último que contesta, no cuando salió.
+            createdAt: options?.answeredUntil
+              ? options.answeredUntil.getTime() + 1
+              : Date.now(),
+          });
+        },
+      ),
       saveHumanOutbound: later((conversationId: string, content: string) => {
         this.messages.push({
           id: `m${++this.seq}`,
@@ -186,9 +196,21 @@ class Store {
           content: m.content,
           hasImage: m.hasImage ?? false,
           waMessageId: m.waMessageId ?? null,
+          createdAt: new Date(m.createdAt),
         })),
         summary: null,
       })),
+      hasNewInboundSince: later(
+        (conversationId: string, after: Date | null | undefined) =>
+          !!after &&
+          this.messages.some(
+            (m) =>
+              m.conversationId === conversationId &&
+              m.direction === 'INBOUND' &&
+              m.processedBy !== 'ignored' &&
+              m.createdAt > after.getTime(),
+          ),
+      ),
       acquireLock: later(() => true),
       releaseLock: later(() => undefined),
       isBotPaused: jest.fn(() => false),
@@ -233,9 +255,11 @@ class Store {
   }
 
   pendingOf(conversationId: string): StoredMessage[] {
-    const own = this.messages.filter(
-      (m) => m.conversationId === conversationId,
-    );
+    const own = this.messages
+      .filter((m) => m.conversationId === conversationId)
+      .map((m, order) => ({ m, order }))
+      .sort((a, b) => a.m.createdAt - b.m.createdAt || a.order - b.order)
+      .map(({ m }) => m);
     let last = -1;
     own.forEach((m, i) => {
       if (m.direction === 'OUTBOUND') last = i;
@@ -421,6 +445,7 @@ function world(
           content: string;
           conversationId: string;
           imageVerified?: boolean;
+          answeredUntil?: Date | null;
         },
       ) => {
         if (type !== EVENT_TYPES.CHANNEL_SEND_REQUESTED) return;
@@ -434,6 +459,7 @@ function world(
         await conversations.saveOutbound(
           payload.conversationId,
           payload.content,
+          { answeredUntil: payload.answeredUntil },
         );
       },
     ),
@@ -3067,5 +3093,155 @@ describe('Camino rápido de la imagen: se analiza al llegar', () => {
       );
       expect(w.aiCalls[0]).not.toContain('extra-check');
     });
+  });
+});
+
+describe('Respuestas desactualizadas: si el cliente escribe de nuevo, se espera y se responde una sola vez', () => {
+  const pause = (ms: number) => new Promise<void>((res) => setTimeout(res, ms));
+  const contents = (w: ReturnType<typeof world>, phone = A) =>
+    w.sends.filter((s) => s.to === phone).map((s) => s.content);
+
+  beforeEach(() => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('un mensaje que llega mientras la IA genera descarta esa respuesta y contesta todo junto', async () => {
+    const w = world();
+    w.setToolScript(async (_exec, call) => {
+      if (call === 1) await pause(6_000);
+    });
+    w.inbound(A, 'primero');
+    await settle(DELAY_MS + 1_000);
+    w.inbound(A, 'segundo');
+    await settle(6_000);
+
+    expect(contents(w)).toEqual([]);
+
+    await settle(DELAY_MS + 3_000);
+    expect(contents(w)).toEqual(['respuesta a: primero\nsegundo']);
+    expect(w.aiCalls).toHaveLength(2);
+    expect(w.metrics.snapshot().superseded).toBe(1);
+  });
+
+  it('si el mensaje nuevo llega antes de llamar a la IA, ni siquiera se gastan tokens en la versión vieja', async () => {
+    const w = world();
+    w.inbound(A, 'primero');
+    await settle(DELAY_MS - 1);
+    // Llega justo cuando el turno ya tomó su foto de lo pendiente.
+    w.inbound(A, 'segundo');
+    await settle(DELAY_MS + 3_000);
+
+    expect(contents(w)).toEqual(['respuesta a: primero\nsegundo']);
+    expect(w.aiCalls).toHaveLength(1);
+  });
+
+  it('con el cliente escribiendo, la respuesta lista espera y sale cuando deja de hacerlo', async () => {
+    const w = world();
+    w.setToolScript(async (_exec, call) => {
+      if (call === 1) await pause(3_000);
+    });
+    w.inbound(A, 'hola');
+    await settle(DELAY_MS + 500);
+    w.clientTyping(A);
+    await settle(3_000);
+    expect(contents(w)).toEqual([]);
+
+    await settle(20_000);
+    expect(contents(w)).toEqual([]);
+
+    await settle(20_000);
+    expect(contents(w)).toEqual(['respuesta a: hola']);
+    expect(w.aiCalls).toHaveLength(1);
+  });
+
+  it('si mientras escribe termina enviando un mensaje, la respuesta lista se descarta y se contesta todo junto', async () => {
+    const w = world();
+    w.setToolScript(async (_exec, call) => {
+      if (call === 1) await pause(3_000);
+    });
+    w.inbound(A, 'hola');
+    await settle(DELAY_MS + 500);
+    w.clientTyping(A);
+    await settle(3_000);
+    await settle(6_000);
+    w.inbound(A, 'y quiero cita');
+    await settle(60_000);
+
+    expect(contents(w)).toEqual(['respuesta a: hola\ny quiero cita']);
+    expect(w.aiCalls).toHaveLength(2);
+  });
+
+  it('un cliente que sigue "escribiendo" sin parar no retiene la respuesta más allá del tope', async () => {
+    const w = world();
+    w.setToolScript(async (_exec, call) => {
+      if (call === 1) await pause(3_000);
+    });
+    w.inbound(A, 'hola');
+    await settle(DELAY_MS + 500);
+    for (let i = 0; i < 8; i++) {
+      w.clientTyping(A);
+      await settle(10_000);
+    }
+
+    expect(contents(w)).toEqual(['respuesta a: hola']);
+  });
+
+  it('un "ok" que llega mientras se prepara la respuesta no la descarta', async () => {
+    const w = world();
+    w.setToolScript(async (_exec, call) => {
+      if (call === 1) await pause(6_000);
+    });
+    w.inbound(A, 'precio del spa');
+    await settle(DELAY_MS + 1_000);
+    w.inbound(A, 'ok');
+    await settle(20_000);
+
+    expect(contents(w)).toEqual(['respuesta a: precio del spa']);
+    expect(w.aiCalls).toHaveLength(1);
+  });
+
+  it('si el turno ya creó una reserva, la respuesta sale aunque el cliente escriba de nuevo, y lo nuevo se contesta después', async () => {
+    const w = world(new Store(), (message) =>
+      message.includes('gracias por todo')
+        ? 'De nada, que lo disfrutes.'
+        : 'Listo, tu reserva quedó creada.',
+    );
+    w.setTools(['crear_reserva_whatsapp']);
+    w.setToolScript(async (exec, call) => {
+      if (call !== 1) return;
+      await exec({ name: 'crear_reserva_whatsapp', arguments: {} });
+      await pause(6_000);
+    });
+    w.inbound(A, 'sí, confírmala');
+    await settle(DELAY_MS + 1_000);
+    w.inbound(A, 'otra pregunta: ¿tienen parqueadero?');
+    await settle(6_000);
+
+    expect(contents(w)).toEqual(['Listo, tu reserva quedó creada.']);
+
+    await settle(DELAY_MS + 3_000);
+    expect(contents(w)).toHaveLength(2);
+    expect(w.aiCalls[1]).toContain('parqueadero');
+    expect(w.aiCalls[1]).not.toContain('confírmala');
+  });
+
+  it('los mensajes de otro chat no descartan la respuesta de este', async () => {
+    const w = world();
+    w.setToolScript(async (_exec, call) => {
+      if (call === 1) await pause(6_000);
+    });
+    w.inbound(A, 'mensaje de A');
+    await settle(DELAY_MS + 1_000);
+    w.inbound(B, 'mensaje de B');
+    await settle(6_000);
+
+    expect(contents(w, A)).toEqual(['respuesta a: mensaje de A']);
+    expect(contents(w, B)).toEqual([]);
+
+    await settle(DELAY_MS + 3_000);
+    expect(contents(w, B)).toEqual(['respuesta a: mensaje de B']);
   });
 });

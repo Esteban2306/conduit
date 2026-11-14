@@ -48,6 +48,22 @@ export interface ActionMemoryEntry {
   en: string;
 }
 
+/**
+ * Dónde queda una respuesta del bot en la línea de tiempo de la conversación:
+ * justo después del último mensaje del cliente que contesta, no cuando se
+ * generó o salió. Así lo que el cliente escribe mientras la respuesta se
+ * prepara o espera turno sigue contando como pendiente (si no, quedaría
+ * "respondido" sin que nadie lo haya leído). Sin ese dato, la hora real.
+ */
+export function replyPosition(row: {
+  createdAt: Date;
+  answeredUntil?: Date | null;
+}): Date {
+  return row.answeredUntil
+    ? new Date(row.answeredUntil.getTime() + 1)
+    : row.createdAt;
+}
+
 export interface ConversationForAI {
   context: ConversationContext;
   currentStep: string | null;
@@ -62,6 +78,7 @@ export interface ConversationForAI {
     content: string;
     hasImage: boolean;
     waMessageId: string | null;
+    createdAt: Date;
   }[];
   summary: string | null;
 }
@@ -240,7 +257,12 @@ export class ConversationService {
         status: { in: ['PENDING', 'SENDING'] },
       },
       orderBy: [{ createdAt: 'asc' }, { seq: 'asc' }],
-      select: { groupId: true, content: true, createdAt: true },
+      select: {
+        groupId: true,
+        content: true,
+        createdAt: true,
+        answeredUntil: true,
+      },
     });
     const groups = new Map<string, { content: string[]; createdAt: Date }>();
     for (const row of rows) {
@@ -249,7 +271,7 @@ export class ConversationService {
       else
         groups.set(row.groupId, {
           content: [row.content],
-          createdAt: row.createdAt,
+          createdAt: replyPosition(row),
         });
     }
     return [...groups.entries()].map(([groupId, g]) => ({
@@ -306,6 +328,28 @@ export class ConversationService {
     return { created: true, message };
   }
 
+  /**
+   * ¿El cliente escribió algo que pide respuesta después de `after`? Los
+   * acuses ignorados y lo recibido con el bot apagado no cuentan: no cambian
+   * lo que hay que contestar. Sin `after` no hay con qué comparar.
+   */
+  async hasNewInboundSince(
+    conversationId: string,
+    after: Date | null | undefined,
+  ): Promise<boolean> {
+    if (!after) return false;
+    const newer = await this.prisma.botMessage.findFirst({
+      where: {
+        conversationId,
+        direction: MessageDirection.INBOUND,
+        createdAt: { gt: after },
+        processedBy: { notIn: NOT_PENDING_MARKERS },
+      },
+      select: { id: true },
+    });
+    return newer !== null;
+  }
+
   async findConversationsWithPending(
     botConfigId: string,
     connectionId: string,
@@ -342,6 +386,8 @@ export class ConversationService {
       tokensUsed?: number;
       imageVerified?: boolean;
       connectionId?: string;
+      /** Ver `replyPosition`: la respuesta se ubica tras el último mensaje que contesta. */
+      answeredUntil?: Date | null;
     },
   ) {
     const [, message] = await this.prisma.$transaction([
@@ -356,6 +402,12 @@ export class ConversationService {
           intent: options?.intent,
           tokenUsed: options?.tokensUsed,
           imageVerfied: options?.imageVerified,
+          ...(options?.answeredUntil && {
+            createdAt: replyPosition({
+              createdAt: new Date(),
+              answeredUntil: options.answeredUntil,
+            }),
+          }),
         },
       }),
     ]);
@@ -427,6 +479,7 @@ export class ConversationService {
         content: m.content,
         hasImage: m.hasImage,
         waMessageId: m.waMessageId,
+        createdAt: m.createdAt,
       }));
 
     const answered = recent

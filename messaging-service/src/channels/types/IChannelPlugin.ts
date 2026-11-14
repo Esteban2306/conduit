@@ -1,3 +1,11 @@
+/**
+ * Lo que el canal debe hacer con un envío justo antes de empezar a "escribir"
+ * y otra vez antes de mandarlo: seguir (`send`), esperar porque el cliente
+ * está escribiendo (`hold`) o descartarlo porque ya quedó desactualizado
+ * (`cancel`).
+ */
+export type SendGate = 'send' | 'hold' | 'cancel';
+
 export interface ChannelSendPayload {
   to: string;
 
@@ -13,6 +21,9 @@ export interface ChannelSendPayload {
 
   /** Id de mensaje fijo: un reintento reenvía el mismo id y WhatsApp no lo duplica. */
   messageId?: string;
+
+  /** Se consulta antes de "escribiendo…" y antes de enviar; solo respuestas de conversación. */
+  gate?: () => Promise<SendGate>;
 
   meta?: Record<string, unknown>;
 }

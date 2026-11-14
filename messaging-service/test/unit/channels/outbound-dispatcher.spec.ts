@@ -35,6 +35,8 @@ type Row = {
   lastError: string | null;
   createdAt: Date;
   updatedAt: Date;
+  answeredUntil?: Date | null;
+  supersedable?: boolean;
 };
 
 class FakeOutbox {
@@ -71,6 +73,8 @@ class FakeOutbox {
         lastError: null,
         createdAt: new Date(base + seq),
         updatedAt: new Date(),
+        answeredUntil: null,
+        supersedable: true,
         ...extra,
       }),
     );
@@ -138,6 +142,7 @@ class FakeOutbox {
     o: { delayMs: number; countAttempt: boolean; error?: string },
   ) => {
     const row = this.rows.find((r) => r.id === id)!;
+    if (row.status === OutboundReplyStatus.SUPERSEDED) return;
     row.status = OutboundReplyStatus.PENDING;
     row.nextAttemptAt = new Date(Date.now() + o.delayMs);
     row.lastError = o.error ?? null;
@@ -163,6 +168,13 @@ class FakeOutbox {
     this.unanswered.push(conversationId);
     return 1;
   };
+  statusOf = async (id: string) =>
+    this.rows.find((r) => r.id === id)?.status ?? null;
+  supersedeGroup = async (groupId: string) => {
+    const live = this.rows.filter((r) => r.groupId === groupId && this.live(r));
+    live.forEach((r) => (r.status = OutboundReplyStatus.SUPERSEDED));
+    return live.length;
+  };
   tenantOf = async () => 't';
   status = (id: string) => this.rows.find((r) => r.id === id)!.status;
 }
@@ -173,15 +185,24 @@ function setup() {
   const script: Array<
     (p: { to: string; content: string }) => Record<string, unknown> | undefined
   > = [];
+  const gates: Array<(() => Promise<string>) | undefined> = [];
   const plugin = {
     providerName: 'baileys',
-    send: jest.fn((p: { to: string; content: string; messageId?: string }) => {
-      sends.push({ to: p.to, content: p.content, messageId: p.messageId });
-      const scripted = script.shift()?.(p);
-      return Promise.resolve(
-        scripted ?? { success: true, provider: 'baileys', raw: null },
-      );
-    }),
+    send: jest.fn(
+      (p: {
+        to: string;
+        content: string;
+        messageId?: string;
+        gate?: () => Promise<string>;
+      }) => {
+        gates.push(p.gate);
+        sends.push({ to: p.to, content: p.content, messageId: p.messageId });
+        const scripted = script.shift()?.(p);
+        return Promise.resolve(
+          scripted ?? { success: true, provider: 'baileys', raw: null },
+        );
+      },
+    ),
   };
   const connected = { value: true };
   const session = {
@@ -190,7 +211,9 @@ function setup() {
   };
   const conversations = {
     saveOutbound: jest.fn().mockResolvedValue(undefined),
+    hasNewInboundSince: jest.fn().mockResolvedValue(false),
   };
+  const tracker = { isTyping: jest.fn(() => false) };
   const eventBus = { publish: jest.fn() };
   const alerts = { report: jest.fn() };
   const dispatcher = new OutboundReplyDispatcher(
@@ -200,10 +223,12 @@ function setup() {
     conversations as never,
     eventBus as never,
     alerts as never,
+    tracker as never,
   );
   (dispatcher as unknown as { logger: object }).logger = {
     error: jest.fn(),
     warn: jest.fn(),
+    log: jest.fn(),
   };
   return {
     outbox,
@@ -212,6 +237,8 @@ function setup() {
     connected,
     conversations,
     alerts,
+    tracker,
+    gates,
     dispatcher,
   };
 }
@@ -437,5 +464,121 @@ describe('OutboundReplyDispatcher', () => {
       'Para la línea 2.',
       'Para la línea 1.',
     ]);
+  });
+
+  describe('respuestas desactualizadas', () => {
+    it('si el canal la detiene porque el cliente escribió, queda SUPERSEDED: sin guardar, sin marcar lo del cliente como sin responder y sin alerta', async () => {
+      const w = setup();
+      w.outbox.add('conv-1', '573001', ['Uno.', 'Dos.']);
+      w.script.push(failure({ retryable: false, errorCode: 'SUPERSEDED' }));
+      await w.dispatcher.tick();
+
+      expect(w.outbox.rows.map((r) => r.status)).toEqual([
+        OutboundReplyStatus.SUPERSEDED,
+        OutboundReplyStatus.SUPERSEDED,
+      ]);
+      expect(w.sends).toHaveLength(1);
+      expect(w.conversations.saveOutbound).not.toHaveBeenCalled();
+      expect(w.outbox.unanswered).toEqual([]);
+      expect(w.alerts.report).not.toHaveBeenCalled();
+    });
+
+    it('si el cliente está escribiendo, la respuesta vuelve a la cola unos segundos después sin gastar intentos', async () => {
+      const w = setup();
+      w.outbox.add('conv-1', '573001', ['Hola']);
+      w.script.push(failure({ retryable: false, errorCode: 'CLIENT_TYPING' }));
+      await w.dispatcher.tick();
+
+      const row = w.outbox.rows[0];
+      expect(row.status).toBe(OutboundReplyStatus.PENDING);
+      expect(row.attempts).toBe(0);
+      expect(row.nextAttemptAt.getTime()).toBeGreaterThan(Date.now());
+      expect(w.alerts.report).not.toHaveBeenCalled();
+
+      row.nextAttemptAt = new Date(Date.now() - 1);
+      await w.dispatcher.tick();
+      expect(row.status).toBe(OutboundReplyStatus.SENT);
+    });
+
+    it('la compuerta de la primera burbuja descarta la respuesta si el cliente escribió después de lo que ella contesta', async () => {
+      const w = setup();
+      const answeredUntil = new Date('2026-11-14T12:00:00Z');
+      w.outbox.add('conv-1', '573001', ['Hola'], { answeredUntil });
+      w.conversations.hasNewInboundSince.mockResolvedValue(true);
+      await w.dispatcher.tick();
+
+      const gate = w.gates[0]!;
+      await expect(gate()).resolves.toBe('cancel');
+      expect(w.conversations.hasNewInboundSince).toHaveBeenCalledWith(
+        'conv-1',
+        answeredUntil,
+      );
+    });
+
+    it('la compuerta deja salir la respuesta si no hay nada nuevo', async () => {
+      const w = setup();
+      w.outbox.add('conv-1', '573001', ['Hola'], {
+        answeredUntil: new Date('2026-11-14T12:00:00Z'),
+      });
+      await w.dispatcher.tick();
+
+      await expect(w.gates[0]!()).resolves.toBe('send');
+    });
+
+    it('una respuesta ya comprometida (hizo una acción) no se descarta aunque el cliente escriba, pero sí espera si está escribiendo', async () => {
+      const w = setup();
+      w.outbox.add('conv-1', '573001', ['Hola'], {
+        answeredUntil: new Date('2026-11-14T12:00:00Z'),
+        supersedable: false,
+      });
+      w.conversations.hasNewInboundSince.mockResolvedValue(true);
+      await w.dispatcher.tick();
+
+      const gate = w.gates[0]!;
+      await expect(gate()).resolves.toBe('send');
+      w.tracker.isTyping.mockReturnValue(true);
+      await expect(gate()).resolves.toBe('hold');
+    });
+
+    it('las burbujas siguientes no tienen compuerta: una respuesta a medio enviar sale completa', async () => {
+      const w = setup();
+      w.outbox.add('conv-1', '573001', ['Uno.', 'Dos.']);
+      await w.dispatcher.tick();
+
+      expect(w.gates[0]).toBeDefined();
+      expect(w.gates[1]).toBeUndefined();
+    });
+
+    it('un cliente que escribe sin parar no retiene la respuesta más allá del tope', async () => {
+      jest.useFakeTimers({ now: new Date('2026-11-14T12:00:00Z') });
+      try {
+        const w = setup();
+        w.outbox.add('conv-1', '573001', ['Hola']);
+        w.tracker.isTyping.mockReturnValue(true);
+        await w.dispatcher.tick();
+        const gate = w.gates[0]!;
+
+        await expect(gate()).resolves.toBe('hold');
+        jest.setSystemTime(Date.now() + 30_000);
+        await expect(gate()).resolves.toBe('hold');
+        jest.setSystemTime(Date.now() + 40_000);
+        await expect(gate()).resolves.toBe('send');
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('la respuesta guardada en el historial queda ubicada tras lo último que contestó', async () => {
+      const w = setup();
+      const answeredUntil = new Date('2026-11-14T12:00:00Z');
+      w.outbox.add('conv-1', '573001', ['Hola'], { answeredUntil });
+      await w.dispatcher.tick();
+
+      expect(w.conversations.saveOutbound).toHaveBeenCalledWith(
+        'conv-1',
+        'Hola',
+        expect.objectContaining({ answeredUntil }),
+      );
+    });
   });
 });

@@ -130,3 +130,168 @@ describe('BaileysRateLimiter — carriles de conversación y campaña', () => {
     expect(sent.at(-1)).toBe('campaña');
   });
 });
+
+describe('BaileysRateLimiter — respuestas detenidas a propósito', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('descartar una respuesta desactualizada o esperar a que el cliente termine de escribir no sube el riesgo del número', async () => {
+    jest.useFakeTimers({ now: MORNING });
+    const limiter = new BaileysRateLimiter('conn-gate-1', WarmupLevel.NORMAL);
+
+    for (let i = 0; i < 12; i++) {
+      const code = i % 2 === 0 ? 'SUPERSEDED' : 'CLIENT_TYPING';
+      const done = limiter.enqueue(
+        () => Promise.resolve({ success: false, errorCode: code }),
+        { priority: JobPriority.CONVERSATION, maxAttempts: 1 },
+      );
+      await jest.advanceTimersByTimeAsync(0);
+      await expect(done).resolves.toMatchObject({ errorCode: code });
+    }
+
+    expect(limiter.getRiskLevel()).toBe(1);
+  });
+
+  it('un fallo real de envío sí cuenta para el riesgo', async () => {
+    jest.useFakeTimers({ now: MORNING });
+    const limiter = new BaileysRateLimiter('conn-gate-2', WarmupLevel.NORMAL);
+
+    for (let i = 0; i < 12; i++) {
+      const done = limiter.enqueue(
+        () => Promise.resolve({ success: false, errorCode: 'SEND_FAILED' }),
+        { priority: JobPriority.CONVERSATION, maxAttempts: 1 },
+      );
+      await jest.advanceTimersByTimeAsync(0);
+      await done;
+    }
+
+    expect(limiter.getRiskLevel()).toBeGreaterThan(1);
+  });
+});
+
+describe('BaileysRateLimiter — pausa entre chats según lo que se acaba de enviar', () => {
+  beforeEach(() => {
+    jest.useFakeTimers({ now: MORNING });
+    // Sin azar: la variación de la pausa queda en 1,0 y las pruebas son exactas.
+    jest.spyOn(Math, 'random').mockReturnValue(0.5);
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+    jest.useRealTimers();
+  });
+
+  function setup() {
+    const limiter = new BaileysRateLimiter('conn-cross-1', WarmupLevel.NORMAL);
+    const sent: string[] = [];
+    const reply = (chat: string, characters: number) =>
+      limiter.enqueue(
+        () => {
+          sent.push(chat);
+          return ok();
+        },
+        {
+          priority: JobPriority.CONVERSATION,
+          chatKey: chat,
+          weight: characters,
+        },
+      );
+    return { limiter, sent, reply };
+  }
+
+  it('tras una respuesta larga, otro chat espera lo que una persona tardaría (hasta 30 s)', async () => {
+    const { sent, reply } = setup();
+    void reply('A', 400);
+    await jest.advanceTimersByTimeAsync(0);
+    void reply('B', 50);
+
+    await jest.advanceTimersByTimeAsync(29_000);
+    expect(sent).toEqual(['A']);
+
+    await jest.advanceTimersByTimeAsync(2_000);
+    expect(sent).toEqual(['A', 'B']);
+  });
+
+  it('tras una respuesta corta la pausa es de unos 6 s, no de 30', async () => {
+    const { sent, reply } = setup();
+    void reply('A', 20);
+    await jest.advanceTimersByTimeAsync(0);
+    void reply('B', 20);
+
+    await jest.advanceTimersByTimeAsync(5_000);
+    expect(sent).toEqual(['A']);
+
+    await jest.advanceTimersByTimeAsync(2_000);
+    expect(sent).toEqual(['A', 'B']);
+  });
+
+  it('crece con el largo: 150 caracteres piden unos 18 s', async () => {
+    const { sent, reply } = setup();
+    void reply('A', 150);
+    await jest.advanceTimersByTimeAsync(0);
+    void reply('B', 20);
+
+    await jest.advanceTimersByTimeAsync(17_000);
+    expect(sent).toEqual(['A']);
+
+    await jest.advanceTimersByTimeAsync(2_000);
+    expect(sent).toEqual(['A', 'B']);
+  });
+
+  it('las burbujas de una misma respuesta al mismo chat salen con la separación de siempre', async () => {
+    const { sent, reply } = setup();
+    void reply('A', 400);
+    await jest.advanceTimersByTimeAsync(0);
+    void reply('A', 400);
+
+    await jest.advanceTimersByTimeAsync(5_000);
+    expect(sent).toEqual(['A', 'A']);
+  });
+
+  it('si ya pasó el tiempo, el siguiente chat no espera nada más', async () => {
+    const { sent, reply } = setup();
+    void reply('A', 400);
+    await jest.advanceTimersByTimeAsync(0);
+    await jest.advanceTimersByTimeAsync(40_000);
+
+    void reply('B', 50);
+    await jest.advanceTimersByTimeAsync(0);
+
+    expect(sent).toEqual(['A', 'B']);
+  });
+
+  it('una respuesta que se detuvo sin enviarse no obliga a esperar al siguiente chat', async () => {
+    const { limiter, sent, reply } = setup();
+    const stopped = limiter.enqueue(
+      () => Promise.resolve({ success: false, errorCode: 'SUPERSEDED' }),
+      {
+        priority: JobPriority.CONVERSATION,
+        chatKey: 'A',
+        weight: 400,
+        maxAttempts: 1,
+      },
+    );
+    await jest.advanceTimersByTimeAsync(0);
+    await stopped;
+    void reply('B', 50);
+    await jest.advanceTimersByTimeAsync(0);
+
+    expect(sent).toEqual(['B']);
+  });
+
+  it('sin chatKey (envíos que no la traen) se comporta como antes', async () => {
+    const { limiter, sent } = setup();
+    for (const name of ['x', 'y']) {
+      void limiter.enqueue(
+        () => {
+          sent.push(name);
+          return ok();
+        },
+        { priority: JobPriority.CONVERSATION },
+      );
+    }
+    await jest.advanceTimersByTimeAsync(5_000);
+
+    expect(sent).toEqual(['x', 'y']);
+  });
+});

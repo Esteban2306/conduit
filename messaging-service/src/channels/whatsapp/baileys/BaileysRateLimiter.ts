@@ -47,6 +47,17 @@ const WARMUP_CONFIG = {
   },
 };
 
+/**
+ * Resultados que no son un fallo del envío y no deben subir el nivel de
+ * riesgo: el canal está desconectado, o la respuesta se detuvo a propósito
+ * porque el cliente escribió de nuevo o sigue escribiendo.
+ */
+const NEUTRAL_FAILURES = [
+  'WHATSAPP_NOT_CONNECTED',
+  'SUPERSEDED',
+  'CLIENT_TYPING',
+];
+
 interface FailureResult {
   success: false;
   retryable?: boolean;
@@ -77,6 +88,9 @@ interface QueuedJob {
   maxAttempts: number;
   retryable: boolean;
   lane: Lane;
+  /** A quién se responde y cuánto texto lleva: reparte la pausa entre chats. */
+  chatKey?: string;
+  weight?: number;
 }
 
 interface Wait {
@@ -123,6 +137,16 @@ export class BaileysRateLimiter {
 
   /** Separación mínima entre dos envíos cualesquiera de la conexión. */
   private readonly GLOBAL_GAP_MS = 3000;
+  /**
+   * Una persona que atiende varios chats no contesta uno largo y otro a los
+   * pocos segundos: entre dos respuestas a chats distintos pasa un rato
+   * proporcional a lo que acaba de escribir (leer lo siguiente, pensar y
+   * teclear). No aplica a las burbujas de una misma respuesta ni a un solo
+   * chat, y si ya pasó ese tiempo no se espera nada.
+   */
+  private readonly CROSS_CHAT_MS_PER_CHAR = 120;
+  private readonly CROSS_CHAT_MIN_MS = 6000;
+  private readonly CROSS_CHAT_MAX_MS = 30000;
   private readonly CONVERSATION_GAP_MIN_MS = 1500;
   private readonly CONVERSATION_GAP_MAX_MS = 4000;
   private readonly CONVERSATION_SOFT_CEILING = 1.5;
@@ -137,6 +161,9 @@ export class BaileysRateLimiter {
 
   private lastSendAt = 0;
   private nextConversationAt = 0;
+  /** Último chat al que se respondió y cuándo puede salir una respuesta a otro. */
+  private lastConversationChat: string | null = null;
+  private nextOtherChatAt = 0;
   private nextCampaignAt = 0;
   private safeModeUntil: number | null = null;
 
@@ -226,6 +253,9 @@ export class BaileysRateLimiter {
       retryable?: boolean;
       maxAttempts?: number;
       priority?: JobPriority;
+      /** Chat al que va la respuesta y largo de su texto (solo carril de conversación). */
+      chatKey?: string;
+      weight?: number;
     } = {},
   ): Promise<T> {
     return new Promise((resolve, reject) => {
@@ -243,6 +273,8 @@ export class BaileysRateLimiter {
         maxAttempts: options.maxAttempts ?? 3,
         retryable: options.retryable ?? true,
         lane,
+        chatKey: options.chatKey,
+        weight: options.weight,
       };
 
       this.laneQueue(lane).push(job);
@@ -358,7 +390,16 @@ export class BaileysRateLimiter {
     const used = this.recentConversationCount();
     const usual = config.conversationMaxPerHour;
     const ceiling = Math.floor(usual * this.CONVERSATION_SOFT_CEILING);
-    const natural = Math.max(this.nextConversationAt, this.globalGapEnd());
+    const head = this.conversationQueue[0];
+    const toAnotherChat =
+      head?.chatKey !== undefined &&
+      this.lastConversationChat !== null &&
+      head.chatKey !== this.lastConversationChat;
+    const natural = Math.max(
+      this.nextConversationAt,
+      this.globalGapEnd(),
+      toAnotherChat ? this.nextOtherChatAt : 0,
+    );
 
     if (used >= ceiling) {
       const oldest = Math.min(...this.conversationTimestamps);
@@ -451,12 +492,12 @@ export class BaileysRateLimiter {
       this.handleFailure(job, {
         retryable: job.retryable && result.retryable !== false,
         resolveWith: result,
-        countsAsRisk: result.errorCode !== 'WHATSAPP_NOT_CONNECTED',
+        countsAsRisk: !NEUTRAL_FAILURES.includes(result.errorCode ?? ''),
       });
       return;
     }
 
-    this.recordSent(job.lane);
+    this.recordSent(job.lane, job);
     this.onSuccessfulSend();
     job.resolve(result);
   }
@@ -573,6 +614,19 @@ export class BaileysRateLimiter {
     );
   }
 
+  /** Pausa antes de responder a otro chat, según lo que se acaba de enviar. */
+  private calculateCrossChatGap(characters = 0): number {
+    const raw = Math.min(
+      this.CROSS_CHAT_MAX_MS,
+      Math.max(
+        this.CROSS_CHAT_MIN_MS,
+        characters * this.CROSS_CHAT_MS_PER_CHAR,
+      ),
+    );
+    const jitter = 0.85 + Math.random() * 0.3;
+    return Math.floor(raw * jitter * Math.pow(1.25, this.riskLevel - 1));
+  }
+
   private isInReconnectThrottle(): boolean {
     return (
       this.reconnectThrottleUntil !== null &&
@@ -670,13 +724,17 @@ export class BaileysRateLimiter {
     }
   }
 
-  private recordSent(lane: Lane): void {
+  private recordSent(lane: Lane, job?: QueuedJob): void {
     const now = Date.now();
     this.lastSendAt = now;
 
     if (lane === 'conversation') {
       this.conversationTimestamps.push(now);
       this.nextConversationAt = now + this.calculateConversationGap();
+      if (job?.chatKey !== undefined) {
+        this.lastConversationChat = job.chatKey;
+        this.nextOtherChatAt = now + this.calculateCrossChatGap(job.weight);
+      }
       return;
     }
 

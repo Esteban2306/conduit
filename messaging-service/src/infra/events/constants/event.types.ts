@@ -92,6 +92,10 @@ export interface EventPayloadMap {
     tenantId?: string;
     /** Quién responde: el bot (default) o una persona desde el panel. */
     sentBy?: 'bot' | 'human';
+    /** Hora del último mensaje del cliente que esta respuesta contesta. */
+    answeredUntil?: Date | null;
+    /** false si el turno ya ejecutó una acción: la respuesta sale aunque el cliente escriba de nuevo. */
+    supersedable?: boolean;
   };
 
   [EVENT_TYPES.PROACTIVE_MESSAGE_SENT]: {
