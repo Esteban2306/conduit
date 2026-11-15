@@ -3,6 +3,7 @@ import {
   ChannelSendPayload,
   ChannelSendResult,
   IChannelPlugin,
+  SendGate,
 } from 'src/channels/types/IChannelPlugin';
 import { BaileysRateLimiterRegistry } from './BaileysRateLimiterRegistry';
 import { JobPriority, WarmupLevel } from './BaileysRateLimiter';
@@ -90,6 +91,10 @@ export class BaileysPlugin implements IChannelPlugin {
           ? JobPriority.CONVERSATION
           : JobPriority.CAMPAIGN,
         maxAttempts: 1,
+        ...(isConversation && {
+          chatKey: to,
+          weight: payload.content.length,
+        }),
       },
     );
   }
@@ -140,9 +145,15 @@ export class BaileysPlugin implements IChannelPlugin {
       const clean = this.stripHtml(payload.content);
       const text = isConversation ? clean : this.addInvisibleVariation(clean);
 
+      const before = await this.checkGate(payload);
+      if (before !== 'send') return this.gated(before);
+
+      // "Escribiendo…" se hace por tramos: si el cliente vuelve a escribir, se
+      // detiene en el acto y no sale una respuesta que ya no corresponde.
       await sock.sendPresenceUpdate('composing', jid);
-      await this.sleep(typingMs(clean.length));
+      const stopped = await this.typeFor(typingMs(clean.length), payload);
       await sock.sendPresenceUpdate('paused', jid);
+      if (stopped) return this.gated(stopped);
 
       const response = payload.messageId
         ? await sock.sendMessage(
@@ -184,6 +195,47 @@ export class BaileysPlugin implements IChannelPlugin {
         raw: error,
       };
     }
+  }
+
+  /** Un fallo al consultar la compuerta nunca bloquea una respuesta. */
+  private async checkGate(payload: ChannelSendPayload): Promise<SendGate> {
+    if (!payload.gate) return 'send';
+    try {
+      return await payload.gate();
+    } catch (error) {
+      this.logger.warn(
+        `No se pudo revisar si la respuesta sigue vigente; se envía: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return 'send';
+    }
+  }
+
+  /** Espera `ms` revisando la compuerta cada segundo; devuelve por qué se detuvo, si lo hizo. */
+  private async typeFor(
+    ms: number,
+    payload: ChannelSendPayload,
+  ): Promise<Exclude<SendGate, 'send'> | null> {
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+      await this.sleep(Math.min(1000, end - Date.now()));
+      const verdict = await this.checkGate(payload);
+      if (verdict !== 'send') return verdict;
+    }
+    return null;
+  }
+
+  private gated(verdict: Exclude<SendGate, 'send'>): ChannelSendResult {
+    return verdict === 'cancel'
+      ? this.fail(
+          'SUPERSEDED',
+          'El cliente escribió de nuevo: la respuesta quedó desactualizada.',
+          false,
+        )
+      : this.fail(
+          'CLIENT_TYPING',
+          'El cliente está escribiendo: se espera antes de responder.',
+          false,
+        );
   }
 
   /**

@@ -94,6 +94,7 @@ import {
 import { cutAtSentence, isBlank } from './reply-guard';
 import { ReplyMetricsService } from './reply-metrics.service';
 import { RetainedImages } from './retained-images';
+import { OutboundReplyService } from 'src/channels/whatsapp/outbox/OutboundReply.service';
 
 interface TurnContext {
   tenantId: string;
@@ -102,6 +103,22 @@ interface TurnContext {
   botConfig: any;
   connectionId: string;
   conversationId: string;
+  /**
+   * Hora del último mensaje del cliente que la pasada en curso está
+   * contestando. Con ella se sabe si, al salir la respuesta, el cliente ya
+   * escribió algo más y la respuesta quedó desactualizada.
+   */
+  answeredUntil?: Date | null;
+}
+
+/** Cómo debe salir una respuesta. */
+interface ReplyOptions {
+  /**
+   * La respuesta ya está comprometida (el turno hizo una reserva, un traspaso,
+   * una verificación…): sale aunque el cliente escriba de nuevo, porque el
+   * cliente debe enterarse de lo que ya pasó.
+   */
+  mustDeliver?: boolean;
 }
 
 export interface IncomingMessageDto {
@@ -143,6 +160,11 @@ export class BotRouter {
   /** Último mensaje con imagen por conversación, para analizarla o adjuntarla. */
   private readonly retainedImages = new RetainedImages<WAMessage>();
   private readonly TYPING_RETRY_MS = 6000;
+  /** Tope de espera por un cliente que sigue escribiendo antes de enviarle la respuesta ya lista. */
+  private readonly TYPING_HOLD_MAX_MS = 45_000;
+  /** Margen tras dejar de escribir: puede retomar o enviar enseguida. */
+  private readonly TYPING_SETTLE_MS = 2_500;
+  private readonly TYPING_POLL_MS = 1_000;
   private readonly AI_FALLBACK_COOLDOWN_MS = 30 * 60 * 1000;
   private readonly MAX_REPLIES_PER_CONTACT_HOUR = 30;
   private readonly RECOVERY_STAGGER_MS = 3000;
@@ -174,6 +196,7 @@ export class BotRouter {
     private readonly specialistRuntime: SpecialistRuntime,
     private readonly imagePrefetch: ImagePrefetchService<ImageBundle>,
     @Optional() private readonly legacyUsage?: LegacyImageUsageService,
+    @Optional() private readonly outbox?: OutboundReplyService,
   ) {}
 
   async route(
@@ -313,6 +336,8 @@ export class BotRouter {
       await this.markAsRead(message, connectionId);
       return;
     }
+
+    await this.discardOutdatedReplies(conversation.id, phoneNumber);
 
     if (hasImage) {
       this.retainedImages.keep(conversation.id, message);
@@ -482,7 +507,13 @@ export class BotRouter {
         do {
           this.rerunRequested.delete(id);
           await this.answerPending(turn);
-        } while (this.rerunRequested.has(id));
+          // Si el cliente aún está juntando mensajes, su lote dispara la
+          // siguiente pasada cuando termine la espera: repetir ya mismo
+          // contestaría a media frase.
+        } while (
+          this.rerunRequested.has(id) &&
+          !this.debouncer.hasPending(turn.sessionKey)
+        );
       } finally {
         this.readGates.delete(id);
         await this.conversationService.releaseLock(id);
@@ -581,11 +612,13 @@ export class BotRouter {
       return;
     }
 
+    turn.answeredUntil = null;
     let aiData = await this.conversationService.getConversationForAI(
       conversationId,
       botConfig.maxHistoryMessages,
     );
     if (aiData.pending.length === 0) return;
+    turn.answeredUntil = this.lastInboundAt(aiData.pending);
 
     this.readGates.set(conversationId, this.markTurnRead(turn, aiData.pending));
 
@@ -611,6 +644,7 @@ export class BotRouter {
         botConfig.maxHistoryMessages,
       );
       if (aiData.pending.length === 0) return;
+      turn.answeredUntil = this.lastInboundAt(aiData.pending);
     }
 
     if (this.conversationService.isBotPaused(aiData.context)) {
@@ -647,7 +681,8 @@ export class BotRouter {
           intentText,
           false,
         );
-        await this.sendReply(turn, reply, 0);
+        // Reglas e intenciones fijas (baja, abuso…) ya dejaron su efecto.
+        await this.sendReply(turn, reply, 0, undefined, { mustDeliver: true });
       },
     });
     if (intentOutcome.handled) return;
@@ -698,7 +733,9 @@ export class BotRouter {
         aiData,
       });
       if (applied.kind === 'REPLY') {
-        await this.sendReply(turn, applied.text, 0);
+        await this.sendReply(turn, applied.text, 0, undefined, {
+          mustDeliver: true,
+        });
         return;
       }
       imageVerified = applied.imageVerified;
@@ -954,6 +991,22 @@ export class BotRouter {
         budget,
       });
 
+    // Antes de gastar tokens: si el cliente ya escribió algo más, esta pasada
+    // contestaría una versión vieja. Su mensaje dispara otra pasada con todo
+    // junto, así se responde una sola vez y con lo más reciente.
+    if (
+      await this.conversationService.hasNewInboundSince(
+        conversationId,
+        turn.answeredUntil,
+      )
+    ) {
+      this.replyMetrics.increment('superseded');
+      this.logger.log(
+        `El cliente escribió de nuevo antes de llamar a la IA en ${conversationId}: se espera para responder con todo junto.`,
+      );
+      return;
+    }
+
     let aiResult: Awaited<ReturnType<AiOrchestrator['generateResponse']>>;
     try {
       aiResult = await generate();
@@ -1103,7 +1156,14 @@ export class BotRouter {
     // Se espera el envío dentro del lock: la respuesta queda guardada antes
     // de la siguiente pasada, así lo ya respondido no vuelve a verse como
     // pendiente (evita contestar dos veces lo mismo).
-    await this.sendReply(turn, reply, tokensUsed, imageVerified);
+    // Si el turno ya hizo algo con efectos (una reserva, un traspaso), el
+    // cliente tiene que enterarse aunque haya escrito de nuevo.
+    const mustDeliver =
+      modelHandoff ||
+      recorded.some((r) => !r.readOnly && r.outcome.kind === 'SUCCESS');
+    const sent = await this.sendReply(turn, reply, tokensUsed, imageVerified, {
+      mustDeliver,
+    });
     this.logger.log(
       formatTurnLine({
         correlationId: turnId,
@@ -1122,6 +1182,7 @@ export class BotRouter {
         ms: Date.now() - turnStartedAt,
         tools: toolTraces,
         flags: [
+          ...(sent ? [] : ['descartada-desactualizada']),
           ...(guarded.replaced ? ['respuesta-reemplazada'] : []),
           ...(modelHandoff ? ['traspaso'] : []),
           ...(aiResult.stopReason === 'max_tokens' ? ['cortada'] : []),
@@ -1135,14 +1196,12 @@ export class BotRouter {
       this.retainedImages.consume(conversationId);
       this.imagePrefetch.discard(conversationId);
     }
-    if (slim) {
-      await this.intentHandler.afterSlimTurn(
-        conversationId,
-        slim,
-        (aiResult.toolCallsExecuted ?? [])
-          .filter((call) => call.ok)
-          .map((call) => call.name),
-      );
+    const okTools = (aiResult.toolCallsExecuted ?? [])
+      .filter((call) => call.ok)
+      .map((call) => call.name);
+    // Una respuesta descartada no avanza el flujo; lo que sí se ejecutó, sí cuenta.
+    if (slim && (sent || okTools.length > 0)) {
+      await this.intentHandler.afterSlimTurn(conversationId, slim, okTools);
     }
 
     void this.summarizer.refreshIfNeeded(
@@ -1176,6 +1235,8 @@ export class BotRouter {
       turn,
       await this.handoffService.aiUnavailableText(turn.botConfig.id, inWindow),
       0,
+      undefined,
+      { mustDeliver: true },
     );
 
     const teamNotified = inWindow && context.aiFallbackNotified === true;
@@ -1229,6 +1290,8 @@ export class BotRouter {
       turn,
       'Hemos recibido muchos mensajes seguidos. Para atenderte mejor, una persona del equipo continuará la conversación en breve. 🙏',
       0,
+      undefined,
+      { mustDeliver: true },
     );
     await this.conversationService.pauseBot(
       turn.conversationId,
@@ -1649,20 +1712,36 @@ export class BotRouter {
     return { kind: 'CONTINUE', imageVerified, prefix: lines.join('\n') };
   }
 
+  /**
+   * Único punto por el que sale una respuesta del bot. Devuelve `false` si se
+   * descartó por quedar desactualizada (el cliente escribió de nuevo): en ese
+   * caso nada se guarda ni se envía, los mensajes siguen pendientes y la
+   * siguiente pasada los contesta todos juntos con lo más reciente.
+   */
   private async sendReply(
     turn: TurnContext,
     content: string,
     tokensUsed: number,
     imageVerified?: boolean,
-  ): Promise<void> {
+    options: ReplyOptions = {},
+  ): Promise<boolean> {
     if (isBlank(content)) {
       this.replyMetrics.increment('blockedEmpty');
       this.logger.error(
         `Se descartó un envío vacío para ${turn.phoneNumber}; no se manda nada al canal.`,
       );
-      return;
+      return false;
     }
     await this.readGates.get(turn.conversationId);
+
+    if (!options.mustDeliver && (await this.isOutdated(turn))) {
+      this.replyMetrics.increment('superseded');
+      this.logger.log(
+        `Respuesta a ${turn.phoneNumber} descartada: el cliente escribió de nuevo mientras se preparaba.`,
+      );
+      return false;
+    }
+
     await this.eventBus.publishAsync(EVENT_TYPES.CHANNEL_SEND_REQUESTED, {
       phoneNumber: turn.phoneNumber,
       content,
@@ -1671,7 +1750,78 @@ export class BotRouter {
       tenantId: turn.tenantId,
       tokensUsed,
       imageVerified,
+      answeredUntil: turn.answeredUntil ?? null,
+      supersedable: !options.mustDeliver,
     });
+    return true;
+  }
+
+  /** Hora del último mensaje del cliente entre los pendientes. */
+  private lastInboundAt(pending: Array<{ createdAt: Date }>): Date | null {
+    return pending.reduce<Date | null>(
+      (latest, m) => (!latest || m.createdAt > latest ? m.createdAt : latest),
+      null,
+    );
+  }
+
+  /**
+   * ¿Esta respuesta ya quedó desactualizada? Lo está si el cliente escribió
+   * algo después de lo que contesta. Si en este momento está escribiendo, se
+   * espera (con tope) a ver si termina en un mensaje antes de decidir: así no
+   * se responde dos veces ni se corrige sobre la marcha.
+   */
+  private async isOutdated(turn: TurnContext): Promise<boolean> {
+    const deadline = Date.now() + this.TYPING_HOLD_MAX_MS;
+    let held = false;
+    for (;;) {
+      if (
+        await this.conversationService.hasNewInboundSince(
+          turn.conversationId,
+          turn.answeredUntil,
+        )
+      ) {
+        return true;
+      }
+      if (this.receiptTracker.isTyping(turn.sessionKey)) {
+        if (Date.now() >= deadline) return false;
+        held = true;
+        await this.sleep(this.TYPING_POLL_MS);
+        continue;
+      }
+      if (held) {
+        // Acaba de dejar de escribir: puede retomar o enviar enseguida.
+        held = false;
+        await this.sleep(this.TYPING_SETTLE_MS);
+        continue;
+      }
+      return false;
+    }
+  }
+
+  /**
+   * El cliente escribió de nuevo: las respuestas de esta conversación que aún
+   * no salieron quedan desactualizadas. Se descartan ya, para que la IA no las
+   * dé por dichas y la próxima respuesta cubra todo lo que el cliente pidió.
+   */
+  private async discardOutdatedReplies(
+    conversationId: string,
+    phoneNumber: string,
+  ): Promise<void> {
+    if (!this.outbox) return;
+    try {
+      const discarded = await this.outbox.supersedeUnsent(conversationId);
+      if (discarded > 0) {
+        this.replyMetrics.increment('superseded');
+        this.logger.log(
+          `${phoneNumber} escribió de nuevo: ${discarded} respuesta(s) sin enviar descartada(s).`,
+        );
+      }
+    } catch (error) {
+      // Si falla, la respuesta sale como antes y el mensaje nuevo se contesta después.
+      this.logger.warn(
+        `No se pudieron descartar las respuestas pendientes de ${phoneNumber}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   /** Guarda el resultado real de una herramienta en la memoria de la conversación. */

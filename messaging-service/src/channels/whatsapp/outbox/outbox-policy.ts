@@ -4,6 +4,10 @@ export const OUTBOX_BACKOFF_MS = [5_000, 15_000, 45_000, 120_000, 300_000];
 export const NOT_CONNECTED_RETRY_MS = 5_000;
 export const OVERLIMIT_RETRY_MS = 120_000;
 export const STALE_SENDING_MS = 2 * 60_000;
+/** Cada cuánto se revisa si el cliente dejó de escribir antes de enviarle la respuesta. */
+export const TYPING_HOLD_RETRY_MS = 5_000;
+/** Tope de espera por un cliente que sigue escribiendo; pasado ese tiempo la respuesta sale. */
+export const TYPING_HOLD_MAX_MS = 60_000;
 
 export interface SendOutcome {
   success: boolean;
@@ -15,6 +19,8 @@ export type Verdict =
   | { action: 'sent' }
   | { action: 'wait'; delayMs: number }
   | { action: 'retry'; delayMs: number }
+  | { action: 'hold'; delayMs: number }
+  | { action: 'cancel' }
   | { action: 'fail' };
 
 export function backoffMs(attempts: number): number {
@@ -33,6 +39,11 @@ export function verdictFor(
   attemptsMade: number,
 ): Verdict {
   if (outcome.success) return { action: 'sent' };
+  // El cliente volvió a escribir: no es un fallo y no gasta intentos.
+  if (outcome.errorCode === 'SUPERSEDED') return { action: 'cancel' };
+  if (outcome.errorCode === 'CLIENT_TYPING') {
+    return { action: 'hold', delayMs: TYPING_HOLD_RETRY_MS };
+  }
   if (outcome.errorCode === 'WHATSAPP_NOT_CONNECTED') {
     return { action: 'wait', delayMs: NOT_CONNECTED_RETRY_MS };
   }

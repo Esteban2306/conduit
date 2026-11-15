@@ -97,3 +97,123 @@ describe('BaileysPlugin: secuencia de envío', () => {
     expect(durations[1]).toBeGreaterThan(durations[0]);
   });
 });
+
+describe('BaileysPlugin: compuerta antes de enviar', () => {
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+
+  const payload = (gate: () => Promise<'send' | 'hold' | 'cancel'>) => ({
+    to: '573001112233',
+    content: 'Claro, te agendo para el martes. '.repeat(6),
+    subject: '',
+    connectionId: 'c1',
+    priority: 'conversation' as const,
+    gate,
+  });
+
+  it('si ya quedó desactualizada, no muestra "escribiendo" ni envía', async () => {
+    const { instance, calls } = plugin();
+    const result = await run(instance.send(payload(async () => 'cancel')));
+
+    expect(result).toMatchObject({
+      success: false,
+      errorCode: 'SUPERSEDED',
+      retryable: false,
+    });
+    expect(calls).toEqual([]);
+  });
+
+  it('si el cliente está escribiendo antes de empezar, espera sin enviar', async () => {
+    const { instance, calls } = plugin();
+    const result = await run(instance.send(payload(async () => 'hold')));
+
+    expect(result).toMatchObject({
+      success: false,
+      errorCode: 'CLIENT_TYPING',
+    });
+    expect(calls).toEqual([]);
+  });
+
+  it('si el cliente escribe mientras se "escribe" la respuesta, se detiene en el acto: pausa y no envía', async () => {
+    const { instance, calls } = plugin();
+    let checks = 0;
+    const result = await run(
+      instance.send(payload(async () => (++checks >= 3 ? 'cancel' : 'send'))),
+    );
+
+    expect(result).toMatchObject({ success: false, errorCode: 'SUPERSEDED' });
+    expect(calls.map((c) => c.kind)).toEqual(['composing', 'paused']);
+  });
+
+  it('con la compuerta abierta envía igual que siempre', async () => {
+    const { instance, calls } = plugin();
+    const result = await run(instance.send(payload(async () => 'send')));
+
+    expect(result).toMatchObject({ success: true });
+    expect(calls.map((c) => c.kind)).toEqual(['composing', 'paused', 'send']);
+  });
+
+  it('si la compuerta falla, la respuesta sale: un fallo de revisión no deja al cliente sin respuesta', async () => {
+    const { instance, calls } = plugin();
+    const result = await run(
+      instance.send(
+        payload(async () => {
+          throw new Error('base de datos caída');
+        }),
+      ),
+    );
+
+    expect(result).toMatchObject({ success: true });
+    expect(calls.map((c) => c.kind)).toEqual(['composing', 'paused', 'send']);
+  });
+});
+
+describe('BaileysPlugin: datos para repartir la pausa entre chats', () => {
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+
+  it('una respuesta de conversación le dice al limitador a quién va y cuánto texto lleva; una campaña no', async () => {
+    const enqueue = jest.fn((fn: () => unknown, _options?: unknown) => fn());
+    const sock = {
+      sendPresenceUpdate: jest.fn(() => Promise.resolve()),
+      sendMessage: jest.fn(() =>
+        Promise.resolve({ key: { id: 'WAID1' }, message: {} }),
+      ),
+    };
+    const instance = new BaileysPlugin(
+      { get: () => ({ enqueue }) } as never,
+      { isConnected: () => true, get: () => sock } as never,
+      { register: jest.fn() } as never,
+      {
+        campaignGate: () => Promise.resolve({ allowed: true }),
+        cachedExistence: () => Promise.resolve(true),
+      } as never,
+      { remember: jest.fn() } as never,
+    );
+
+    await run(
+      instance.send({
+        to: '573001112233',
+        content: 'Hola, ¿cómo estás?',
+        subject: '',
+        connectionId: 'c1',
+        priority: 'conversation',
+      }),
+    );
+    await run(
+      instance.send({
+        to: '573001112233',
+        content: 'Recordatorio',
+        subject: '',
+        connectionId: 'c1',
+        priority: 'campaign',
+      }),
+    );
+
+    expect(enqueue.mock.calls[0][1]).toMatchObject({
+      chatKey: '573001112233',
+      weight: 'Hola, ¿cómo estás?'.length,
+    });
+    expect(enqueue.mock.calls[1][1]).not.toHaveProperty('chatKey');
+  });
+});

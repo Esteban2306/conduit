@@ -41,6 +41,8 @@ export class BaileysMessageSender {
       imageVerified,
       sentBy,
       tenantId,
+      answeredUntil,
+      supersedable,
     } = event.payload;
 
     if (isBlank(content)) {
@@ -58,6 +60,8 @@ export class BaileysMessageSender {
         content,
         tokensUsed,
         imageVerified,
+        answeredUntil,
+        supersedable,
       });
     }
 
@@ -150,6 +154,8 @@ export class BaileysMessageSender {
     content: string;
     tokensUsed?: number;
     imageVerified?: boolean;
+    answeredUntil?: Date | null;
+    supersedable?: boolean;
   }): Promise<{ success: boolean; error?: string }> {
     try {
       const tenantId =
@@ -165,6 +171,8 @@ export class BaileysMessageSender {
         bubbles: splitBubbles(input.content),
         tokensUsed: input.tokensUsed,
         imageVerified: input.imageVerified,
+        answeredUntil: input.answeredUntil,
+        supersedable: input.supersedable,
       });
       this.dispatcher.kick();
       return { success: true };

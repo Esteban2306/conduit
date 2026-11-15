@@ -852,6 +852,9 @@ enum OutboundReplyStatus {
   SENT
   FAILED
   EXPIRED
+  /// El cliente escribió de nuevo antes de que saliera: la respuesta quedó
+  /// desactualizada y se descartó sin enviarse.
+  SUPERSEDED
 }
 
 /// Bandeja de salida de las respuestas del bot: cada burbuja se guarda antes
@@ -868,6 +871,13 @@ model OutboundReply {
   content        String              @db.Text
   tokensUsed     Int                 @default(0)
   imageVerified  Boolean?
+  /// Hora del último mensaje del cliente que esta respuesta contesta. Ubica la
+  /// respuesta en la conversación justo después de él, de modo que lo que el
+  /// cliente escriba mientras ella se genera o espera turno sigue pendiente.
+  answeredUntil  DateTime?
+  /// false cuando el turno ya ejecutó una acción con efectos (reserva,
+  /// traspaso): esa respuesta debe salir aunque el cliente escriba de nuevo.
+  supersedable   Boolean             @default(true)
   waMessageId    String?
   idempotencyKey String              @unique
   status         OutboundReplyStatus @default(PENDING)

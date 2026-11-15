@@ -11,7 +11,8 @@ export type ReplyCounter =
   | 'confirmWithoutAction'
   | 'handoffForced'
   | 'promiseBlocked'
-  | 'successClaimBlocked';
+  | 'successClaimBlocked'
+  | 'superseded';
 
 @Injectable()
 export class ReplyMetricsService {
@@ -28,6 +29,7 @@ export class ReplyMetricsService {
     promiseBlocked: 0,
     successClaimBlocked: 0,
     blockedEmpty: 0,
+    superseded: 0,
   };
 
   increment(counter: ReplyCounter): void {

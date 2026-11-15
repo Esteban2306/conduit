@@ -13,6 +13,10 @@ export interface EnqueueReply {
   bubbles: string[];
   tokensUsed?: number;
   imageVerified?: boolean;
+  /** Último mensaje del cliente que esta respuesta contesta. */
+  answeredUntil?: Date | null;
+  /** false si ya hubo una acción con efectos en el turno: no se descarta. */
+  supersedable?: boolean;
 }
 
 const LIVE: OutboundReplyStatus[] = [
@@ -41,6 +45,8 @@ export class OutboundReplyService {
         content,
         tokensUsed: input.tokensUsed ?? 0,
         imageVerified: input.imageVerified ?? null,
+        answeredUntil: input.answeredUntil ?? null,
+        supersedable: input.supersedable ?? true,
         idempotencyKey: `${groupId}:${seq}`,
         nextAttemptAt: new Date(now),
         expiresAt,
@@ -109,8 +115,10 @@ export class OutboundReplyService {
     id: string,
     options: { delayMs: number; countAttempt: boolean; error?: string },
   ): Promise<void> {
-    await this.prisma.outboundReply.update({
-      where: { id },
+    // Sin pisar un descarte: si el cliente escribió mientras tanto, la
+    // respuesta ya quedó SUPERSEDED y no debe volver a la cola.
+    await this.prisma.outboundReply.updateMany({
+      where: { id, status: { not: OutboundReplyStatus.SUPERSEDED } },
       data: {
         status: OutboundReplyStatus.PENDING,
         nextAttemptAt: new Date(Date.now() + options.delayMs),
@@ -133,6 +141,60 @@ export class OutboundReplyService {
         lastError: 'Una burbuja anterior no pudo enviarse',
       },
     });
+  }
+
+  statusOf(id: string): Promise<OutboundReplyStatus | null> {
+    return this.prisma.outboundReply
+      .findUnique({ where: { id }, select: { status: true } })
+      .then((row) => row?.status ?? null);
+  }
+
+  /** Descarta lo que aún no salió de una respuesta; nada de ella llegó al cliente. */
+  async supersedeGroup(groupId: string): Promise<number> {
+    const result = await this.prisma.outboundReply.updateMany({
+      where: { groupId, status: { in: LIVE } },
+      data: {
+        status: OutboundReplyStatus.SUPERSEDED,
+        lastError: 'El cliente escribió de nuevo: respuesta desactualizada',
+      },
+    });
+    return result.count;
+  }
+
+  /**
+   * El cliente escribió de nuevo: las respuestas de esa conversación que aún
+   * no salieron quedan desactualizadas y se descartan. Se respetan dos
+   * límites: una respuesta con una primera burbuja ya enviada sale completa
+   * (cortarla a la mitad deja un mensaje sin sentido) y una cuyo turno ya hizo
+   * una acción con efectos debe llegar al cliente.
+   */
+  async supersedeUnsent(conversationId: string): Promise<number> {
+    const live = await this.prisma.outboundReply.findMany({
+      where: { conversationId, status: { in: LIVE } },
+      select: { id: true, groupId: true, supersedable: true },
+    });
+    if (live.length === 0) return 0;
+
+    const groupIds = [...new Set(live.map((r) => r.groupId))];
+    const sentGroups = await this.prisma.outboundReply.findMany({
+      where: { groupId: { in: groupIds }, status: OutboundReplyStatus.SENT },
+      select: { groupId: true },
+      distinct: ['groupId'],
+    });
+    const committed = new Set(sentGroups.map((r) => r.groupId));
+    for (const row of live) if (!row.supersedable) committed.add(row.groupId);
+
+    const ids = live.filter((r) => !committed.has(r.groupId)).map((r) => r.id);
+    if (ids.length === 0) return 0;
+
+    const result = await this.prisma.outboundReply.updateMany({
+      where: { id: { in: ids }, status: { in: LIVE } },
+      data: {
+        status: OutboundReplyStatus.SUPERSEDED,
+        lastError: 'El cliente escribió de nuevo: respuesta desactualizada',
+      },
+    });
+    return result.count;
   }
 
   async tenantOf(connectionId: string): Promise<string | null> {

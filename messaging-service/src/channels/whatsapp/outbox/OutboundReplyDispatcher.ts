@@ -9,11 +9,15 @@ import { OutboundReply, OutboundReplyStatus } from '@prisma/client';
 import { ConversationService } from 'src/bot/conversation/ConversationService';
 import { EVENT_TYPES } from 'src/infra/events/constants/event.types';
 import { EventBusService } from 'src/infra/events/event.service';
+import type { SendGate } from 'src/channels/types/IChannelPlugin';
 import { OpsAlertService } from '../alerts/OpsAlert.service';
 import { BaileysPlugin } from '../baileys/BaileysPlugin';
 import { BaileysSessionManager } from '../baileys/BaileysSessionManager';
+import { messageReceiptTracker } from '../baileys/MessageReceiptTracker';
+import { isLidAddress, phoneToJid } from '../utils/jid.util';
+import { chatKey } from '../utils/chat-key';
 import { OutboundReplyService } from './OutboundReply.service';
-import { verdictFor } from './outbox-policy';
+import { TYPING_HOLD_MAX_MS, verdictFor } from './outbox-policy';
 
 const TICK_MS = 2_000;
 const CYCLE_ERROR_REPEAT_MS = 5 * 60_000;
@@ -34,6 +38,8 @@ export class OutboundReplyDispatcher implements OnModuleInit, OnModuleDestroy {
   private again = false;
   private lastCycleError = '';
   private lastCycleErrorAt = 0;
+  /** Desde cuándo se espera a que un cliente deje de escribir, por respuesta. */
+  private readonly typingHolds = new Map<string, number>();
 
   constructor(
     private readonly outbox: OutboundReplyService,
@@ -42,6 +48,7 @@ export class OutboundReplyDispatcher implements OnModuleInit, OnModuleDestroy {
     private readonly conversations: ConversationService,
     private readonly eventBus: EventBusService,
     private readonly alerts: OpsAlertService,
+    private readonly receiptTracker: messageReceiptTracker,
   ) {}
 
   onModuleInit(): void {
@@ -147,6 +154,7 @@ export class OutboundReplyDispatcher implements OnModuleInit, OnModuleDestroy {
         connectionId: row.connectionId,
         priority: 'conversation',
         messageId: waMessageId,
+        gate: this.gateFor(row),
       });
     } catch (error) {
       result = {
@@ -162,9 +170,26 @@ export class OutboundReplyDispatcher implements OnModuleInit, OnModuleDestroy {
     const verdict = verdictFor(result, row.attempts + 1);
     switch (verdict.action) {
       case 'sent':
+        this.typingHolds.delete(row.groupId);
         await this.outbox.markSent(row.id);
         await this.finalizeGroup(row.groupId);
         return 'ok';
+      case 'cancel':
+        // El cliente escribió de nuevo: nada de esta respuesta llegó a él y sus
+        // mensajes siguen pendientes, así que la siguiente pasada del bot los
+        // responde todos juntos con lo más reciente.
+        this.typingHolds.delete(row.groupId);
+        await this.outbox.supersedeGroup(row.groupId);
+        this.logger.log(
+          `Respuesta a ${row.phoneNumber} descartada: el cliente escribió de nuevo antes de que saliera.`,
+        );
+        return 'blocked';
+      case 'hold':
+        await this.outbox.release(row.id, {
+          delayMs: verdict.delayMs,
+          countAttempt: false,
+        });
+        return 'blocked';
       case 'wait':
         await this.outbox.release(row.id, {
           delayMs: verdict.delayMs,
@@ -180,6 +205,7 @@ export class OutboundReplyDispatcher implements OnModuleInit, OnModuleDestroy {
         });
         return 'blocked';
       case 'fail':
+        this.typingHolds.delete(row.groupId);
         await this.outbox.markFailed(
           row.id,
           result.error ?? 'Error desconocido',
@@ -191,6 +217,47 @@ export class OutboundReplyDispatcher implements OnModuleInit, OnModuleDestroy {
         await this.finalizeGroup(row.groupId);
         return 'blocked';
     }
+  }
+
+  /**
+   * Revisión previa al envío de la primera burbuja: la respuesta se descarta
+   * si el cliente escribió después de lo que ella contesta, y espera (con
+   * tope) si en este momento está escribiendo. Las burbujas siguientes ya no
+   * se cuestionan: cortar un mensaje a la mitad dejaría un chat sin sentido.
+   */
+  private gateFor(row: OutboundReply): (() => Promise<SendGate>) | undefined {
+    if (row.seq > 0 || !row.conversationId) return undefined;
+    const conversationId = row.conversationId;
+    return async () => {
+      if (
+        (await this.outbox.statusOf(row.id)) === OutboundReplyStatus.SUPERSEDED
+      ) {
+        return 'cancel';
+      }
+      if (
+        row.supersedable &&
+        (await this.conversations.hasNewInboundSince(
+          conversationId,
+          row.answeredUntil,
+        ))
+      ) {
+        return 'cancel';
+      }
+      return this.clientIsTyping(row) ? 'hold' : 'send';
+    };
+  }
+
+  private clientIsTyping(row: OutboundReply): boolean {
+    const jid = isLidAddress(row.phoneNumber)
+      ? row.phoneNumber
+      : phoneToJid(row.phoneNumber);
+    if (!this.receiptTracker.isTyping(chatKey(row.connectionId, jid))) {
+      this.typingHolds.delete(row.groupId);
+      return false;
+    }
+    const since = this.typingHolds.get(row.groupId) ?? Date.now();
+    this.typingHolds.set(row.groupId, since);
+    return Date.now() - since < TYPING_HOLD_MAX_MS;
   }
 
   /**
@@ -212,6 +279,15 @@ export class OutboundReplyDispatcher implements OnModuleInit, OnModuleDestroy {
     const first = rows[0];
     const sent = rows.filter((r) => r.status === OutboundReplyStatus.SENT);
 
+    // Una respuesta descartada por quedar desactualizada no es un fallo de
+    // entrega: sus mensajes siguen pendientes y no se avisa ni se marcan.
+    if (
+      sent.length === 0 &&
+      rows.some((r) => r.status === OutboundReplyStatus.SUPERSEDED)
+    ) {
+      return;
+    }
+
     if (sent.length > 0 && first.conversationId) {
       await this.conversations
         .saveOutbound(
@@ -221,6 +297,7 @@ export class OutboundReplyDispatcher implements OnModuleInit, OnModuleDestroy {
             tokensUsed: first.tokensUsed,
             imageVerified: first.imageVerified ?? undefined,
             connectionId: first.connectionId,
+            answeredUntil: first.answeredUntil,
           },
         )
         .catch((error: unknown) => {

@@ -74,6 +74,7 @@ import { SentMessageStore } from './whatsapp/baileys/SentMessageStore';
     WhatsAppConnectionService,
     messageReceiptTracker,
     BotSentMessageRegistry,
+    OutboundReplyService,
   ],
 })
 export class ChannelsModule implements OnModuleInit {
