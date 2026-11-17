@@ -57,7 +57,12 @@ export function intentSet(records: IntentRecord[]): BotIntentSet {
   const byKey = new Map(records.map((r) => [r.key, r]));
   return {
     all: records,
-    compiled: records.filter((r) => r.mode !== 'OFF').map(compileIntent),
+    compiled: records
+      .filter((r) => r.mode !== 'OFF' && !r.config.notice)
+      .map(compileIntent),
+    notices: records
+      .filter((r) => r.mode !== 'OFF' && r.config.notice === true)
+      .map(compileIntent),
     byKey,
     agent: 'Sofía',
     business: 'Leonice Spa',

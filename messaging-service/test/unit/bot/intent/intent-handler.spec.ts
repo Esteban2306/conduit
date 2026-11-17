@@ -4,8 +4,8 @@ import { IntentRepository } from 'src/bot/intent/IntentRepository.service';
 import { IntentResolver } from 'src/bot/intent/IntentResolver';
 import { IntentMetricsService } from 'src/bot/intent/intent-metrics.service';
 import { IntentTurn } from 'src/bot/intent/intent-turn';
-import { IntentModeValue } from 'src/bot/intent/intent-types';
-import { TIME_ZONE, intentSet, spaRecords } from './fixture';
+import { IntentModeValue, IntentRecord } from 'src/bot/intent/intent-types';
+import { TIME_ZONE, intentSet, spaRecords, toRecord } from './fixture';
 
 const TOOLS = [
   'consultar_cliente',
@@ -41,6 +41,7 @@ function build(
     hardRule?: boolean;
     ai?: (text: string) => string | null;
     contacts?: boolean;
+    extra?: IntentRecord[];
   } = {},
 ) {
   const sent: string[] = [];
@@ -57,7 +58,10 @@ function build(
   const metrics = new IntentMetricsService();
   (metrics as unknown as { logger: object }).logger = { log: jest.fn() };
 
-  const set = intentSet(spaRecords(options.mode ?? 'ACTIVE'));
+  const set = intentSet([
+    ...spaRecords(options.mode ?? 'ACTIVE'),
+    ...(options.extra ?? []),
+  ]);
   const repository = {
     ruleText: IntentRepository.prototype.ruleText,
     forBot: () => Promise.resolve(set),
@@ -1022,5 +1026,140 @@ describe('IntentHandler · confirmación de la clienta', () => {
     expect(w.sent).toHaveLength(0);
     expect(w.calls).toHaveLength(0);
     expect(w.aiCalls).toHaveLength(0);
+  });
+});
+
+describe('IntentHandler · avisos que acompañan la respuesta', () => {
+  const leoNotice = (mode: IntentModeValue = 'ACTIVE'): IntentRecord =>
+    toRecord(
+      {
+        key: 'leo_notice',
+        name: 'Aviso: preguntan por Leo',
+        handler: 'TOOL_DIRECT',
+        priority: 1,
+        patterns: ['\\bleo\\b'],
+        denyPatterns: ['^(?:hola|buenas|buenos dias|buenas tardes)? ?leo$'],
+        maxTokens: 80,
+        cooldownSeconds: 1800,
+        config: {
+          notice: true,
+          tool: 'info_negocio',
+          render: {
+            branches: [
+              {
+                when: { path: 'ownerContactPhone', empty: false },
+                variant: 'default',
+                vars: { telefono: { path: 'ownerContactPhone' } },
+              },
+            ],
+          },
+        },
+        variants: {
+          default: [
+            'Para otro tema puedes escribirle a Leo al {{telefono}} 🌿',
+          ],
+        },
+      },
+      mode,
+    );
+  const phone = (value: string | null) => ({
+    info_negocio: { status: 'SUCCESS', body: { ownerContactPhone: value } },
+  });
+
+  it('una cita y una pregunta por Leo: el aviso viaja con el turno que sigue a la IA', async () => {
+    const w = build({
+      extra: [leoNotice()],
+      responses: phone('+57 310 000 1122'),
+    });
+    const out = await w.handler.handle(
+      w.turn('Necesito una cita de hidratación pero qué pasó con Leo'),
+    );
+    expect(out).toEqual({
+      handled: false,
+      notices: [
+        {
+          key: 'leo_notice',
+          text: 'Para otro tema puedes escribirle a Leo al +57 310 000 1122 🌿',
+        },
+      ],
+    });
+    expect(w.sent).toEqual([]);
+  });
+
+  it('no compite con la intención principal: una respuesta directa lleva el aviso antes', async () => {
+    const citaNotice = toRecord({
+      key: 'cita_notice',
+      name: 'Aviso de prueba',
+      handler: 'TEMPLATE',
+      priority: 1,
+      patterns: ['\\bcita\\b'],
+      maxTokens: 80,
+      config: { notice: true },
+      variants: { default: ['Aviso: recuerda llegar 10 minutos antes.'] },
+    });
+    const w = build({
+      extra: [citaNotice],
+      responses: { enlace_cancelacion: { status: 'SUCCESS', body: LINK } },
+    });
+    const out = await w.handler.handle(w.turn('Quiero cancelar mi cita'));
+    expect(out).toEqual({ handled: true });
+    expect(w.sent).toHaveLength(1);
+    const [greeting, notice, answer] = w.sent[0].split('\n\n');
+    expect(greeting).toMatch(/Soy Sofía/);
+    expect(notice).toBe('Aviso: recuerda llegar 10 minutos antes.');
+    expect(answer).toMatch(/cancelar tu cita/);
+    expect(w.sent[0]).toContain('https://spa.test/cancelar/abc.def');
+  });
+
+  it('sin WhatsApp configurado no hay aviso (el prompt ofrece avisarle)', async () => {
+    const w = build({ extra: [leoNotice()], responses: phone(null) });
+    const out = await w.handler.handle(
+      w.turn('Necesito una cita pero qué pasó con Leo'),
+    );
+    expect(out).toEqual({ handled: false });
+  });
+
+  it('un saludo a Leo no dispara el aviso', async () => {
+    const w = build({
+      extra: [leoNotice()],
+      responses: phone('+57 310 000 1122'),
+    });
+    const out = await w.handler.handle(w.turn('hola leo'));
+    expect('notices' in out && out.notices).toBeFalsy();
+  });
+
+  it('en sombra solo se mide', async () => {
+    const w = build({
+      extra: [leoNotice('SHADOW')],
+      responses: phone('+57 310 000 1122'),
+    });
+    const out = await w.handler.handle(
+      w.turn('Necesito una cita pero qué pasó con Leo'),
+    );
+    expect(out).toEqual({ handled: false });
+  });
+
+  it('tras entregarse no se repite dentro del enfriamiento', async () => {
+    const w = build({
+      extra: [leoNotice()],
+      responses: phone('+57 310 000 1122'),
+    });
+    const first = await w.handler.handle(w.turn('qué pasó con Leo'));
+    expect(!first.handled && first.notices).toHaveLength(1);
+    w.handler.markNoticesDelivered('conv-1', ['leo_notice']);
+    const second = await w.handler.handle(w.turn('y Leo ya no atiende?'));
+    expect(!second.handled && second.notices).toBeFalsy();
+  });
+
+  it('si la respuesta se descartó y no se entregó, el aviso sigue disponible', async () => {
+    const w = build({
+      extra: [leoNotice()],
+      responses: phone('+57 310 000 1122'),
+    });
+    await w.handler.handle(w.turn('qué pasó con Leo'));
+    const again = await w.handler.handle(
+      w.turn('qué pasó con Leo, respóndeme'),
+    );
+    expect(!again.handled && again.notices).toHaveLength(1);
   });
 });

@@ -20,6 +20,7 @@ import {
   isTaskDone,
   IntentTurn,
   SlimPlan,
+  TurnNotice,
 } from './intent-turn';
 import { IntentRecord } from './intent-types';
 import { fillTemplate, renderTool } from './render-spec';
@@ -132,6 +133,80 @@ export class IntentHandler {
       return { handled: true };
     }
 
+    const notices = await this.collectNotices(turn, set);
+    const outcome = await this.decide(turn, set, started, notices);
+    return !outcome.handled && notices.length > 0
+      ? { ...outcome, notices }
+      : outcome;
+  }
+
+  markNoticesDelivered(conversationId: string, keys: string[]): void {
+    const now = Date.now();
+    for (const key of keys) this.lastFired.set(`${conversationId}|${key}`, now);
+  }
+
+  private async collectNotices(
+    turn: IntentTurn,
+    set: BotIntentSet,
+  ): Promise<TurnNotice[]> {
+    if (set.notices.length === 0) return [];
+    const normalized = normalizeText(turn.text.replace(/\n+/g, ' '));
+    if (normalized === '') return [];
+    const tokens = tokenCount(normalized);
+    const found: TurnNotice[] = [];
+    for (const notice of set.notices) {
+      const intent = notice.record;
+      if (
+        tokens > intent.maxTokens ||
+        !notice.patterns.some((p) => p.test(normalized)) ||
+        notice.deny.some((p) => p.test(normalized))
+      ) {
+        continue;
+      }
+      const base = {
+        conversationId: turn.conversationId,
+        intent: intent.key,
+        handler: intent.handler,
+        mode: intent.mode,
+      };
+      if (intent.mode !== 'ACTIVE') {
+        this.metrics.record({ ...base, outcome: 'notice-shadow' });
+        continue;
+      }
+      const previous = this.lastFired.get(
+        `${turn.conversationId}|${intent.key}`,
+      );
+      if (
+        intent.cooldownSeconds > 0 &&
+        previous &&
+        Date.now() - previous < intent.cooldownSeconds * 1000
+      ) {
+        this.metrics.record({ ...base, outcome: 'notice-cooldown' });
+        continue;
+      }
+      const produced = await this.produce(
+        turn,
+        intent,
+        set,
+        undefined,
+        'rules',
+      );
+      if (!produced || !('text' in produced)) {
+        this.metrics.record({ ...base, outcome: 'notice-empty' });
+        continue;
+      }
+      this.metrics.record({ ...base, outcome: 'notice' });
+      found.push({ key: intent.key, text: produced.text });
+    }
+    return found;
+  }
+
+  private async decide(
+    turn: IntentTurn,
+    set: BotIntentSet,
+    started: number,
+    notices: TurnNotice[],
+  ): Promise<IntentOutcome> {
     if (set.compiled.length === 0) return { handled: false };
 
     const flowIntent = this.activeFlow(turn, set);
@@ -237,13 +312,17 @@ export class IntentHandler {
       return { handled: false, slim: produced.slim };
     }
 
-    let text = produced.text;
+    let text = [...notices.map((n) => n.text), produced.text].join('\n\n');
     if (intent.config.greetFirstContact && turn.lastBotMessage === null) {
       const prefix = await this.greetingPrefix(turn, intent, set);
       if (prefix) text = `${prefix}\n\n${text}`;
     }
     await turn.send(text);
     this.lastFired.set(fireKey, Date.now());
+    this.markNoticesDelivered(
+      turn.conversationId,
+      notices.map((n) => n.key),
+    );
     this.lastHandled.set(turn.conversationId, {
       intent: intent.key,
       normalized: result.normalized,

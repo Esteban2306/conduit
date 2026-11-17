@@ -28,7 +28,12 @@ export interface SlimPlan extends SlimConfig {
 
 export type IntentOutcome =
   | { handled: true }
-  | { handled: false; slim?: SlimPlan };
+  | { handled: false; slim?: SlimPlan; notices?: TurnNotice[] };
+
+export interface TurnNotice {
+  key: string;
+  text: string;
+}
 
 export const ACTIVE_FLOW_KEY = 'activeFlow';
 export const OPTED_OUT_KEY = 'optedOutAt';

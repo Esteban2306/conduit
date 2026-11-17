@@ -283,6 +283,16 @@ export function validateIntentInput(input: IntentInput): string[] {
       }
     }
   }
+  if (config.notice !== undefined) {
+    if (typeof config.notice !== 'boolean') {
+      problems.push('config.notice debe ser verdadero o falso');
+    } else if (
+      config.notice &&
+      (isRule || (handler !== 'TEMPLATE' && handler !== 'TOOL_DIRECT'))
+    ) {
+      problems.push('config.notice solo se permite en TEMPLATE o TOOL_DIRECT');
+    }
+  }
   if (handler === 'LLM_SLIM') {
     const slim = config.slim;
     if (!slim || typeof slim.prompt !== 'string' || slim.prompt.trim() === '') {

@@ -22,6 +22,22 @@ describe('validateIntentInput', () => {
     },
   );
 
+  it('un aviso solo puede ser plantilla o llamada directa', () => {
+    expect(validateIntentInput({ ...base, config: { notice: true } })).toEqual(
+      [],
+    );
+    expect(
+      validateIntentInput({
+        ...base,
+        handler: 'HANDOFF',
+        config: { notice: true, reason: 'x' },
+      }),
+    ).toContain('config.notice solo se permite en TEMPLATE o TOOL_DIRECT');
+    expect(
+      validateIntentInput({ ...base, config: { notice: 'si' } }),
+    ).toContain('config.notice debe ser verdadero o falso');
+  });
+
   it('acepta una plantilla simple creada por el negocio', () => {
     expect(validateIntentInput(base)).toEqual([]);
   });

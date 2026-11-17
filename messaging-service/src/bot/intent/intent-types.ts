@@ -42,6 +42,7 @@ export interface IntentConfig {
   greetFirstContact?: boolean;
   /** Si el agendamiento acaba de terminar, esta intención (relleno) se resuelve en silencio. */
   silentAfterTask?: boolean;
+  notice?: boolean;
 }
 
 export interface IntentRecord {

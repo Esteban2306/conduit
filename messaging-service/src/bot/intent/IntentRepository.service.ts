@@ -23,6 +23,7 @@ import { IntentSchedule } from './schedule';
 export interface BotIntentSet {
   all: IntentRecord[];
   compiled: CompiledIntent[];
+  notices: CompiledIntent[];
   byKey: Map<string, IntentRecord>;
   agent: string;
   business: string;
@@ -90,21 +91,23 @@ export class IntentRepository {
     ]);
     const all = rows.map(toRecord).sort((a, b) => a.priority - b.priority);
     const byKey = new Map(all.map((r) => [r.key, r]));
+    const compiled = all
+      .filter((r) => r.mode !== 'OFF')
+      .map((record) => {
+        try {
+          return compileIntent(record);
+        } catch (error) {
+          this.logger.error(
+            `Intención ${record.key} con patrón inválido; se ignora: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          return null;
+        }
+      })
+      .filter((c): c is CompiledIntent => c !== null);
     const set: BotIntentSet = {
       all,
-      compiled: all
-        .filter((r) => r.mode !== 'OFF')
-        .map((record) => {
-          try {
-            return compileIntent(record);
-          } catch (error) {
-            this.logger.error(
-              `Intención ${record.key} con patrón inválido; se ignora: ${error instanceof Error ? error.message : String(error)}`,
-            );
-            return null;
-          }
-        })
-        .filter((c): c is CompiledIntent => c !== null),
+      compiled: compiled.filter((c) => !c.record.config.notice),
+      notices: compiled.filter((c) => c.record.config.notice === true),
       byKey,
       agent: identity.agent,
       business: identity.business,
