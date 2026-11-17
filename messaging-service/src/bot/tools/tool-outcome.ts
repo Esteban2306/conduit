@@ -92,6 +92,15 @@ export interface RecordedOutcome {
   tool: string;
   readOnly: boolean;
   outcome: ClassifiedOutcome;
+  teamNotified?: boolean;
+}
+
+export function reportsTeamNotified(body: unknown): boolean {
+  return (
+    !!body &&
+    typeof body === 'object' &&
+    (body as Record<string, unknown>).teamNotified === true
+  );
 }
 
 /**

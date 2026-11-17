@@ -1536,6 +1536,71 @@ describe('Respuestas coherentes: avisos y preguntas ya respondidas', () => {
     ]);
   });
 
+  it('tras un sí, "¿te funciona ese horario?" también cuenta como pedir otra confirmación', async () => {
+    const store = new Store();
+    store.lastOutboundValue = {
+      content:
+        'El más cercano es mañana a las 2:00 p. m. ¿Cuál te funciona? Al confirmar, aceptas los términos del servicio.',
+      at: new Date(Date.now() - 60_000),
+    };
+    let call = 0;
+    const w = world(store, () => {
+      call += 1;
+      return call === 1
+        ? {
+            content:
+              'Confirmo entonces la terapia de mañana a las 2:00 p. m. Pero antes, ¿te funciona ese horario de mañana?',
+            toolCallsExecuted: [],
+          }
+        : {
+            content:
+              'Listo, tu cita quedó apartada para mañana a las 2:00 p. m.',
+            toolCallsExecuted: [
+              { name: 'crear_reserva_whatsapp', arguments: {}, ok: true },
+            ],
+          };
+    });
+    w.setTools(['crear_reserva_whatsapp']);
+    w.inbound(A, 'sí, confírmala');
+    await settle(DELAY_MS + 2_000);
+    expect(w.aiCalls).toHaveLength(2);
+    expect(w.sends.map((s) => s.content)).toEqual([
+      'Listo, tu cita quedó apartada para mañana a las 2:00 p. m.',
+    ]);
+  });
+
+  it('detecta la reconfirmación aunque la pregunta lleve "a. m."', async () => {
+    const store = new Store();
+    store.lastOutboundValue = {
+      content:
+        '¿Te lo aparto para la terapia de nutrición? Si me confirmas, la dejo apartada.',
+      at: new Date(Date.now() - 60_000),
+    };
+    let call = 0;
+    const w = world(store, () => {
+      call += 1;
+      return call === 1
+        ? {
+            content:
+              'Antes de agendar, confírmame por favor: ¿es para la terapia de nutrición el lunes 23 a las 8:00 a. m., a $200.000?',
+            toolCallsExecuted: [],
+          }
+        : {
+            content: 'Tu cita de nutrición quedó apartada para el lunes 23.',
+            toolCallsExecuted: [
+              { name: 'crear_reserva_whatsapp', arguments: {}, ok: true },
+            ],
+          };
+    });
+    w.setTools(['crear_reserva_whatsapp']);
+    w.inbound(A, 'sí, confírmala');
+    await settle(DELAY_MS + 2_000);
+    expect(w.aiCalls).toHaveLength(2);
+    expect(w.sends.map((s) => s.content)).toEqual([
+      'Tu cita de nutrición quedó apartada para el lunes 23.',
+    ]);
+  });
+
   it('una pregunta nueva no dispara reintentos', async () => {
     const store = new Store();
     store.historyValue = [
@@ -1682,6 +1747,43 @@ describe('Resultados de herramientas y traspaso (etapa 6)', () => {
       calls.find(([, entry]) => entry.herramienta === tool)?.[2]?.pin;
     expect(pinOf('consultar_cliente')).toBe(true);
     expect(pinOf('listar_tratamientos')).toBe(false);
+  });
+
+  it('si una herramienta avisó al equipo, decir que el equipo se comunicará no es una promesa falsa', async () => {
+    const w = world(new Store(), () => ({
+      content:
+        'Listo, avisé al equipo de tu pedido. Se comunicarán contigo para coordinar la compra en la tienda.',
+      toolCallsExecuted: [
+        { name: 'solicitar_compra_producto', arguments: {}, ok: true },
+      ],
+    }));
+    w.setTools(['solicitar_compra_producto']);
+    w.setToolResults({
+      solicitar_compra_producto: {
+        status: 'SUCCESS',
+        httpStatus: 200,
+        body: { requested: true, teamNotified: true },
+      },
+    });
+    w.setToolScript((exec) =>
+      callTool(exec, 'solicitar_compra_producto').then(() => undefined),
+    );
+    w.inbound(A, 'quiero comprar 2 mascarillas');
+    await settle(DELAY_MS + 2_000);
+    expect(w.handoffPerform).not.toHaveBeenCalled();
+    expect(w.sends.map((s) => s.content).join(' ')).toMatch(
+      /coordinar la compra/,
+    );
+  });
+
+  it('sin una herramienta que avise al equipo, la promesa sí activa el traspaso real', async () => {
+    const w = world(new Store(), () => ({
+      content: 'Ya avisé al equipo y una persona te escribirá por aquí.',
+      toolCallsExecuted: [],
+    }));
+    w.inbound(A, 'quiero comprar 2 mascarillas');
+    await settle(DELAY_MS + 2_000);
+    expect(w.handoffPerform).toHaveBeenCalled();
   });
 
   it('backend caído (503): traspaso real hecho por el servidor y texto fijo en lugar del texto del modelo', async () => {

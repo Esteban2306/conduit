@@ -55,6 +55,12 @@ describe('preguntas ya respondidas', () => {
     ).toEqual(['¿Me confirmas tu nombre completo?']);
   });
 
+  it('una pregunta con "a. m." no se corta en el punto', () => {
+    expect(
+      questionsOf('Perfecto. ¿Te sirve el lunes a las 8:00 a. m.?'),
+    ).toEqual(['¿Te sirve el lunes a las 8:00 a. m.?']);
+  });
+
   it('detecta que se vuelve a pedir lo que la clienta ya contestó', () => {
     const found = findRepeatedQuestion(
       'Antes de agendar, ¿me das tu nombre completo y tu fecha de nacimiento?',

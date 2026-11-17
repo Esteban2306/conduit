@@ -67,7 +67,7 @@ import {
 import { IntentHandler } from '../intent/IntentHandler';
 import { isTaskDone } from '../intent/intent-turn';
 import { isAffirmation } from '../intent/normalize';
-import { findRepeatedQuestion, questionsOf } from './repeated-question';
+import { findRepeatedQuestion } from './repeated-question';
 import { withNotices } from './notice-coverage';
 import { MessageRole } from '../conversation/types/MessageRole';
 import { AiOutageDigestService } from '../tools/AiOutageDigest.service';
@@ -94,6 +94,7 @@ import {
   classifyOutcome,
   nextStreaks,
   unresolvedFailures,
+  reportsTeamNotified,
 } from '../tools/tool-outcome';
 import { cutAtSentence, isBlank } from './reply-guard';
 import { ReplyMetricsService } from './reply-metrics.service';
@@ -801,8 +802,14 @@ export class BotRouter {
     const record = (
       tool: string,
       outcome: ReturnType<typeof classifyOutcome>,
+      body?: unknown,
     ) => {
-      recorded.push({ tool, readOnly: readOnlyTools.has(tool), outcome });
+      recorded.push({
+        tool,
+        readOnly: readOnlyTools.has(tool),
+        outcome,
+        teamNotified: outcome.kind === 'SUCCESS' && reportsTeamNotified(body),
+      });
     };
 
     const budget = new TurnBudget();
@@ -927,7 +934,7 @@ export class BotRouter {
             outcome.httpStatus,
             outcome.responseBody,
           );
-          record(req.name, classified);
+          record(req.name, classified, outcome.responseBody);
           const streak = nextStreaks(streaks, req.name, classified);
           streaks = streak.streaks;
 
@@ -1129,7 +1136,13 @@ export class BotRouter {
       const asksAgain =
         confirmedProposal &&
         !wrote(aiResult) &&
-        questionsOf(aiResult.content).some((q) => ACTION_PROPOSAL.test(q));
+        aiResult.content
+          .split(/\n+/)
+          .filter((bubble) => bubble.includes('?'))
+          .some(
+            (bubble) =>
+              ACTION_PROPOSAL.test(bubble) || RECONFIRMATION.test(bubble),
+          );
       const repeated = asksAgain
         ? null
         : findRepeatedQuestion(aiResult.content, [
@@ -2040,7 +2053,8 @@ export class BotRouter {
       );
     }
 
-    if (!modelHandoff && promisesHumanContact(input.content)) {
+    const teamNotified = recorded.some((call) => call.teamNotified === true);
+    if (!modelHandoff && !teamNotified && promisesHumanContact(input.content)) {
       this.replyMetrics.increment('promiseBlocked');
       this.logger.warn(
         `La IA prometió una persona sin traspaso para ${turn.phoneNumber}; se hace el traspaso real.`,
@@ -2297,6 +2311,9 @@ const COMPLETED_CLAIM =
   /\b(?:qued[oó]|quedaron|ya est[aá]|fue|ha sido|se (?:agend[oó]|reserv[oó]|cancel[oó]|reagend[oó]|registr[oó]|cre[oó]))\s*(?:ya\s*)?(?:agendad[ao]s?|reservad[ao]s?|cancelad[ao]s?|reagendad[ao]s?|confirmad[ao]s?|registrad[ao]s?|cread[ao]s?)?\b/i;
 const ACTION_PROPOSAL =
   /\b(?:confirm|agend|apart|reserv|separ|cancel|reagend|registr)/i;
+
+const RECONFIRMATION =
+  /\b(?:te (?:funciona|sirve|queda|parece)|est[aá] bien|de acuerdo|correcto|seguro|lo dejamos|la dejamos)\b/i;
 
 const UNCONFIRMED_ACTION_TEXT =
   'Perdona, no alcancé a completarlo. ¿Me confirmas de nuevo para intentarlo?';

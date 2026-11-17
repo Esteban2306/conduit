@@ -43,7 +43,7 @@ const SIMILARITY = 0.6;
 const LOOKBACK_BOT_MESSAGES = 6;
 
 export function questionsOf(text: string): string[] {
-  const found: string[] = text.match(/¿?[^.!?¿\n]+\?/g) ?? [];
+  const found: string[] = text.match(/¿[^¿?\n]+\?|[^.!?¿\n]+\?/g) ?? [];
   return found.map((question) => question.trim());
 }
 
