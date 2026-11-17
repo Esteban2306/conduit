@@ -909,7 +909,12 @@ export class BotRouter {
             truncated: limited.truncated,
           });
 
-          await this.rememberAction(conversationId, req, outcome);
+          await this.rememberAction(
+            conversationId,
+            req,
+            outcome,
+            resolved.pinResultInMemory,
+          );
 
           const classified = classifyOutcome(
             outcome.status,
@@ -1833,19 +1838,24 @@ export class BotRouter {
       responseBody: unknown;
       errorDetail: string | null;
     },
+    pin = false,
   ): Promise<void> {
     try {
-      await this.conversationService.appendActionMemory(conversationId, {
-        herramienta: req.name,
-        parametros: this.compactJson(req.arguments, 200),
-        estado: outcome.status,
-        resultado:
-          outcome.status === 'SUCCESS'
-            ? this.compactJson(outcome.responseBody, 600)
-            : (outcome.errorDetail ??
-              this.compactJson(outcome.responseBody, 300)),
-        en: new Date().toISOString(),
-      });
+      await this.conversationService.appendActionMemory(
+        conversationId,
+        {
+          herramienta: req.name,
+          parametros: this.compactJson(req.arguments, 200),
+          estado: outcome.status,
+          resultado:
+            outcome.status === 'SUCCESS'
+              ? this.compactJson(outcome.responseBody, 600)
+              : (outcome.errorDetail ??
+                this.compactJson(outcome.responseBody, 300)),
+          en: new Date().toISOString(),
+        },
+        { pin },
+      );
     } catch (error) {
       this.logger.warn(
         `No fue posible guardar la memoria de la acción "${req.name}": ${error instanceof Error ? error.message : String(error)}`,

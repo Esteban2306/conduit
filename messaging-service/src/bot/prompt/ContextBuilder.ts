@@ -2,6 +2,10 @@ import { Injectable } from '@nestjs/common';
 import { ConversationContext } from '../conversation/interfaces/ConversationContext';
 import { FACTS_KEY, renderFacts } from '../specialists/facts';
 import { IMAGE_WARNING_KEY } from '../conversation/image-warning';
+import {
+  PINNED_MEMORY_KEY,
+  pinnedEntriesOf,
+} from '../conversation/pinned-memory';
 
 export interface BuiltContext {
   block: string | null;
@@ -18,6 +22,7 @@ const EXCLUDED = new Set([
   'lockedBy',
   'lastImageDetails',
   'memoriaAcciones',
+  PINNED_MEMORY_KEY,
   'resumenHasta',
   'botPausedUntil',
   'botPauseReason',
@@ -59,6 +64,9 @@ export class ContextBuilder {
         `Resumen de la conversación anterior (objetivo y acuerdos):\n${this.limitSummary(summary.trim())}`,
       );
     }
+
+    const pinned = this.buildPinnedMemory(context);
+    if (pinned) parts.push(pinned);
 
     const actions = this.buildActionMemory(context);
     if (actions) parts.push(actions);
@@ -102,6 +110,18 @@ export class ContextBuilder {
       used += line.length + 1;
     }
     return `Acciones ya realizadas en esta conversación (resultados reales, del más antiguo al más reciente):\n${lines.join('\n')}`;
+  }
+
+  private buildPinnedMemory(context: ConversationContext): string | null {
+    const entries = pinnedEntriesOf(context[PINNED_MEMORY_KEY]).sort((a, b) =>
+      a.en.localeCompare(b.en),
+    );
+    if (entries.length === 0) return null;
+    const lines = entries.map(
+      (e) => `- [${e.en}] ${e.herramienta} → ${e.resultado}`,
+    );
+    return `Datos vigentes de esta conversación (último resultado real de consultas clave; ya los tienes: no se los vuelvas a pedir al cliente ni repitas la consulta; si una acción posterior los cambió, vale lo más reciente):
+${lines.join('\n')}`;
   }
 
   private limitSummary(summary: string): string {

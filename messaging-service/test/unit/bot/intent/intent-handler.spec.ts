@@ -27,6 +27,7 @@ const TOOLS = [
     ? null
     : 'phone',
   pausesBotMinutes: name === 'pasar_a_persona' ? 240 : null,
+  pinResultInMemory: name === 'consultar_cliente',
   readOnly: name !== 'pasar_a_persona',
 }));
 
@@ -47,6 +48,7 @@ function build(
   const paused: Array<{ minutes: number; reason: string }> = [];
   const contexts: any[] = [];
   const remembered: unknown[] = [];
+  const pins: boolean[] = [];
   const ignored: string[] = [];
   const notified: unknown[][] = [];
   const aiCalls: string[] = [];
@@ -89,8 +91,13 @@ function build(
       ignored.push(...ids);
       return Promise.resolve();
     },
-    appendActionMemory: (_id: string, entry: unknown) => {
+    appendActionMemory: (
+      _id: string,
+      entry: unknown,
+      options?: { pin?: boolean },
+    ) => {
       remembered.push(entry);
+      pins.push(options?.pin ?? false);
       return Promise.resolve();
     },
   };
@@ -161,6 +168,7 @@ function build(
     paused,
     contexts,
     remembered,
+    pins,
     notified,
     aiCalls,
     metrics,
@@ -482,6 +490,39 @@ describe('IntentHandler · saludo y cortesía', () => {
     await guest.handler.handle(guest.turn('Hola'));
     expect(guest.sent[0]).toMatch(/Soy Sofía de Leonice Spa/);
     expect(guest.sent[0]).not.toContain('{{');
+  });
+
+  it('el perfil que consulta el saludo queda fijado en la memoria; otras consultas no', async () => {
+    const w = build({
+      responses: {
+        consultar_cliente: {
+          status: 'SUCCESS',
+          body: { registered: true, firstName: 'LUZ' },
+        },
+        enlace_cancelacion: { status: 'SUCCESS', body: LINK },
+      },
+    });
+    await w.handler.handle(w.turn('Hola'));
+    expect(w.pins).toEqual([true]);
+
+    const other = build({
+      responses: { enlace_cancelacion: { status: 'SUCCESS', body: LINK } },
+    });
+    await other.handler.handle(other.turn('Quiero cancelar mi cita'));
+    const pinnedTools = other.remembered
+      .filter((_, index) => other.pins[index])
+      .map((entry) => (entry as { herramienta: string }).herramienta);
+    expect(other.remembered.length).toBeGreaterThan(0);
+    expect(pinnedTools.every((name) => name === 'consultar_cliente')).toBe(
+      true,
+    );
+    expect(
+      other.remembered.some(
+        (entry, index) =>
+          (entry as { herramienta: string }).herramienta ===
+            'enlace_cancelacion' && !other.pins[index],
+      ),
+    ).toBe(true);
   });
 
   it('un saludo con LID se responde igual con el texto genérico', async () => {

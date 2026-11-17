@@ -17,6 +17,7 @@ Resume lo que añade la rama `feat/line-identity-and-queue-resilience` y el orde
 | `20261110120000_tool_verified_params` | Columna `verifiedParams` (JSONB, por defecto `{}`) en `ToolDefinition`, con restricción de que sea un objeto. Aditiva: las herramientas existentes no cambian |
 | `20261111120000_tool_unverified_fallback` | Enum `ToolVerificationFallback` y columna `onTechnicalFailure` (por defecto `REFUSE`) en `ToolDefinition`, con restricción de que `PROCEED_UNVERIFIED` exija `verificationCapability`. Aditiva: las herramientas existentes no cambian |
 | `20261112120000_legacy_image_usage` | Tabla `LegacyImageUsage` (conteo por bot y día UTC del análisis de imagen antiguo, sin claves foráneas). Aditiva. La fecha en que se aplica esta migración es la que se usa como "desde cuándo se observa" |
+| `20261117120000_tool_pin_result_in_memory` | Columna `pinResultInMemory` (booleana, por defecto `false`) en `ToolDefinition`. Aditiva: las herramientas existentes no cambian. Ver "Memoria fija de herramientas" |
 | `20261109100000_attachment_verification` | Huella de campos, versión de hash y marca de consumo en `VerificationRecord`; campos de verificación y CHECK en `ToolDefinition` |
 
 Todas son aditivas. Antes de `stable_keys` en cada base, buscar números duplicados por tenant:
@@ -112,6 +113,10 @@ Las reglas pueden compararse con datos del negocio mediante `ref: "grounding.<cl
 - `EXTERNAL_MAPPING`: una variable externa del bot, con nombre `<espacio>.<clave>` (por ejemplo `vars.titular`). Si se da `valuePath`, se lee dentro de un JSON guardado.
 
 Las consultas corren en paralelo al modelo, con tiempo máximo y una caché en memoria por conversación (vigencia `maxAgeSeconds`, 0 la desactiva). Un dato que no se puede obtener nunca produce `VALID`: la regla pide revisión (`GROUNDING_UNAVAILABLE`). Una fuente `required` caída convierte un `VALID` en `NEEDS_REVIEW`. Un dato de texto de más de 1000 caracteres se descarta como no disponible (la regla pide revisión). Una regla que cita una clave sin declarar deja al especialista en error (`RULES_INVALID`) y queda en el log.
+
+## Memoria fija de herramientas
+
+Con `pinResultInMemory: true`, el último resultado correcto de esa herramienta en la conversación se guarda aparte (`memoriaFija` en el contexto, máximo 4 herramientas) y el modelo lo ve en cada turno como "Datos vigentes", en el prompt completo y en los reducidos. La memoria normal de acciones guarda 8 llamadas y muestra solo las más recientes hasta 2400 caracteres: tras varias consultas largas, el resultado del primer turno dejaba de verse y el bot volvía a pedir datos que ya tenía. Úsalo en consultas cortas que describen al contacto (por ejemplo, el perfil del cliente). Un fallo no reemplaza el dato fijado y empezar de cero lo limpia. Se configura al crear o editar la herramienta.
 
 ## 5. Herramientas con puerta de verificación
 

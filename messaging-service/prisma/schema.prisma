@@ -758,6 +758,7 @@ model ToolDefinition {
   /// Si la llamada sale bien, el bot se pausa en esa conversación durante
   /// estos minutos (p. ej. herramienta de "pasar a una persona").
   pausesBotMinutes        Int?
+  pinResultInMemory       Boolean @default(false)
 
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt

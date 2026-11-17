@@ -724,6 +724,7 @@ function world(
       pausing: string[] = [],
       gated: string[] = [],
       attaching: string[] = [],
+      pinned: string[] = [],
     ) => {
       activeTools = names.map((name) => ({
         spec: { name },
@@ -734,6 +735,7 @@ function world(
         maxImageSizeBytes: null,
         injectPhoneParamName: null,
         pausesBotMinutes: pausing.includes(name) ? 240 : null,
+        pinResultInMemory: pinned.includes(name),
         verificationCapability: gated.includes(name) ? 'image-analysis' : null,
       }));
     },
@@ -1430,6 +1432,50 @@ describe('Resultados de herramientas y traspaso (etapa 6)', () => {
     await settle(DELAY_MS + 2_000);
     expect(w.sends[0].content).toMatch(/No encuentro esa cita/);
     expect(w.handoffPerform).not.toHaveBeenCalled();
+  });
+
+  it('el prompt completo fija el resultado de una herramienta marcada y no el de las demás', async () => {
+    const w = world(new Store(), () => ({
+      content: 'Hola, Luz 🌿 ¿En qué te ayudo?',
+      toolCallsExecuted: [
+        { name: 'consultar_cliente', arguments: {}, ok: true },
+        { name: 'listar_tratamientos', arguments: {}, ok: true },
+      ],
+    }));
+    w.setTools(
+      ['consultar_cliente', 'listar_tratamientos'],
+      [],
+      [],
+      [],
+      ['consultar_cliente'],
+    );
+    w.setToolResults({
+      consultar_cliente: {
+        status: 'SUCCESS',
+        httpStatus: 200,
+        body: { registered: true, firstName: 'Luz' },
+      },
+      listar_tratamientos: {
+        status: 'SUCCESS',
+        httpStatus: 200,
+        body: { items: [] },
+      },
+    });
+    w.setToolScript(async (exec) => {
+      await callTool(exec, 'consultar_cliente');
+      await callTool(exec, 'listar_tratamientos');
+    });
+    w.inbound(A, 'Hola buenos días');
+    await settle(DELAY_MS + 2_000);
+
+    const calls = w.conversations.appendActionMemory.mock
+      .calls as unknown as Array<
+      [string, { herramienta: string }, { pin?: boolean }?]
+    >;
+    const pinOf = (tool: string) =>
+      calls.find(([, entry]) => entry.herramienta === tool)?.[2]?.pin;
+    expect(pinOf('consultar_cliente')).toBe(true);
+    expect(pinOf('listar_tratamientos')).toBe(false);
   });
 
   it('backend caído (503): traspaso real hecho por el servidor y texto fijo en lugar del texto del modelo', async () => {

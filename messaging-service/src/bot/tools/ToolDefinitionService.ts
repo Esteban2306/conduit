@@ -28,6 +28,7 @@ export interface ResolvedTool {
   maxImageSizeBytes: number | null;
   injectPhoneParamName: string | null;
   pausesBotMinutes: number | null;
+  pinResultInMemory: boolean;
   readOnly: boolean;
   verificationCapability: string | null;
 }
@@ -92,6 +93,7 @@ export class ToolDefinitionService {
         maxImageSizeBytes: dto.maxImageSizeBytes,
         injectPhoneParamName: dto.injectPhoneParamName,
         pausesBotMinutes: dto.pausesBotMinutes,
+        pinResultInMemory: dto.pinResultInMemory ?? false,
         verificationCapability: dto.verificationCapability,
         acceptedVerdicts: (dto.acceptedVerdicts ?? []) as VerificationVerdict[],
         verificationParamName: dto.verificationParamName,
@@ -232,6 +234,7 @@ export class ToolDefinitionService {
         maxImageSizeBytes: d.maxImageSizeBytes,
         injectPhoneParamName: d.injectPhoneParamName,
         pausesBotMinutes: d.pausesBotMinutes,
+        pinResultInMemory: d.pinResultInMemory,
         verificationCapability: d.verificationCapability,
         readOnly: ['GET', 'HEAD'].includes(
           (d.httpMethod ?? 'POST').toUpperCase(),
@@ -402,6 +405,7 @@ export class ToolDefinitionService {
       maxImageSizeBytes: true,
       injectPhoneParamName: true,
       pausesBotMinutes: true,
+      pinResultInMemory: true,
       verificationCapability: true,
       acceptedVerdicts: true,
       verificationParamName: true,

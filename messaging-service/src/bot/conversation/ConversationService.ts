@@ -17,6 +17,7 @@ import { ConversationContext } from './interfaces/ConversationContext';
 import { UpdateContextDto } from './dto/UpdateContext.dto';
 import { EventBusService } from 'src/infra/events/event.service';
 import { EVENT_TYPES } from 'src/infra/events/constants/event.types';
+import { PINNED_MEMORY_KEY, pinEntry } from './pinned-memory';
 
 const CLOSED_STATUSES: ConversationStatus[] = [
   ConversationStatus.COMPLETED,
@@ -690,15 +691,21 @@ export class ConversationService {
   async appendActionMemory(
     conversationId: string,
     entry: ActionMemoryEntry,
+    options: { pin?: boolean } = {},
   ): Promise<void> {
     const context = await this.getContext(conversationId);
     const previous = Array.isArray(context.memoriaAcciones)
       ? (context.memoriaAcciones as ActionMemoryEntry[])
       : [];
+    const pinned =
+      options.pin && entry.estado === 'SUCCESS'
+        ? pinEntry(context[PINNED_MEMORY_KEY], entry)
+        : undefined;
 
     await this.updateContext(conversationId, {
       contextPatch: {
         memoriaAcciones: [...previous, entry].slice(-MAX_ACTION_MEMORY),
+        ...(pinned && { [PINNED_MEMORY_KEY]: pinned }),
       },
     });
   }
@@ -950,6 +957,7 @@ export class ConversationService {
         taskDoneAt: null,
         failureStreaks: null,
         memoriaAcciones: [],
+        [PINNED_MEMORY_KEY]: null,
       },
     });
     await this.prisma.conversation.update({

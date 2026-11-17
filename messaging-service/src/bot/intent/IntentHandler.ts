@@ -515,7 +515,13 @@ export class IntentHandler {
       contactAddress: turn.phoneNumber,
       turnId: turn.turnId,
     });
-    await this.remember(turn, config.tool!, params, outcome);
+    await this.remember(
+      turn,
+      config.tool!,
+      params,
+      outcome,
+      resolved.pinResultInMemory,
+    );
 
     if (outcome.status === 'SUCCESS') {
       if (cacheKey && config.cache) {
@@ -593,22 +599,27 @@ export class IntentHandler {
       responseBody: unknown;
       errorDetail: string | null;
     },
+    pin: boolean,
   ): Promise<void> {
     try {
       const compact = (value: unknown, max: number) => {
         const raw = JSON.stringify(value) ?? '';
         return raw.length > max ? `${raw.slice(0, max)}…` : raw;
       };
-      await this.conversationService.appendActionMemory(turn.conversationId, {
-        herramienta: tool,
-        parametros: compact(params, 200),
-        estado: outcome.status,
-        resultado:
-          outcome.status === 'SUCCESS'
-            ? compact(outcome.responseBody, 600)
-            : (outcome.errorDetail ?? compact(outcome.responseBody, 300)),
-        en: new Date().toISOString(),
-      });
+      await this.conversationService.appendActionMemory(
+        turn.conversationId,
+        {
+          herramienta: tool,
+          parametros: compact(params, 200),
+          estado: outcome.status,
+          resultado:
+            outcome.status === 'SUCCESS'
+              ? compact(outcome.responseBody, 600)
+              : (outcome.errorDetail ?? compact(outcome.responseBody, 300)),
+          en: new Date().toISOString(),
+        },
+        { pin },
+      );
     } catch (error) {
       this.logger.warn(
         `No fue posible guardar la memoria de "${tool}": ${error instanceof Error ? error.message : String(error)}`,

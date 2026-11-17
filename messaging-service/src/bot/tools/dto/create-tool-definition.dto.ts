@@ -85,6 +85,10 @@ export class CreateToolDefinitionDto {
   @Max(7 * 24 * 60)
   pausesBotMinutes?: number;
 
+  @IsOptional()
+  @IsBoolean()
+  pinResultInMemory?: boolean;
+
   /**
    * Capacidad de verificación que debe aprobar el comprobante adjunto antes
    * de ejecutar la herramienta. Sin un veredicto aceptado, vigente y sin
