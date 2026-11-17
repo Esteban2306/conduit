@@ -140,7 +140,13 @@ export async function prepareInfra(log: (m: string) => void): Promise<void> {
     cwd: LEONICE_ROOT,
     env: seedEnv,
   });
-  log('Catálogo de Leonice sembrado (seed.ts + seed-treatment-content.ts)');
+  run(tsNode, ['prisma/seed-product-catalog.ts'], {
+    cwd: LEONICE_ROOT,
+    env: seedEnv,
+  });
+  log(
+    'Catálogo de Leonice sembrado (seed.ts + seed-treatment-content.ts + seed-product-catalog.ts)',
+  );
 }
 
 export function stopInfraHint(): string {

@@ -221,7 +221,7 @@ export async function startConduit(
 
   const tenant = source.tenant as { id: string };
   await insertRow(db, 'Tenant', tenant);
-  await insertRow(db, 'BotConfig', source.bot);
+  await insertRow(db, 'BotConfig', { ...source.bot, status: 'ACTIVE' });
 
   const toolApiKey = randomBytes(24).toString('hex');
   const encryption = app.get(SecretEncryptionService);
@@ -241,7 +241,12 @@ export async function startConduit(
     for (const raw of source.rows[table]) {
       const row: Row = { ...raw };
       if (table === 'AiModelConfig') {
-        const plainKey = sourceEncryption.open(String(row.apiKey));
+        const plainKey =
+          process.env.BENCH_AI_API_KEY ??
+          sourceEncryption.open(String(row.apiKey));
+        if (process.env.BENCH_AI_PROVIDER)
+          row.provider = process.env.BENCH_AI_PROVIDER;
+        if (process.env.BENCH_AI_MODEL) row.model = process.env.BENCH_AI_MODEL;
         row.apiKey = encryption.seal(plainKey);
         row.apiKeyLast4 = encryption.last4(plainKey);
         Object.assign(row, {
