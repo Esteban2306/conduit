@@ -58,6 +58,7 @@ interface StoredMessage {
 
 class Store {
   lastOutboundValue: { content: string; at: Date } | null = null;
+  historyValue: Array<{ role: string; content: string }> = [];
   resets: Array<{ id: string; since: Date }> = [];
   conversations = new Map<
     string,
@@ -189,7 +190,7 @@ class Store {
         context: this.conversations.get(conversationId)?.context ?? {},
         currentStep: null,
         lastIntent: null,
-        history: [],
+        history: this.historyValue,
         leadingBotMessages: [],
         pending: this.pendingOf(conversationId).map((m) => ({
           id: m.id,
@@ -299,6 +300,7 @@ function world(
   let botStatus: BotStatus = line.status ?? BotStatus.ACTIVE;
   const slimPrompts: unknown[] = [];
   const afterSlimTurn = jest.fn(() => Promise.resolve());
+  const markNoticesDelivered = jest.fn();
   let activeTools: unknown[] = [];
   let toolResults: Record<
     string,
@@ -570,7 +572,7 @@ function world(
         notifications.push(args);
       },
     } as never,
-    { handle: intentHandle, afterSlimTurn } as never,
+    { handle: intentHandle, afterSlimTurn, markNoticesDelivered } as never,
     {
       perform: handoffPerform,
       afterModelHandoff: handoffAfter,
@@ -759,6 +761,7 @@ function world(
     specialistRun,
     conversations,
     promptInputs,
+    markNoticesDelivered,
     activeOutcome,
     imageOriginal: original,
     legacyUsageRecord,
@@ -1420,6 +1423,129 @@ describe('Reinicio por inactividad de la clienta', () => {
     }));
     w.setTools(['crear_reserva_whatsapp']);
     w.inbound(A, 'sí, confirmo');
+    await settle(DELAY_MS + 2_000);
+    expect(w.aiCalls).toHaveLength(1);
+  });
+});
+
+describe('Respuestas coherentes: avisos y preguntas ya respondidas', () => {
+  beforeEach(() => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  const LEO = 'Para otro tema puedes escribirle a Leo al +57 310 000 1122 🌿';
+
+  it('si la IA no incluye el aviso, el servidor lo agrega después del saludo y lo marca entregado', async () => {
+    const w = world(
+      new Store(),
+      () => 'Hola, Luz 🌿\n\nTengo cupo mañana a las 2. ¿Te sirve?',
+    );
+    w.intentHandle.mockImplementationOnce(() =>
+      Promise.resolve({
+        handled: false,
+        notices: [{ key: 'leo_notice', text: LEO }],
+      } as never),
+    );
+    w.inbound(A, 'Necesito una cita pero qué pasó con Leo');
+    await settle(DELAY_MS + 2_000);
+
+    const all = w.sends.map((s) => s.content).join('\n\n');
+    expect(all.indexOf('Hola, Luz')).toBeLessThan(all.indexOf(LEO));
+    expect(all.indexOf(LEO)).toBeLessThan(all.indexOf('Tengo cupo'));
+    expect(w.promptInputs[0].notices).toEqual([LEO]);
+    expect(w.markNoticesDelivered).toHaveBeenCalledWith('conv-' + A, [
+      'leo_notice',
+    ]);
+  });
+
+  it('si la IA ya lo incluyó, no se duplica', async () => {
+    const w = world(
+      new Store(),
+      () => 'Puedes escribirle a Leo al 310 000 1122. ¿Te busco cupo?',
+    );
+    w.intentHandle.mockImplementationOnce(() =>
+      Promise.resolve({
+        handled: false,
+        notices: [{ key: 'leo_notice', text: LEO }],
+      } as never),
+    );
+    w.inbound(A, 'qué pasó con Leo');
+    await settle(DELAY_MS + 2_000);
+    const all = w.sends.map((s) => s.content).join(' ');
+    expect(all.match(/1122/g)).toHaveLength(1);
+  });
+
+  it('si vuelve a pedir un dato que la clienta ya dio, reintenta una vez con su respuesta', async () => {
+    const store = new Store();
+    store.historyValue = [
+      {
+        role: 'assistant',
+        content:
+          'Para reservar, ¿me confirmas tu nombre completo y tu fecha de nacimiento?',
+      },
+    ];
+    let call = 0;
+    const w = world(store, () => {
+      call += 1;
+      return call === 1
+        ? 'Gracias. ¿Me das tu nombre completo y tu fecha de nacimiento?'
+        : 'Gracias, Camila. El cupo más cercano es mañana a las 2. ¿Te lo aparto?';
+    });
+    w.inbound(A, 'Camila Torres Ruiz, 3 de marzo de 1995');
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.aiCalls).toHaveLength(2);
+    expect(w.sends.map((s) => s.content).join(' ')).toMatch(/Camila/);
+    expect(w.sends.map((s) => s.content).join(' ')).not.toMatch(
+      /nombre completo/,
+    );
+    expect(w.metrics.snapshot().repeatedQuestion).toBe(1);
+  });
+
+  it('tras un sí a una propuesta, no pide otra confirmación: reintenta para ejecutar', async () => {
+    const store = new Store();
+    store.lastOutboundValue = {
+      content: 'Tu cita quedaría el lunes a las 8. ¿Te la confirmo?',
+      at: new Date(Date.now() - 60_000),
+    };
+    let call = 0;
+    const w = world(store, () => {
+      call += 1;
+      return call === 1
+        ? {
+            content: '¿Me confirmas la cita del lunes a las 8?',
+            toolCallsExecuted: [],
+          }
+        : {
+            content: 'Listo, tu cita quedó apartada para el lunes a las 8.',
+            toolCallsExecuted: [
+              { name: 'crear_reserva_whatsapp', arguments: {}, ok: true },
+            ],
+          };
+    });
+    w.setTools(['crear_reserva_whatsapp']);
+    w.inbound(A, 'sí, confírmala');
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.aiCalls).toHaveLength(2);
+    expect(w.sends.map((s) => s.content)).toEqual([
+      'Listo, tu cita quedó apartada para el lunes a las 8.',
+    ]);
+  });
+
+  it('una pregunta nueva no dispara reintentos', async () => {
+    const store = new Store();
+    store.historyValue = [
+      { role: 'assistant', content: '¿Qué servicio te interesa para tu cita?' },
+    ];
+    const w = world(
+      store,
+      () => '¿Cuál de estos horarios te queda mejor: mañana o el jueves?',
+    );
+    w.inbound(A, 'hidratación');
     await settle(DELAY_MS + 2_000);
     expect(w.aiCalls).toHaveLength(1);
   });

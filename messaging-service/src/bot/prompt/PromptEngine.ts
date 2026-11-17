@@ -37,8 +37,13 @@ export interface PromptBuildInput {
   summary: string | null;
   /** Mensajes del negocio previos al primer turno del cliente en el historial. */
   leadingBotMessages?: string[];
+  notices?: string[];
   hasImage?: boolean;
   hasTools?: boolean;
+}
+
+function noticeBlock(notices: string[]): string {
+  return `Aviso obligatorio de este turno: tu respuesta debe incluir esta información con sus mismos datos (por ejemplo el número), una sola vez y en pocas palabras, y luego responder lo demás que pidió la clienta. Si no la incluyes, el sistema la agrega antes de tu respuesta:\n${notices.map((n) => `- «${n}»`).join('\n')}`;
 }
 
 const MEMORY_DISCIPLINE = `
@@ -109,6 +114,7 @@ export class PromptEngine {
     const dynamic: string[] = [promptDateLine(timeZone)];
     const { block } = this.contextBuilder.build(input.context, input.summary);
     if (block) dynamic.push(block);
+    if (input.notices?.length) dynamic.push(noticeBlock(input.notices));
     if (input.leadingBotMessages?.length) {
       const previous = input.leadingBotMessages.map((m) => `- ${m}`).join('\n');
       dynamic.push(
@@ -172,6 +178,7 @@ export class PromptEngine {
     if (plan.hint) dynamic.push(plan.hint);
     const { block } = this.contextBuilder.build(input.context, input.summary);
     if (block) dynamic.push(block);
+    if (input.notices?.length) dynamic.push(noticeBlock(input.notices));
     if (input.leadingBotMessages?.length) {
       const previous = input.leadingBotMessages.map((m) => `- ${m}`).join('\n');
       dynamic.push(

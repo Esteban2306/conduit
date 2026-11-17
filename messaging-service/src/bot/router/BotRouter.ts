@@ -67,6 +67,9 @@ import {
 import { IntentHandler } from '../intent/IntentHandler';
 import { isTaskDone } from '../intent/intent-turn';
 import { isAffirmation } from '../intent/normalize';
+import { findRepeatedQuestion, questionsOf } from './repeated-question';
+import { withNotices } from './notice-coverage';
+import { MessageRole } from '../conversation/types/MessageRole';
 import { AiOutageDigestService } from '../tools/AiOutageDigest.service';
 import { ImagePrefetchService } from './ImagePrefetch.service';
 import { BotEscalationService } from '../tools/BotEscalation.service';
@@ -688,6 +691,7 @@ export class BotRouter {
     });
     if (intentOutcome.handled) return;
     const slim = intentOutcome.slim;
+    const notices = intentOutcome.notices ?? [];
 
     if (!botConfig.aiModels || botConfig.aiModels.length === 0) {
       this.logger.error(
@@ -777,6 +781,7 @@ export class BotRouter {
       context: aiData.context,
       summary: aiData.summary,
       leadingBotMessages: aiData.leadingBotMessages,
+      notices: notices.map((notice) => notice.text),
       hasImage,
       hasTools: tools.length > 0,
     };
@@ -1087,11 +1092,13 @@ export class BotRouter {
       (result.toolCallsExecuted ?? []).some(
         (call) => call.ok && !readOnlyTools.has(call.name),
       );
+    let consistencyRetried = false;
     if (
       confirmedProposal &&
       claimsCompleted(aiResult.content) &&
       !wrote(aiResult)
     ) {
+      consistencyRetried = true;
       this.replyMetrics.increment('confirmWithoutAction');
       this.logger.warn(
         `La clienta confirmó y la IA dijo que quedó hecho sin ejecutar ninguna acción para ${maskChat(phoneNumber)}; se reintenta una vez.`,
@@ -1116,6 +1123,44 @@ export class BotRouter {
               ...aiResult,
               content: UNCONFIRMED_ACTION_TEXT,
             };
+    }
+
+    if (!consistencyRetried && !isBlank(aiResult.content)) {
+      const asksAgain =
+        confirmedProposal &&
+        !wrote(aiResult) &&
+        questionsOf(aiResult.content).some((q) => ACTION_PROPOSAL.test(q));
+      const repeated = asksAgain
+        ? null
+        : findRepeatedQuestion(aiResult.content, [
+            ...aiData.history.map((m) => ({
+              fromBot: m.role === MessageRole.ASSISTANT,
+              content: m.content,
+            })),
+            { fromBot: false, content: combinedText },
+          ]);
+      if (asksAgain || repeated) {
+        this.replyMetrics.increment('repeatedQuestion');
+        this.logger.warn(
+          `La IA volvió a preguntar algo ya respondido para ${maskChat(phoneNumber)}${asksAgain ? ' (otra confirmación tras un sí)' : ''}; se reintenta una vez.`,
+        );
+        const instruction = asksAgain
+          ? `ATENCIÓN: la clienta ya confirmó («${combinedText.slice(0, 200)}»). No le pidas otra confirmación: ejecuta ahora la acción con la herramienta que corresponde y responde según su resultado real. Si en tu propuesta anterior no le avisaste de los términos del servicio, menciónalo en esta misma respuesta.`
+          : `ATENCIÓN: tu respuesta vuelve a preguntar algo que la clienta ya contestó (preguntaste «${repeated!.previous.slice(0, 200)}» y respondió «${repeated!.answer.slice(0, 200)}»). No repitas esa pregunta: usa lo que respondió y avanza. Si su respuesta no trae el dato que necesitas, pídelo de otra forma en una sola frase diciendo para qué es.`;
+        try {
+          const retried = await generate({ appendInstruction: instruction });
+          if (!isBlank(retried.content)) {
+            aiResult =
+              claimsCompleted(retried.content) && !wrote(retried)
+                ? { ...retried, content: UNCONFIRMED_ACTION_TEXT }
+                : retried;
+          }
+        } catch (error) {
+          this.logger.error(
+            `Fallo el reintento por pregunta repetida: ${maskError(error)}`,
+          );
+        }
+      }
     }
 
     if (this.receiptTracker.isChatActive(sessionKey, 30000)) {
@@ -1204,12 +1249,25 @@ export class BotRouter {
     // pendiente (evita contestar dos veces lo mismo).
     // Si el turno ya hizo algo con efectos (una reserva, un traspaso), el
     // cliente tiene que enterarse aunque haya escrito de nuevo.
+    if (!guarded.replaced && notices.length > 0) {
+      reply = withNotices(
+        reply,
+        notices.map((notice) => notice.text),
+      );
+    }
+
     const mustDeliver =
       modelHandoff ||
       recorded.some((r) => !r.readOnly && r.outcome.kind === 'SUCCESS');
     const sent = await this.sendReply(turn, reply, tokensUsed, imageVerified, {
       mustDeliver,
     });
+    if (sent && notices.length > 0) {
+      this.intentHandler.markNoticesDelivered(
+        conversationId,
+        notices.map((notice) => notice.key),
+      );
+    }
     this.logger.log(
       formatTurnLine({
         correlationId: turnId,
