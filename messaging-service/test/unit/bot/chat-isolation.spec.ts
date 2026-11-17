@@ -1343,6 +1343,86 @@ describe('Reinicio por inactividad de la clienta', () => {
     await settle(DELAY_MS + 2_000);
     expect(w.aiCalls).toHaveLength(1);
   });
+
+  const proposalStore = (content: string) => {
+    const store = new Store();
+    store.lastOutboundValue = { content, at: minutesAgo(1) };
+    return store;
+  };
+
+  it('prompt completo: si dijo "quedó apartada" sin ejecutar nada tras un sí, reintenta y usa la reserva real', async () => {
+    let call = 0;
+    const w = world(
+      proposalStore('Tu cita de nutrición quedaría el lunes. ¿Te la confirmo?'),
+      () => {
+        call += 1;
+        return call === 1
+          ? {
+              content: 'Tu cita de nutrición quedó apartada para el lunes.',
+              toolCallsExecuted: [],
+            }
+          : {
+              content: 'Listo, tu cita de nutrición quedó apartada.',
+              toolCallsExecuted: [
+                { name: 'crear_reserva_whatsapp', arguments: {}, ok: true },
+              ],
+            };
+      },
+    );
+    w.setTools(['crear_reserva_whatsapp']);
+    w.inbound(A, 'sí, confírmala');
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.aiCalls).toHaveLength(2);
+    expect(w.sends.map((s) => s.content)).toEqual([
+      'Listo, tu cita de nutrición quedó apartada.',
+    ]);
+    expect(w.metrics.snapshot().confirmWithoutAction).toBe(1);
+  });
+
+  it('prompt completo: si el reintento tampoco ejecuta nada, no afirma una reserva que no existe', async () => {
+    const w = world(
+      proposalStore('¿Te confirmo la cita del lunes a las 8?'),
+      () => ({
+        content: 'Tu cita quedó apartada para el lunes.',
+        toolCallsExecuted: [],
+      }),
+    );
+    w.setTools(['crear_reserva_whatsapp']);
+    w.inbound(A, 'sí, confírmala');
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.aiCalls).toHaveLength(2);
+    expect(w.sends.map((s) => s.content).join(' ')).not.toMatch(/apartada/);
+    expect(w.sends[0].content).toMatch(/no alcancé a completarlo/);
+  });
+
+  it('prompt completo: un sí a una pregunta que no propone una acción no reintenta', async () => {
+    const w = world(
+      proposalStore('¿Quieres que te cuente más del tratamiento?'),
+      () => ({
+        content:
+          'Tu cita del lunes ya quedó agendada, y el tratamiento dura 2 h.',
+        toolCallsExecuted: [],
+      }),
+    );
+    w.inbound(A, 'sí, confírmala');
+    await settle(DELAY_MS + 2_000);
+    expect(w.aiCalls).toHaveLength(1);
+  });
+
+  it('prompt completo: si la reserva se ejecutó, no reintenta', async () => {
+    const w = world(proposalStore('¿Te la confirmo?'), () => ({
+      content: 'Tu cita quedó apartada.',
+      toolCallsExecuted: [
+        { name: 'crear_reserva_whatsapp', arguments: {}, ok: true },
+      ],
+    }));
+    w.setTools(['crear_reserva_whatsapp']);
+    w.inbound(A, 'sí, confirmo');
+    await settle(DELAY_MS + 2_000);
+    expect(w.aiCalls).toHaveLength(1);
+  });
 });
 
 describe('Resultados de herramientas y traspaso (etapa 6)', () => {

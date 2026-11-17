@@ -66,6 +66,7 @@ import {
 } from 'src/channels/whatsapp/baileys/human-timing';
 import { IntentHandler } from '../intent/IntentHandler';
 import { isTaskDone } from '../intent/intent-turn';
+import { isAffirmation } from '../intent/normalize';
 import { AiOutageDigestService } from '../tools/AiOutageDigest.service';
 import { ImagePrefetchService } from './ImagePrefetch.service';
 import { BotEscalationService } from '../tools/BotEscalation.service';
@@ -1075,6 +1076,46 @@ export class BotRouter {
           );
         }
       }
+    }
+
+    const confirmedProposal =
+      !slim?.hint &&
+      lastBotMessage?.content.includes('?') === true &&
+      ACTION_PROPOSAL.test(lastBotMessage.content) &&
+      isAffirmation(combinedText);
+    const wrote = (result: typeof aiResult) =>
+      (result.toolCallsExecuted ?? []).some(
+        (call) => call.ok && !readOnlyTools.has(call.name),
+      );
+    if (
+      confirmedProposal &&
+      claimsCompleted(aiResult.content) &&
+      !wrote(aiResult)
+    ) {
+      this.replyMetrics.increment('confirmWithoutAction');
+      this.logger.warn(
+        `La clienta confirmó y la IA dijo que quedó hecho sin ejecutar ninguna acción para ${maskChat(phoneNumber)}; se reintenta una vez.`,
+      );
+      let retried: typeof aiResult | null = null;
+      try {
+        retried = await generate({
+          appendInstruction:
+            'ATENCIÓN: la clienta acaba de confirmar y en tu intento anterior dijiste que quedó hecho sin ejecutar ninguna herramienta, así que NO se hizo. Ejecuta ahora la herramienta que corresponde a lo que confirmó (por ejemplo crear_reserva_whatsapp) y responde según su resultado real. Si lo que confirmó no era una acción, responde sin decir que quedó hecho. No digas que quedó hecho si una herramienta no lo confirma.',
+        });
+      } catch (error) {
+        this.logger.error(
+          `Fallo el reintento de la acción confirmada: ${maskError(error)}`,
+        );
+      }
+      aiResult =
+        retried &&
+        !isBlank(retried.content) &&
+        (wrote(retried) || !claimsCompleted(retried.content))
+          ? retried
+          : {
+              ...aiResult,
+              content: UNCONFIRMED_ACTION_TEXT,
+            };
     }
 
     if (this.receiptTracker.isChatActive(sessionKey, 30000)) {
@@ -2196,8 +2237,14 @@ export class BotRouter {
 
 const COMPLETED_CLAIM =
   /\b(?:qued[oó]|quedaron|ya est[aá]|fue|ha sido|se (?:agend[oó]|reserv[oó]|cancel[oó]|reagend[oó]|registr[oó]|cre[oó]))\s*(?:ya\s*)?(?:agendad[ao]s?|reservad[ao]s?|cancelad[ao]s?|reagendad[ao]s?|confirmad[ao]s?|registrad[ao]s?|cread[ao]s?)?\b/i;
+const ACTION_PROPOSAL =
+  /\b(?:confirm|agend|apart|reserv|separ|cancel|reagend|registr)/i;
+
+const UNCONFIRMED_ACTION_TEXT =
+  'Perdona, no alcancé a completarlo. ¿Me confirmas de nuevo para intentarlo?';
+
 const COMPLETED_WORD =
-  /\b(?:agendad[ao]|reservad[ao]|cancelad[ao]|reagendad[ao]|confirmad[ao]|registrad[ao]|cread[ao])\b|\bse (?:agend[oó]|reserv[oó]|cancel[oó]|reagend[oó]|registr[oó]|cre[oó])\b/i;
+  /\b(?:agendad[ao]|reservad[ao]|apartad[ao]|separad[ao]|cancelad[ao]|reagendad[ao]|confirmad[ao]|registrad[ao]|cread[ao])\b|\bse (?:agend[oó]|reserv[oó]|cancel[oó]|reagend[oó]|registr[oó]|cre[oó])\b/i;
 
 function claimsCompleted(text: string): boolean {
   return COMPLETED_CLAIM.test(text) && COMPLETED_WORD.test(text);
