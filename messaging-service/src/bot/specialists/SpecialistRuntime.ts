@@ -497,6 +497,7 @@ export class SpecialistRuntime {
           {
             verificationId: recordId,
             conversationId: input.conversationId,
+            contact: input.contactAddress ?? null,
             botConfigId: input.botConfigId,
             specialistId: binding.specialist.id,
             capability: input.capability,

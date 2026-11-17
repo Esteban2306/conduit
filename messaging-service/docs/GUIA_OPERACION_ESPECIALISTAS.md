@@ -206,7 +206,7 @@ Si tu backend necesita actuar sobre cada resultado (aprobar, avisar, abrir un ca
 | `verification.valid`, `.invalid`, `.needs_review`, `.unreadable`, `.not_applicable`, `.error` | Tras guardar un análisis nuevo de un vínculo `ACTIVE` |
 | `verification.reviewed` | Cuando una persona decide un caso dudoso |
 
-Suscríbete a los que necesites, o a `*`. Cada aviso trae `verificationId`, `conversationId`, `capability`, `verdict`, `confidence`, `reasonCodes`, `humanSummary` y `variables` completas (nunca la imagen). El cuerpo va firmado con el secreto del endpoint, con `X-Conduit-Event-Id` para deduplicar, y se reintenta hasta 8 veces. Historial de entregas: `GET /webhooks/:id/deliveries`.
+Suscríbete a los que necesites, o a `*`. Cada aviso trae `verificationId`, `conversationId`, `contact` (la dirección del chat, para que tu backend sepa de quién es; `null` si no se conoce), `capability`, `verdict`, `confidence`, `reasonCodes`, `humanSummary` y `variables` completas (nunca la imagen). El cuerpo va firmado con el secreto del endpoint, con `X-Conduit-Event-Id` para deduplicar, y se reintenta hasta 8 veces. Historial de entregas: `GET /webhooks/:id/deliveries`.
 
 Tu receptor debe: verificar la firma, deduplicar por `X-Conduit-Event-Id` (la entrega es al menos una vez) y responder rápido (2xx).
 
