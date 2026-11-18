@@ -12,6 +12,7 @@ import { AppConfig } from 'src/config';
 import { Prisma } from '@prisma/client';
 import { FilterTemplateDto } from './dto/filter-template.dto';
 import { PreviewTemplateDto } from './dto/preview-template.dto';
+import { htmlToText } from './html-to-text';
 
 @Injectable()
 export class TemplateService {
@@ -273,15 +274,7 @@ export class TemplateService {
   }
 
   private stripHtml(html: string): string {
-    return html
-      .replace(/<br\s*\/?>/gi, '\n')
-      .replace(/<\/p>/gi, '\n\n')
-      .replace(/<[^>]+>/g, '')
-      .replace(/&nbsp;/g, ' ')
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .trim();
+    return htmlToText(html);
   }
 
   private formatWhatsappPreview(text: string): string {

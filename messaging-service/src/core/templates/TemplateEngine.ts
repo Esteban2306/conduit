@@ -2,6 +2,7 @@ import { Injectable, BadRequestException } from '@nestjs/common';
 import { MessageChannel } from '@prisma/client';
 import * as Handlebars from 'handlebars';
 import { createHash } from 'node:crypto';
+import { htmlToText } from './html-to-text';
 
 export const MAX_BODY_VARIANTS = 3;
 
@@ -128,23 +129,7 @@ export class TemplateEngine {
   }
 
   private stripHtml(html: string): string {
-    return html
-
-      .replace(/<br\s*\/?>/gi, '\n')
-
-      .replace(/<\/p>/gi, '\n\n')
-
-      .replace(/<[^>]+>/g, '')
-
-      .replace(/&nbsp;/g, ' ')
-
-      .replace(/&amp;/g, '&')
-
-      .replace(/&lt;/g, '<')
-
-      .replace(/&gt;/g, '>')
-
-      .trim();
+    return htmlToText(html);
   }
 
   private formatWhatsappText(text: string): string {

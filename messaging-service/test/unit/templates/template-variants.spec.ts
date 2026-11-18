@@ -120,3 +120,39 @@ describe('TemplateService: validación de variantes', () => {
     ).rejects.toThrow(/codigo/);
   });
 });
+
+describe('TemplateEngine en WhatsApp', () => {
+  const engine = new TemplateEngine();
+
+  it('los nombres y textos con comillas, apóstrofes o & llegan tal cual', () => {
+    const out = engine.renderByChannel(
+      'WHATSAPP',
+      'Hola {{nombre}}: {{detalle}}',
+      {
+        nombre: "Luz O'Neil",
+        detalle: 'Rifa "Aniversario" & premios = sorpresa',
+      },
+    );
+    expect(out.body).toBe(
+      'Hola Luz O\'Neil: Rifa "Aniversario" & premios = sorpresa',
+    );
+  });
+
+  it('conserva los saltos de línea de una variable', () => {
+    const out = engine.renderByChannel(
+      'WHATSAPP',
+      'Citas:\n\n{{citas}}\n\nListo',
+      { citas: '• 3:00 p. m.: Luz\n• 5:00 p. m.: Ana' },
+    );
+    expect(out.body).toBe(
+      'Citas:\n\n• 3:00 p. m.: Luz\n• 5:00 p. m.: Ana\n\nListo',
+    );
+  });
+
+  it('un texto que escribe "&lt;" no se convierte en "<"', () => {
+    const out = engine.renderByChannel('WHATSAPP', '{{texto}}', {
+      texto: 'escribe &lt; para menor',
+    });
+    expect(out.body).toBe('escribe &lt; para menor');
+  });
+});
