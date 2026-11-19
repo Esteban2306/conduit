@@ -153,7 +153,7 @@ export class ConversationService {
     botConfigId: string,
     phoneNumber: string,
     since: Date,
-  ): Promise<{ id: string } | null> {
+  ): Promise<{ id: string; createdAt: Date } | null> {
     const conversation = await this.prisma.conversation.findFirst({
       where: { botConfigId, phoneNumber },
       orderBy: { createdAt: 'desc' },
@@ -171,7 +171,8 @@ export class ConversationService {
         processedBy: 'human',
         createdAt: { gte: closedAt && closedAt > since ? closedAt : since },
       },
-      select: { id: true },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, createdAt: true },
     });
   }
 

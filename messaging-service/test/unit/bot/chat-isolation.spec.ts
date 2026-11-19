@@ -227,14 +227,17 @@ class Store {
       findLastHumanMessage: later(
         (_bot: string, phone: string, cutoff: Date) => {
           const conv = this.conversationOf(phone);
-          return (
-            this.messages.find(
+          const latest = this.messages
+            .filter(
               (m) =>
                 m.conversationId === conv?.id &&
                 m.processedBy === 'human' &&
                 m.createdAt >= cutoff.getTime(),
-            ) ?? null
-          );
+            )
+            .sort((a, b) => b.createdAt - a.createdAt)[0];
+          return latest
+            ? { id: latest.id, createdAt: new Date(latest.createdAt) }
+            : null;
         },
       ),
       updateContext: later(
@@ -875,6 +878,51 @@ describe('Aislamiento de chats (etapa 1)', () => {
       'respuesta a: mensaje de B',
     ]);
     expect(w.store.inboundTexts(A)).toEqual(['mensaje de A']);
+    expect(w.sends.filter((s) => s.to === A)).toHaveLength(0);
+  });
+
+  it('lo que la clienta escribe durante la toma humana se responde cuando vence, si nadie del spa contestó', async () => {
+    const w = world();
+    w.inbound(A, 'Buenas');
+    await settle(DELAY_MS + 2_000);
+    w.ownerWrites(A, 'Te paso el link');
+    await settle(4 * 60_000);
+    w.inbound(A, 'Hola');
+    await settle(DELAY_MS + 2_000);
+    expect(w.sends.filter((s) => s.to === A)).toHaveLength(1);
+
+    await settle(6 * 60_000);
+    expect(w.sends.filter((s) => s.to === A).map((s) => s.content)).toEqual([
+      'respuesta a: Buenas',
+      'respuesta a: Hola',
+    ]);
+  });
+
+  it('si el spa vuelve a escribir durante la toma humana, la espera se alarga desde ese mensaje', async () => {
+    const w = world();
+    w.inbound(A, 'Buenas');
+    await settle(DELAY_MS + 2_000);
+    w.ownerWrites(A, 'Te paso el link');
+    await settle(4 * 60_000);
+    w.inbound(A, 'Hola');
+    await settle(4 * 60_000);
+    w.ownerWrites(A, 'Ya casi');
+    await settle(1_000);
+    w.inbound(A, '¿Sigues ahí?');
+    await settle(7 * 60_000);
+    expect(w.sends.filter((s) => s.to === A)).toHaveLength(1);
+
+    await settle(4 * 60_000);
+    expect(w.aiCalls).toEqual(['Buenas', '¿Sigues ahí?']);
+    expect(w.sends.filter((s) => s.to === A)).toHaveLength(2);
+  });
+
+  it('si el spa contestó lo último de la clienta, al vencer la toma humana el bot no dice nada', async () => {
+    const w = world();
+    w.inbound(A, 'Hola');
+    await settle(2_000);
+    w.ownerWrites(A, 'Hola, te atiendo yo');
+    await settle(15 * 60_000);
     expect(w.sends.filter((s) => s.to === A)).toHaveLength(0);
   });
 

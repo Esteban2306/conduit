@@ -573,11 +573,13 @@ export class BotRouter {
     ) {
       return false;
     }
-    return !(await this.isHumanActive(
-      botConfig.id,
-      phoneNumber,
-      botConfig.humanTakeoverMinutes ?? 10,
-    ));
+    return (
+      (await this.humanTakeoverEndsAt(
+        botConfig.id,
+        phoneNumber,
+        botConfig.humanTakeoverMinutes ?? 10,
+      )) === null
+    );
   }
 
   private scheduleRetry(turn: TurnContext, delayMs: number): void {
@@ -599,13 +601,19 @@ export class BotRouter {
       return;
     }
 
-    const humanActive = await this.isHumanActive(
+    const takeoverEndsAt = await this.humanTakeoverEndsAt(
       botConfig.id,
       phoneNumber,
       botConfig.humanTakeoverMinutes ?? 10,
     );
-    if (humanActive) {
-      this.logger.log(`Takeover humano para ${phoneNumber}. Bot en pausa.`);
+    if (takeoverEndsAt) {
+      this.logger.log(
+        `Takeover humano para ${phoneNumber}. Bot en pausa; si nadie del equipo contesta, lo pendiente se responde a las ${takeoverEndsAt.toISOString()}.`,
+      );
+      this.scheduleRetry(
+        turn,
+        Math.max(takeoverEndsAt.getTime() - Date.now(), 0) + 1000,
+      );
       return;
     }
 
@@ -2213,21 +2221,24 @@ export class BotRouter {
     return { text: null, hasImage: false, imageBuffer: null };
   }
 
-  private async isHumanActive(
+  private async humanTakeoverEndsAt(
     botConfigId: string,
     phoneNumber: string,
     takeoverMinutes: number,
-  ): Promise<boolean> {
-    const cutoff = new Date(Date.now() - takeoverMinutes * 60 * 1000);
+  ): Promise<Date | null> {
+    const takeoverMs = takeoverMinutes * 60 * 1000;
+    const cutoff = new Date(Date.now() - takeoverMs);
 
-    const recenHumanMessage =
+    const lastHumanMessage =
       await this.conversationService.findLastHumanMessage(
         botConfigId,
         phoneNumber,
         cutoff,
       );
 
-    return recenHumanMessage !== null;
+    return lastHumanMessage
+      ? new Date(lastHumanMessage.createdAt.getTime() + takeoverMs)
+      : null;
   }
 
   private isTooSimilar(a: string, b: string): boolean {
