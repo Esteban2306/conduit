@@ -1,4 +1,5 @@
-import { Controller, Param, Patch, UseGuards } from '@nestjs/common';
+import { Controller, Optional, Param, Patch, UseGuards } from '@nestjs/common';
+import { AiModelRole } from '@prisma/client';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { ApiAuthGuard } from 'src/auth/guards/api-auth.guard';
 import { CurrentUser } from 'src/auth/decorators/current-user.decorator';
@@ -8,6 +9,7 @@ import { PrismaService } from 'src/shared/prisma.service';
 import { BotConfigService } from '../config/BotConfigService';
 import { AI_MODEL_PUBLIC_SELECT } from '../dto/ai-model-public';
 import { AiOrchestrator } from './AiOrchestrator';
+import { AudioTranscriptionService } from './AudioTranscriptionService';
 
 @UseGuards(ApiAuthGuard)
 @ApiTags('Bot Config')
@@ -17,6 +19,7 @@ export class AiModelController {
     private readonly botConfigService: BotConfigService,
     private readonly orchestrator: AiOrchestrator,
     private readonly prisma: PrismaService,
+    @Optional() private readonly audio?: AudioTranscriptionService,
   ) {}
 
   @Patch(':id/models/:modelId/reset')
@@ -33,7 +36,10 @@ export class AiModelController {
     const full = await this.prisma.aiModelConfig.findUniqueOrThrow({
       where: { id: modelId },
     });
-    const probe = await this.orchestrator.probe(full);
+    const probe =
+      full.role === AiModelRole.TRANSCRIPTION && this.audio
+        ? await this.audio.probe(full)
+        : await this.orchestrator.probe(full);
     const model = await this.prisma.aiModelConfig.findUniqueOrThrow({
       where: { id: modelId },
       select: AI_MODEL_PUBLIC_SELECT,

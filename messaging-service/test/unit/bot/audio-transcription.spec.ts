@@ -1,11 +1,10 @@
-jest.mock('@whiskeysockets/baileys', () => ({
-  downloadMediaMessage: jest.fn(),
-}));
-
+import { BadRequestException } from '@nestjs/common';
 import {
   AudioTranscriptionService,
   transcribedContent,
 } from 'src/bot/ai/AudioTranscriptionService';
+import { AiModelController } from 'src/bot/ai/AiModel.controller';
+import { BotConfigService } from 'src/bot/config/BotConfigService';
 
 const audioMessage = (seconds: number) =>
   ({
@@ -115,6 +114,114 @@ describe('AudioTranscriptionService', () => {
       'FAILED',
     );
     expect(selector.recordFailure).toHaveBeenCalledWith('tr-1', 'SERVER_ERROR');
+  });
+});
+
+describe('Reactivar un modelo de audios', () => {
+  const whisper = {
+    id: 'tr-1',
+    provider: 'GROQ',
+    model: 'whisper-large-v3-turbo',
+    baseUrl: null,
+    role: 'TRANSCRIPTION',
+  };
+
+  function reactivate(status: number) {
+    const { service, selector, fetchMock } = build({ response: { status } });
+    const orchestrator = { probe: jest.fn() };
+    const prisma = {
+      aiModelConfig: {
+        findUniqueOrThrow: jest.fn(() => Promise.resolve(whisper)),
+      },
+    };
+    const controller = new AiModelController(
+      { resetModelCounters: jest.fn(() => Promise.resolve()) } as never,
+      orchestrator as never,
+      prisma as never,
+      service,
+    );
+    return {
+      run: () =>
+        controller.reactivate('bot', 'tr-1', { tenantId: 't' } as never),
+      orchestrator,
+      selector,
+      fetchMock,
+    };
+  }
+
+  it('confirma con la lista de modelos del proveedor, nunca con una conversación', async () => {
+    const { run, orchestrator, fetchMock } = reactivate(200);
+    expect((await run()).reactivation).toEqual({ ok: true });
+    expect(orchestrator.probe).not.toHaveBeenCalled();
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      RequestInit,
+    ];
+    expect(url).toBe(
+      'https://api.groq.com/openai/v1/models/whisper-large-v3-turbo',
+    );
+    expect(init.body).toBeUndefined();
+  });
+
+  it('una clave rechazada queda inválida y lo dice', async () => {
+    const { run, selector } = reactivate(401);
+    expect((await run()).reactivation).toMatchObject({
+      ok: false,
+      errorType: 'AUTHENTICATION',
+    });
+    expect(selector.markCredentialInvalid).toHaveBeenCalledWith(
+      'tr-1',
+      'AUTHENTICATION',
+    );
+  });
+
+  it('un modelo que el proveedor no tiene se explica', async () => {
+    const { run } = reactivate(404);
+    expect((await run()).reactivation).toMatchObject({
+      ok: false,
+      message: 'El proveedor no tiene el modelo whisper-large-v3-turbo.',
+    });
+  });
+});
+
+describe('Agregar un modelo de audios', () => {
+  function add(provider: string, baseUrl?: string) {
+    const create = jest.fn(() => Promise.resolve({ id: 'x' }));
+    const service = new BotConfigService(
+      { aiModelConfig: { create } } as never,
+      {} as never,
+      { seal: (v: string) => v, last4: () => '1234' } as never,
+    );
+    jest.spyOn(service, 'findOne').mockResolvedValue({} as never);
+    return {
+      create,
+      run: () =>
+        service.addAiModel(
+          'bot',
+          {
+            provider,
+            model: 'whisper-large-v3-turbo',
+            apiKey: 'gsk_test_1234567890',
+            role: 'TRANSCRIPTION',
+            tier: 'FREE',
+            priority: 1,
+            baseUrl,
+          } as never,
+          't',
+        ),
+    };
+  }
+
+  it('con Groq basta el modelo y la clave', async () => {
+    const { run, create } = add('GROQ');
+    await run();
+    expect(create).toHaveBeenCalled();
+  });
+
+  it('un proveedor sin transcripción compatible se rechaza antes de guardar', async () => {
+    const { run, create } = add('ANTHROPIC');
+    await expect(run()).rejects.toBeInstanceOf(BadRequestException);
+    expect(create).not.toHaveBeenCalled();
   });
 });
 

@@ -1,10 +1,14 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { AiModelRole, AiProvider } from '@prisma/client';
-import { downloadMediaMessage, WAMessage } from '@whiskeysockets/baileys';
+import { AiModelConfig, AiModelRole, AiProvider } from '@prisma/client';
+import type { WAMessage } from '@whiskeysockets/baileys';
 import { maskError } from 'src/shared/security/mask-secrets';
 import { AiModelSelectorService } from './AiModelSelectorService';
 import { AiErrorType } from './interface/AiError';
+
+export type TranscriptionProbe =
+  | { ok: true }
+  | { ok: false; error: { type: AiErrorType; message: string } };
 
 export type TranscriptionResult =
   | { kind: 'TEXT'; text: string; seconds: number | null }
@@ -21,13 +25,24 @@ const OPENAI_COMPATIBLE_BASE: Partial<Record<AiProvider, string>> = {
   OPENAI: 'https://api.openai.com/v1',
 };
 
+const PROBE_TIMEOUT_MS = 10_000;
+
+export function transcriptionBaseUrl(
+  provider: AiProvider,
+  baseUrl: string | null | undefined,
+): string | undefined {
+  return baseUrl?.trim() || OPENAI_COMPATIBLE_BASE[provider];
+}
+
 type Downloader = (message: WAMessage) => Promise<Buffer>;
 
 @Injectable()
 export class AudioTranscriptionService {
   private readonly logger = new Logger(AudioTranscriptionService.name);
-  private download: Downloader = async (message) =>
-    await downloadMediaMessage(message, 'buffer', {});
+  private download: Downloader = async (message) => {
+    const { downloadMediaMessage } = await import('@whiskeysockets/baileys');
+    return await downloadMediaMessage(message, 'buffer', {});
+  };
 
   constructor(
     private readonly selector: AiModelSelectorService,
@@ -43,6 +58,68 @@ export class AudioTranscriptionService {
     return Number.isFinite(configured) && configured > 0
       ? configured
       : DEFAULT_MAX_AUDIO_SECONDS;
+  }
+
+  async probe(model: AiModelConfig): Promise<TranscriptionProbe> {
+    const base = transcriptionBaseUrl(model.provider, model.baseUrl);
+    if (!base) {
+      return {
+        ok: false,
+        error: {
+          type: AiErrorType.INVALID_REQUEST,
+          message: `${model.provider} no tiene transcripción de audios: usa GROQ u OPENAI.`,
+        },
+      };
+    }
+    try {
+      const res = await fetch(
+        `${base.replace(/\/+$/, '')}/models/${encodeURIComponent(model.model)}`,
+        {
+          headers: {
+            Authorization: `Bearer ${await this.selector.resolveApiKey(model)}`,
+          },
+          signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+        },
+      );
+      if (res.ok) return { ok: true };
+      if (res.status === 401 || res.status === 403) {
+        await this.selector.markCredentialInvalid(
+          model.id,
+          AiErrorType.AUTHENTICATION,
+        );
+        return {
+          ok: false,
+          error: {
+            type: AiErrorType.AUTHENTICATION,
+            message: 'El proveedor rechazó la clave.',
+          },
+        };
+      }
+      const type =
+        res.status === 429
+          ? AiErrorType.RATE_LIMIT
+          : res.status >= 500
+            ? AiErrorType.SERVER_ERROR
+            : AiErrorType.INVALID_REQUEST;
+      await this.selector.recordFailure(model.id, type);
+      return {
+        ok: false,
+        error: {
+          type,
+          message:
+            res.status === 404
+              ? `El proveedor no tiene el modelo ${model.model}.`
+              : `El proveedor respondió ${res.status}.`,
+        },
+      };
+    } catch (error) {
+      const type =
+        error instanceof Error && error.name === 'TimeoutError'
+          ? AiErrorType.TIMEOUT
+          : AiErrorType.NETWORK_ERROR;
+      await this.selector.recordFailure(model.id, type).catch(() => undefined);
+      return { ok: false, error: { type, message: maskError(error) } };
+    }
   }
 
   async transcribe(
@@ -63,7 +140,7 @@ export class AudioTranscriptionService {
       AiModelRole.TRANSCRIPTION,
     );
     const base = model
-      ? (model.baseUrl ?? OPENAI_COMPATIBLE_BASE[model.provider])
+      ? transcriptionBaseUrl(model.provider, model.baseUrl)
       : undefined;
     if (!model || !base) return { kind: 'UNAVAILABLE' };
 
