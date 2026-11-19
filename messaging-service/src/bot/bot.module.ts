@@ -18,6 +18,7 @@ import { BotRouter } from './router/BotRouter';
 import { ChannelsModule } from 'src/channels/channels.module';
 import { forwardRef } from '@nestjs/common';
 import { ImageAnalysisService } from './ai/ImageAnalysisService';
+import { AudioTranscriptionService } from './ai/AudioTranscriptionService';
 import { LegacyImageUsageService } from './ai/LegacyImageUsage.service';
 import { LegacyImageUsageController } from './ai/LegacyImageUsage.controller';
 import { SpecialistRuntime } from './specialists/SpecialistRuntime';
@@ -97,6 +98,7 @@ import { SystemPauseService } from './pause/SystemPause.service';
     MistralProvider,
     CustomProvider,
     ImageAnalysisService,
+    AudioTranscriptionService,
     LegacyImageUsageService,
     SpecialistRuntime,
     VerificationLedger,

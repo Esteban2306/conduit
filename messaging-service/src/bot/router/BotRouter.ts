@@ -54,6 +54,10 @@ import {
   AttachedImage,
 } from '../tools/ToolExecutor.service';
 import { HandoffService } from '../handoff/Handoff.service';
+import {
+  AudioTranscriptionService,
+  transcribedContent,
+} from '../ai/AudioTranscriptionService';
 import { SystemPauseService } from '../pause/SystemPause.service';
 import { FAILURE_STREAKS_KEY } from '../handoff/handoff-defaults';
 import { promisesHumanContact } from '../handoff/handoff-promise';
@@ -65,16 +69,41 @@ import {
   readDelayMs,
 } from 'src/channels/whatsapp/baileys/human-timing';
 import { IntentHandler } from '../intent/IntentHandler';
-import { isTaskDone } from '../intent/intent-turn';
+import { IntentOutcome, isTaskDone } from '../intent/intent-turn';
+import { proposesSingleSlot } from '../intent/slot-proposal';
 import { isAffirmation } from '../intent/normalize';
 import { findRepeatedQuestion } from './repeated-question';
+import {
+  announcesPendingCheck,
+  isNoReply,
+  NO_REPLY_CONFIRM_INSTRUCTION,
+  QUIET_NO_REPLY_CONFIRM_INSTRUCTION,
+  askedDayInstruction,
+  asksForDay,
+  deniesOffer,
+  uncheckedDenialInstruction,
+  leaksInternals,
+  scrubInternals,
+  TECHNICAL_LEAK_INSTRUCTION,
+  STALLED_REPLY_INSTRUCTION,
+} from './stalled-reply';
 import { withNotices } from './notice-coverage';
 import { MessageRole } from '../conversation/types/MessageRole';
 import { AiOutageDigestService } from '../tools/AiOutageDigest.service';
 import { ImagePrefetchService } from './ImagePrefetch.service';
 import { BotEscalationService } from '../tools/BotEscalation.service';
 import { ConversationSummarizer } from '../conversation/ConversationSummarizer';
-import { isIgnorableAcknowledgement } from './acknowledgement';
+import {
+  acknowledgesOnly,
+  isIgnorableAcknowledgement,
+} from './acknowledgement';
+import {
+  firstContactNoticeOf,
+  handoffQuietNote,
+  silenceNeedsCheck,
+  personalChatNote,
+  personalChatPatch,
+} from './chat-situation';
 import {
   conversationAddress,
   isIgnorableJid,
@@ -99,6 +128,7 @@ import {
 import { cutAtSentence, isBlank } from './reply-guard';
 import { ReplyMetricsService } from './reply-metrics.service';
 import { RetainedImages } from './retained-images';
+import { shownOutcomes } from './image-outcomes';
 import { OutboundReplyService } from 'src/channels/whatsapp/outbox/OutboundReply.service';
 
 interface TurnContext {
@@ -202,6 +232,8 @@ export class BotRouter {
     private readonly imagePrefetch: ImagePrefetchService<ImageBundle>,
     @Optional() private readonly legacyUsage?: LegacyImageUsageService,
     @Optional() private readonly outbox?: OutboundReplyService,
+    @Optional()
+    private readonly audioTranscription?: AudioTranscriptionService,
   ) {}
 
   async route(
@@ -282,7 +314,23 @@ export class BotRouter {
       return;
     }
 
-    const { text, hasImage } = this.extractContent(message);
+    const extracted = this.extractContent(message);
+    const { hasImage } = extracted;
+    let text = extracted.text;
+    if (!silent && message.message?.audioMessage && this.audioTranscription) {
+      const result = await this.audioTranscription.transcribe(
+        message,
+        botConfig.id,
+      );
+      this.replyMetrics.increment(
+        result.kind === 'TEXT'
+          ? 'audioTranscribed'
+          : result.kind === 'TOO_LONG'
+            ? 'audioTooLong'
+            : 'audioUntranscribed',
+      );
+      text = transcribedContent(result);
+    }
 
     if (!text && !hasImage) {
       if (!silent) await this.markAsRead(message, connectionId);
@@ -573,11 +621,13 @@ export class BotRouter {
     ) {
       return false;
     }
-    return !(await this.isHumanActive(
-      botConfig.id,
-      phoneNumber,
-      botConfig.humanTakeoverMinutes ?? 10,
-    ));
+    return (
+      (await this.humanTakeoverEndsAt(
+        botConfig.id,
+        phoneNumber,
+        botConfig.humanTakeoverMinutes ?? 10,
+      )) === null
+    );
   }
 
   private scheduleRetry(turn: TurnContext, delayMs: number): void {
@@ -599,13 +649,19 @@ export class BotRouter {
       return;
     }
 
-    const humanActive = await this.isHumanActive(
+    const takeoverEndsAt = await this.humanTakeoverEndsAt(
       botConfig.id,
       phoneNumber,
       botConfig.humanTakeoverMinutes ?? 10,
     );
-    if (humanActive) {
-      this.logger.log(`Takeover humano para ${phoneNumber}. Bot en pausa.`);
+    if (takeoverEndsAt) {
+      this.logger.log(
+        `Takeover humano para ${phoneNumber}. Bot en pausa; si nadie del equipo contesta, lo pendiente se responde a las ${takeoverEndsAt.toISOString()}.`,
+      );
+      this.scheduleRetry(
+        turn,
+        Math.max(takeoverEndsAt.getTime() - Date.now(), 0) + 1000,
+      );
       return;
     }
 
@@ -652,11 +708,28 @@ export class BotRouter {
       turn.answeredUntil = this.lastInboundAt(aiData.pending);
     }
 
+    let handoffQuiet = false;
     if (this.conversationService.isBotPaused(aiData.context)) {
-      this.logger.debug(
-        `Bot en pausa en ${conversationId} (${String(aiData.context.botPauseReason ?? 'sin motivo')}); los mensajes quedan para el equipo.`,
-      );
-      return;
+      const leaveToTeam =
+        !this.handoffService.isActive(aiData.context) ||
+        aiData.pending.some((m) => m.hasImage);
+      if (leaveToTeam) {
+        this.logger.debug(
+          `Bot en pausa en ${conversationId} (${String(aiData.context.botPauseReason ?? 'sin motivo')}); los mensajes quedan para el equipo.`,
+        );
+        return;
+      }
+      if (aiData.pending.every((m) => acknowledgesOnly(m.content))) {
+        this.replyMetrics.increment('silenced');
+        this.logger.log(
+          `Chat ${conversationId} ya traspasado al equipo: un agradecimiento o acuse no se responde.`,
+        );
+        await this.conversationService.ignorePending(
+          aiData.pending.map((m) => m.id),
+        );
+        return;
+      }
+      handoffQuiet = true;
     }
 
     if (await this.exceedsReplyBudget(turn, aiData.context)) return;
@@ -665,34 +738,38 @@ export class BotRouter {
       .filter((m) => !m.hasImage)
       .map((m) => m.content)
       .join('\n');
-    const intentOutcome = await this.intentHandler.handle({
-      tenantId,
-      botConfigId: botConfig.id,
-      conversationId,
-      phoneNumber,
-      connectionId,
-      text: aiData.pending.some((m) => m.hasImage) ? '' : intentText,
-      hasImage: aiData.pending.some((m) => m.hasImage),
-      turnId: aiData.pending[aiData.pending.length - 1].id,
-      context: aiData.context,
-      pendingIds: aiData.pending.map((m) => m.id),
-      lastBotMessage: freshStart ? null : lastBotMessage,
-      loadTools: () =>
-        this.toolDefinitionService.getActiveToolsForBot(botConfig.id),
-      send: async (reply) => {
-        this.publishResponseRequest(
+    const intentOutcome: IntentOutcome = handoffQuiet
+      ? { handled: false }
+      : await this.intentHandler.handle({
+          tenantId,
+          botConfigId: botConfig.id,
           conversationId,
-          botConfig.id,
-          intentText,
-          false,
-        );
-        // Reglas e intenciones fijas (baja, abuso…) ya dejaron su efecto.
-        await this.sendReply(turn, reply, 0, undefined, { mustDeliver: true });
-      },
-    });
+          phoneNumber,
+          connectionId,
+          text: aiData.pending.some((m) => m.hasImage) ? '' : intentText,
+          hasImage: aiData.pending.some((m) => m.hasImage),
+          turnId: aiData.pending[aiData.pending.length - 1].id,
+          context: aiData.context,
+          pendingIds: aiData.pending.map((m) => m.id),
+          lastBotMessage: freshStart ? null : lastBotMessage,
+          loadTools: () =>
+            this.toolDefinitionService.getActiveToolsForBot(botConfig.id),
+          send: async (reply) => {
+            this.publishResponseRequest(
+              conversationId,
+              botConfig.id,
+              intentText,
+              false,
+            );
+            // Reglas e intenciones fijas (baja, abuso…) ya dejaron su efecto.
+            await this.sendReply(turn, reply, 0, undefined, {
+              mustDeliver: true,
+            });
+          },
+        });
     if (intentOutcome.handled) return;
     const slim = intentOutcome.slim;
-    const notices = intentOutcome.notices ?? [];
+    const notices = [...(intentOutcome.notices ?? [])];
 
     if (!botConfig.aiModels || botConfig.aiModels.length === 0) {
       this.logger.error(
@@ -768,13 +845,37 @@ export class BotRouter {
     const allTools = await this.toolDefinitionService.getActiveToolsForBot(
       botConfig.id,
     );
-    const tools = slim
-      ? allTools.filter((t) => slim.tools.includes(t.spec.name))
-      : allTools;
+    const affirmsSlot =
+      !freshStart &&
+      lastBotMessage?.content.includes('?') === true &&
+      ACTION_PROPOSAL.test(lastBotMessage.content) &&
+      proposesSingleSlot(lastBotMessage.content) &&
+      isAffirmation(intentText);
+    const tools = (
+      slim ? allTools.filter((t) => slim.tools.includes(t.spec.name)) : allTools
+    )
+      .filter(
+        (t) =>
+          !(handoffQuiet || affirmsSlot) || (t.pausesBotMinutes ?? 0) === 0,
+      )
+      .filter((t) => !affirmsSlot || !t.readOnly || t.pinResultInMemory);
     const toolByName = new Map(tools.map((t) => [t.spec.name, t]));
     const readOnlyTools = new Set(
       tools.filter((t) => t.readOnly).map((t) => t.spec.name),
     );
+
+    const situation: string[] = [];
+    if (handoffQuiet) situation.push(handoffQuietNote(aiData.context));
+    const personalNote = handoffQuiet ? null : personalChatNote(aiData.context);
+    if (personalNote) situation.push(personalNote);
+    const firstContact =
+      !handoffQuiet &&
+      !personalNote &&
+      !(await this.conversationService.assistantHasReplied(
+        botConfig.id,
+        phoneNumber,
+      ));
+    let firstContactNotice: string | null = null;
 
     const promptInput = {
       userMessage: userMessageForAI,
@@ -783,6 +884,7 @@ export class BotRouter {
       summary: aiData.summary,
       leadingBotMessages: aiData.leadingBotMessages,
       notices: notices.map((notice) => notice.text),
+      situation,
       hasImage,
       hasTools: tools.length > 0,
     };
@@ -810,6 +912,9 @@ export class BotRouter {
         outcome,
         teamNotified: outcome.kind === 'SUCCESS' && reportsTeamNotified(body),
       });
+      const notice =
+        outcome.kind === 'SUCCESS' ? firstContactNoticeOf(body) : null;
+      if (notice) firstContactNotice = notice;
     };
 
     const budget = new TurnBudget();
@@ -1035,6 +1140,53 @@ export class BotRouter {
       return;
     }
 
+    if (
+      isNoReply(aiResult.content) &&
+      (aiResult.toolCallsExecuted ?? []).some(
+        (call) => call.ok && !readOnlyTools.has(call.name),
+      )
+    ) {
+      aiResult = { ...aiResult, content: '' };
+    }
+
+    if (
+      isNoReply(aiResult.content) &&
+      !silenceNeedsCheck(handoffQuiet, personalNote, combinedText)
+    ) {
+      this.replyMetrics.increment('silenced');
+      this.logger.log(
+        `La IA juzgó que el mensaje de ${maskChat(phoneNumber)} no es para el negocio (${handoffQuiet ? 'chat ya traspasado y sin pregunta de citas' : 'sigue una charla personal'}): no se responde.`,
+      );
+      await this.silenceTurn(conversationId, aiData.pending, handoffQuiet);
+      return;
+    }
+
+    if (isNoReply(aiResult.content)) {
+      this.replyMetrics.increment('silenceChecked');
+      let second: typeof aiResult | null = null;
+      try {
+        second = await generate({
+          appendInstruction: handoffQuiet
+            ? QUIET_NO_REPLY_CONFIRM_INSTRUCTION
+            : NO_REPLY_CONFIRM_INSTRUCTION,
+        });
+      } catch (error) {
+        this.logger.warn(
+          `No se pudo confirmar el silencio para ${maskChat(phoneNumber)}: ${maskError(error)}`,
+        );
+      }
+      if (!second || isNoReply(second.content)) {
+        this.replyMetrics.increment('silenced');
+        this.logger.log(
+          `La IA juzgó dos veces que el mensaje de ${maskChat(phoneNumber)} no es para el negocio: no se responde y queda para el equipo.`,
+        );
+        await this.silenceTurn(conversationId, aiData.pending, handoffQuiet);
+        return;
+      }
+      this.replyMetrics.increment('silenceOverturned');
+      aiResult = second;
+    }
+
     if (isBlank(aiResult.content)) {
       this.replyMetrics.increment('empty');
       this.logger.warn(
@@ -1048,7 +1200,7 @@ export class BotRouter {
         await this.handleAiUnavailable(turn, aiData.context, detail);
         return;
       }
-      if (isBlank(aiResult.content)) {
+      if (isBlank(aiResult.content) || isNoReply(aiResult.content)) {
         this.replyMetrics.increment('emptyFallback');
         await this.handleAiUnavailable(
           turn,
@@ -1132,6 +1284,34 @@ export class BotRouter {
             };
     }
 
+    if (
+      !consistencyRetried &&
+      confirmedProposal &&
+      proposesSingleSlot(lastBotMessage?.content ?? '') &&
+      !wrote(aiResult)
+    ) {
+      consistencyRetried = true;
+      this.replyMetrics.increment('confirmWithoutAction');
+      this.logger.warn(
+        `La clienta aceptó el horario propuesto y la IA no ejecutó ninguna acción para ${maskChat(phoneNumber)}; se reintenta una vez.`,
+      );
+      try {
+        const retried = await generate({
+          appendInstruction: slotConfirmedInstruction(combinedText),
+        });
+        if (!isBlank(retried.content)) {
+          aiResult =
+            claimsCompleted(retried.content) && !wrote(retried)
+              ? { ...retried, content: UNCONFIRMED_ACTION_TEXT }
+              : retried;
+        }
+      } catch (error) {
+        this.logger.error(
+          `Fallo el reintento del horario aceptado: ${maskError(error)}`,
+        );
+      }
+    }
+
     if (!consistencyRetried && !isBlank(aiResult.content)) {
       const asksAgain =
         confirmedProposal &&
@@ -1176,6 +1356,32 @@ export class BotRouter {
       }
     }
 
+    if (
+      !consistencyRetried &&
+      (aiResult.toolCallsExecuted ?? []).length === 0 &&
+      announcesPendingCheck(aiResult.content)
+    ) {
+      this.replyMetrics.increment('stalledReply');
+      this.logger.warn(
+        `La IA anunció que iba a revisar sin llamar herramientas para ${maskChat(phoneNumber)}; se reintenta una vez.`,
+      );
+      try {
+        const retried = await generate({
+          appendInstruction: STALLED_REPLY_INSTRUCTION,
+        });
+        if (!isBlank(retried.content)) {
+          aiResult =
+            claimsCompleted(retried.content) && !wrote(retried)
+              ? { ...retried, content: UNCONFIRMED_ACTION_TEXT }
+              : retried;
+        }
+      } catch (error) {
+        this.logger.error(
+          `Fallo el reintento por respuesta sin consulta: ${maskError(error)}`,
+        );
+      }
+    }
+
     if (this.receiptTracker.isChatActive(sessionKey, 30000)) {
       this.logger.log(
         `Dueño activo mientras la IA procesaba. Respuesta descartada; se reintenta después.`,
@@ -1206,6 +1412,15 @@ export class BotRouter {
     const lastOutbound = aiData.history
       .filter((h) => h.role === 'assistant')
       .at(-1);
+
+    if (isNoReply(guarded.content)) {
+      this.replyMetrics.increment('silenced');
+      this.logger.log(
+        `La IA marcó [NO_RESPONDER] tras un reintento para ${maskChat(phoneNumber)}: no se responde y queda para el equipo.`,
+      );
+      await this.silenceTurn(conversationId, aiData.pending, handoffQuiet);
+      return;
+    }
 
     let reply = guarded.content;
     let tokensUsed = aiResult.tokensUsed;
@@ -1257,15 +1472,119 @@ export class BotRouter {
       }
     }
 
+    const slotTools = tools
+      .map((t) => t.spec.name)
+      .filter((name) => /disponib|availab|horario|slot/i.test(name));
+    const calledSlots = (aiResult.toolCallsExecuted ?? []).some((call) =>
+      slotTools.includes(call.name),
+    );
+    if (
+      !guarded.replaced &&
+      !consistencyRetried &&
+      slotTools.length > 0 &&
+      !calledSlots &&
+      !wrote(aiResult) &&
+      asksForDay(reply)
+    ) {
+      this.replyMetrics.increment('askedDayNotSlots');
+      this.logger.warn(
+        `La IA preguntó el día en vez de ofrecer cupos para ${maskChat(phoneNumber)}; se reintenta una vez.`,
+      );
+      try {
+        const retried = await generate({
+          appendInstruction: askedDayInstruction(slotTools),
+        });
+        if (
+          !isBlank(retried.content) &&
+          !isNoReply(retried.content) &&
+          !(claimsCompleted(retried.content) && !wrote(retried))
+        ) {
+          reply = retried.content;
+        }
+      } catch (error) {
+        this.logger.error(
+          `Fallo el reintento para ofrecer cupos: ${maskError(error)}`,
+        );
+      }
+    }
+
+    if (
+      !guarded.replaced &&
+      tools.length > 0 &&
+      (aiResult.toolCallsExecuted ?? []).length === 0 &&
+      deniesOffer(reply)
+    ) {
+      this.replyMetrics.increment('uncheckedDenial');
+      this.logger.warn(
+        `La IA dijo que algo no existe sin revisarlo para ${maskChat(phoneNumber)}; se reintenta una vez.`,
+      );
+      try {
+        const retried = await generate({
+          appendInstruction: uncheckedDenialInstruction(
+            tools
+              .filter((t) => readOnlyTools.has(t.spec.name))
+              .map((t) => t.spec.name),
+          ),
+        });
+        if (
+          !isBlank(retried.content) &&
+          !isNoReply(retried.content) &&
+          (retried.toolCallsExecuted ?? []).length > 0 &&
+          !(claimsCompleted(retried.content) && !wrote(retried))
+        ) {
+          aiResult = retried;
+          reply = retried.content;
+        }
+      } catch (error) {
+        this.logger.error(
+          `Fallo el reintento para revisar antes de negar: ${maskError(error)}`,
+        );
+      }
+    }
+
+    const toolNames = allTools.map((t) => t.spec.name);
+    if (!guarded.replaced && leaksInternals(reply, toolNames)) {
+      this.replyMetrics.increment('technicalLeak');
+      this.logger.warn(
+        `La respuesta para ${maskChat(phoneNumber)} mostraba detalles internos; se reescribe.`,
+      );
+      let rewritten: string | null = null;
+      if (!wrote(aiResult)) {
+        try {
+          const retried = await generate({
+            appendInstruction: TECHNICAL_LEAK_INSTRUCTION,
+          });
+          if (
+            !isBlank(retried.content) &&
+            !isNoReply(retried.content) &&
+            !leaksInternals(retried.content, toolNames) &&
+            !(claimsCompleted(retried.content) && !wrote(retried))
+          ) {
+            rewritten = retried.content;
+          }
+        } catch (error) {
+          this.logger.error(
+            `Fallo la reescritura sin detalles internos: ${maskError(error)}`,
+          );
+        }
+      }
+      reply = rewritten ?? scrubInternals(reply, toolNames);
+      if (isBlank(reply)) reply = UNCONFIRMED_ACTION_TEXT;
+    }
+
     // Se espera el envío dentro del lock: la respuesta queda guardada antes
     // de la siguiente pasada, así lo ya respondido no vuelve a verse como
     // pendiente (evita contestar dos veces lo mismo).
     // Si el turno ya hizo algo con efectos (una reserva, un traspaso), el
     // cliente tiene que enterarse aunque haya escrito de nuevo.
-    if (!guarded.replaced && notices.length > 0) {
+    const deliverable =
+      firstContact && firstContactNotice && !modelHandoff
+        ? [...notices, { key: 'first_contact', text: firstContactNotice }]
+        : notices;
+    if (!guarded.replaced && deliverable.length > 0) {
       reply = withNotices(
         reply,
-        notices.map((notice) => notice.text),
+        deliverable.map((notice) => notice.text),
       );
     }
 
@@ -1607,6 +1926,7 @@ export class BotRouter {
     const { result } = outcome;
     if (
       outcome.mode !== 'ACTIVE' ||
+      outcome.capability !== IMAGE_ANALYSIS_CAPABILITY ||
       (result.verdict !== 'NEEDS_REVIEW' && result.verdict !== 'ERROR')
     ) {
       return;
@@ -1774,14 +2094,15 @@ export class BotRouter {
     }
     ctx.aiData.context = { ...ctx.aiData.context, [FACTS_KEY]: facts };
 
-    const verdicts = bundle.outcomes.map((outcome) => outcome.result.verdict);
+    const shown = shownOutcomes(bundle.outcomes);
+    const verdicts = shown.map((outcome) => outcome.result.verdict);
     const imageVerified = verdicts.includes('INVALID')
       ? false
       : verdicts.every((verdict) => verdict === 'VALID')
         ? true
         : undefined;
     const hasError = verdicts.includes('ERROR');
-    const details = bundle.outcomes
+    const details = shown
       .map((outcome) => outcome.result.humanSummary)
       .join(' | ')
       .slice(0, 100);
@@ -1817,13 +2138,15 @@ export class BotRouter {
       };
     }
 
-    const single = bundle.outcomes.length === 1;
-    const lines = bundle.outcomes.map((outcome) => {
+    const lines = shown.map((outcome) => {
       const codes =
         outcome.result.reasonCodes.length > 0
           ? `, ${outcome.result.reasonCodes.join(',')}`
           : '';
-      const label = single ? '' : ` · ${outcome.capability}`;
+      const label =
+        shown.length === 1 && outcome.capability === IMAGE_ANALYSIS_CAPABILITY
+          ? ''
+          : ` · ${outcome.capability}`;
       return `[imagen verificada por el sistema${label}: ${outcome.result.verdict}${codes}]`;
     });
     return { kind: 'CONTINUE', imageVerified, prefix: lines.join('\n') };
@@ -2213,21 +2536,41 @@ export class BotRouter {
     return { text: null, hasImage: false, imageBuffer: null };
   }
 
-  private async isHumanActive(
+  private async silenceTurn(
+    conversationId: string,
+    pending: Array<{ id: string; content: string; hasImage: boolean }>,
+    handoffQuiet: boolean,
+  ): Promise<void> {
+    await this.conversationService.ignorePending(pending.map((m) => m.id));
+    if (handoffQuiet) return;
+    const text = pending
+      .filter((m) => !m.hasImage)
+      .map((m) => m.content)
+      .join('\n');
+    if (text.trim() === '') return;
+    await this.conversationService.updateContext(conversationId, {
+      contextPatch: personalChatPatch(text),
+    });
+  }
+
+  private async humanTakeoverEndsAt(
     botConfigId: string,
     phoneNumber: string,
     takeoverMinutes: number,
-  ): Promise<boolean> {
-    const cutoff = new Date(Date.now() - takeoverMinutes * 60 * 1000);
+  ): Promise<Date | null> {
+    const takeoverMs = takeoverMinutes * 60 * 1000;
+    const cutoff = new Date(Date.now() - takeoverMs);
 
-    const recenHumanMessage =
+    const lastHumanMessage =
       await this.conversationService.findLastHumanMessage(
         botConfigId,
         phoneNumber,
         cutoff,
       );
 
-    return recenHumanMessage !== null;
+    return lastHumanMessage
+      ? new Date(lastHumanMessage.createdAt.getTime() + takeoverMs)
+      : null;
   }
 
   private isTooSimilar(a: string, b: string): boolean {
@@ -2311,6 +2654,9 @@ const COMPLETED_CLAIM =
   /\b(?:qued[oó]|quedaron|ya est[aá]|fue|ha sido|se (?:agend[oó]|reserv[oó]|cancel[oó]|reagend[oó]|registr[oó]|cre[oó]))\s*(?:ya\s*)?(?:agendad[ao]s?|reservad[ao]s?|cancelad[ao]s?|reagendad[ao]s?|confirmad[ao]s?|registrad[ao]s?|cread[ao]s?)?\b/i;
 const ACTION_PROPOSAL =
   /\b(?:confirm|agend|apart|reserv|separ|cancel|reagend|registr)/i;
+
+const slotConfirmedInstruction = (said: string) =>
+  `ATENCIÓN: la clienta aceptó («${said.slice(0, 200)}») el día y la hora que le propusiste. Ejecuta ahora la acción con la herramienta que corresponde (crear la reserva o reagendar) usando los datos que ya están en la conversación. No vuelvas a consultar listas ni disponibilidad, no pidas otra confirmación y no anuncies que vas a verificar: responde según el resultado real de la herramienta.`;
 
 const RECONFIRMATION =
   /\b(?:te (?:funciona|sirve|queda|parece)|est[aá] bien|de acuerdo|correcto|seguro|lo dejamos|la dejamos)\b/i;

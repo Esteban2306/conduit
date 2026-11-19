@@ -38,6 +38,7 @@ Requisitos: Docker, el repo de Leonice en `../../leonice_spa_backend` (o `BENCH_
 | `BENCH_BUDGET_USD` | 0.5 | corta las llamadas al modelo al superar el gasto |
 | `BENCH_CONNECTIONS` | 4 | conversaciones en paralelo (una conexión simulada por trabajador) |
 | `BENCH_KEEP_SOURCE_LIMITS` | false | `true` conserva el tope diario y por minuto del modelo de producción |
+| `BENCH_PROMPT_FILE` | prompt copiado | archivo con el prompt de conversación que reemplaza, solo en `conduit_bench`, al copiado de la base de desarrollo |
 | `BENCH_PG_PORT`, `BENCH_REDIS_PORT`, `BENCH_CONDUIT_PORT`, `BENCH_LEONICE_PORT` | 55433, 56390, 4931, 3931 | puertos propios |
 
 Para borrar la infraestructura: `docker rm -f conduit-bench-pg conduit-bench-redis`.

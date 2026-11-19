@@ -84,8 +84,11 @@ export class HandoffService {
     this.inFlight.add(request.conversationId);
     try {
       const tools = await request.loadTools();
+      const preferred =
+        request.toolName ??
+        (await this.defaultHandoffTool(request.botConfigId));
       const tool =
-        tools.find((t) => t.spec.name === request.toolName) ??
+        tools.find((t) => t.spec.name === preferred) ??
         tools.find((t) => (t.pausesBotMinutes ?? 0) > 0);
 
       let notified = false;
@@ -144,6 +147,23 @@ export class HandoffService {
       },
     });
     return true;
+  }
+
+  private async defaultHandoffTool(
+    botConfigId: string,
+  ): Promise<string | undefined> {
+    try {
+      const set = await this.repository.forBot(botConfigId);
+      const intent = (set.all ?? []).find(
+        (r) =>
+          r.handler === 'HANDOFF' &&
+          r.mode !== 'OFF' &&
+          typeof r.config?.tool === 'string',
+      );
+      return intent?.config.tool;
+    } catch {
+      return undefined;
+    }
   }
 
   private async viaBackend(

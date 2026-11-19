@@ -1001,6 +1001,21 @@ describe('IntentHandler · confirmación de la clienta', () => {
     expect(!out.handled && out.slim?.hint).toBeUndefined();
   });
 
+  it('un "sí" a una lista de varios horarios no lleva la instrucción de reservar', async () => {
+    const w = build({});
+    const out = await w.handler.handle(
+      w.turn('Sí, confirmo', {
+        context: flow,
+        lastBotMessage: {
+          content:
+            'Tengo el sábado a las 2:00 p. m. o el lunes a las 8:00 a. m. ¿Cuál te aparto?',
+          at: new Date(),
+        },
+      }),
+    );
+    expect(!out.handled && out.slim?.hint).toBeUndefined();
+  });
+
   it('sin pregunta abierta del bot un "sí" no lleva la instrucción', async () => {
     const w = build({});
     const out = await w.handler.handle(

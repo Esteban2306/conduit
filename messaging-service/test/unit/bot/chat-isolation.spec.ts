@@ -212,11 +212,25 @@ class Store {
               m.createdAt > after.getTime(),
           ),
       ),
+      ignorePending: later((ids: string[]) => {
+        for (const m of this.messages)
+          if (ids.includes(m.id) && m.direction === 'INBOUND')
+            m.processedBy = 'ignored';
+      }),
       acquireLock: later(() => true),
       releaseLock: later(() => undefined),
       isBotPaused: jest.fn(() => false),
       countBotRepliesSince: later(() => 0),
       lastOutboundContent: later(() => null),
+      assistantHasReplied: later((_bot: string, phone: string) => {
+        const conv = this.conversationOf(phone);
+        return this.messages.some(
+          (m) =>
+            m.conversationId === conv?.id &&
+            m.direction === 'OUTBOUND' &&
+            m.processedBy === 'bot',
+        );
+      }),
       lastOutbound: later(() => this.lastOutboundValue),
       resetConversation: later((id: string, since: Date) => {
         this.resets.push({ id, since });
@@ -227,14 +241,17 @@ class Store {
       findLastHumanMessage: later(
         (_bot: string, phone: string, cutoff: Date) => {
           const conv = this.conversationOf(phone);
-          return (
-            this.messages.find(
+          const latest = this.messages
+            .filter(
               (m) =>
                 m.conversationId === conv?.id &&
                 m.processedBy === 'human' &&
                 m.createdAt >= cutoff.getTime(),
-            ) ?? null
-          );
+            )
+            .sort((a, b) => b.createdAt - a.createdAt)[0];
+          return latest
+            ? { id: latest.id, createdAt: new Date(latest.createdAt) }
+            : null;
         },
       ),
       updateContext: later(
@@ -425,6 +442,7 @@ function world(
     userMessage: string;
     reasoningMode?: string;
     maxTokens?: number;
+    tools?: Array<{ name: string }>;
   }> = [];
   const conversations = store.service();
   const debouncer = new MessageDebouncer();
@@ -495,6 +513,8 @@ function world(
           )[key],
   } as never);
   const legacyUsageRecord = jest.fn();
+  let audioResult: Record<string, unknown> = { kind: 'UNAVAILABLE' };
+  const audioTranscribe = jest.fn(() => Promise.resolve(audioResult));
   const router = new BotRouter(
     sessionManager as never,
     {
@@ -510,6 +530,7 @@ function world(
           reasoningMode?: string;
           maxTokens?: number;
           toolExecutor?: unknown;
+          tools?: Array<{ name: string }>;
         }) => {
           aiCalls.push(input.userMessage);
           aiInputs.push(input);
@@ -572,10 +593,18 @@ function world(
         notifications.push(args);
       },
     } as never,
-    { handle: intentHandle, afterSlimTurn, markNoticesDelivered } as never,
+    {
+      handle: intentHandle,
+      afterSlimTurn,
+      markNoticesDelivered,
+    } as never,
     {
       perform: handoffPerform,
       afterModelHandoff: handoffAfter,
+      isActive: (context: Record<string, unknown>) =>
+        typeof context.handoffAt === 'string' &&
+        typeof context.botPausedUntil === 'string' &&
+        new Date(context.botPausedUntil).getTime() > Date.now(),
       aiUnavailableText: (_botId: string, again: boolean) =>
         Promise.resolve(
           again
@@ -587,6 +616,8 @@ function world(
     { findBindings: specialistFindMode, run: specialistRun } as never,
     prefetch,
     { record: legacyUsageRecord } as never,
+    undefined,
+    { transcribe: audioTranscribe } as never,
   );
   (router as unknown as { logger: object }).logger = {
     debug: jest.fn(),
@@ -659,6 +690,19 @@ function world(
           key: { remoteJid: `${phone}@s.whatsapp.net`, fromMe: false, id },
           messageTimestamp: Math.floor(Date.now() / 1000),
           message: { imageMessage: { caption } },
+        },
+      ],
+    });
+    return id;
+  };
+  const inboundAudio = (phone: string, seconds = 6, id = `WA${++seq}`) => {
+    ev.emit('messages.upsert', {
+      type: 'notify',
+      messages: [
+        {
+          key: { remoteJid: `${phone}@s.whatsapp.net`, fromMe: false, id },
+          messageTimestamp: Math.floor(Date.now() / 1000),
+          message: { audioMessage: { seconds, mimetype: 'audio/ogg' } },
         },
       ],
     });
@@ -765,6 +809,11 @@ function world(
     activeOutcome,
     imageOriginal: original,
     legacyUsageRecord,
+    inboundAudio,
+    audioTranscribe,
+    setAudioResult: (value: Record<string, unknown>) => {
+      audioResult = value;
+    },
     setSpecialistMode: (value: 'OFF' | 'SHADOW' | 'ACTIVE') => {
       specialistMode = value;
     },
@@ -875,6 +924,51 @@ describe('Aislamiento de chats (etapa 1)', () => {
       'respuesta a: mensaje de B',
     ]);
     expect(w.store.inboundTexts(A)).toEqual(['mensaje de A']);
+    expect(w.sends.filter((s) => s.to === A)).toHaveLength(0);
+  });
+
+  it('lo que la clienta escribe durante la toma humana se responde cuando vence, si nadie del spa contestó', async () => {
+    const w = world();
+    w.inbound(A, 'Buenas');
+    await settle(DELAY_MS + 2_000);
+    w.ownerWrites(A, 'Te paso el link');
+    await settle(4 * 60_000);
+    w.inbound(A, 'Hola');
+    await settle(DELAY_MS + 2_000);
+    expect(w.sends.filter((s) => s.to === A)).toHaveLength(1);
+
+    await settle(6 * 60_000);
+    expect(w.sends.filter((s) => s.to === A).map((s) => s.content)).toEqual([
+      'respuesta a: Buenas',
+      'respuesta a: Hola',
+    ]);
+  });
+
+  it('si el spa vuelve a escribir durante la toma humana, la espera se alarga desde ese mensaje', async () => {
+    const w = world();
+    w.inbound(A, 'Buenas');
+    await settle(DELAY_MS + 2_000);
+    w.ownerWrites(A, 'Te paso el link');
+    await settle(4 * 60_000);
+    w.inbound(A, 'Hola');
+    await settle(4 * 60_000);
+    w.ownerWrites(A, 'Ya casi');
+    await settle(1_000);
+    w.inbound(A, '¿Sigues ahí?');
+    await settle(7 * 60_000);
+    expect(w.sends.filter((s) => s.to === A)).toHaveLength(1);
+
+    await settle(4 * 60_000);
+    expect(w.aiCalls).toEqual(['Buenas', '¿Sigues ahí?']);
+    expect(w.sends.filter((s) => s.to === A)).toHaveLength(2);
+  });
+
+  it('si el spa contestó lo último de la clienta, al vencer la toma humana el bot no dice nada', async () => {
+    const w = world();
+    w.inbound(A, 'Hola');
+    await settle(2_000);
+    w.ownerWrites(A, 'Hola, te atiendo yo');
+    await settle(15 * 60_000);
     expect(w.sends.filter((s) => s.to === A)).toHaveLength(0);
   });
 
@@ -1601,6 +1695,93 @@ describe('Respuestas coherentes: avisos y preguntas ya respondidas', () => {
     ]);
   });
 
+  it('si anuncia que va a revisar sin llamar herramientas, reintenta una vez para responder con datos', async () => {
+    let call = 0;
+    const w = world(new Store(), () => {
+      call += 1;
+      return call === 1
+        ? 'Te doy el valor y los cupos ahora mismo 🌿'
+        : 'Tiene un valor de *$300.000*. El cupo más cercano es hoy a las *2:00 p. m.* ¿Te lo aparto?';
+    });
+    w.inbound(A, 'Cuando me puedes dar una cita\nY el valor');
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.aiCalls).toHaveLength(2);
+    const all = w.sends.map((s) => s.content).join(' ');
+    expect(all).toMatch(/\$300\.000/);
+    expect(all).not.toMatch(/ahora mismo/);
+    expect(w.metrics.snapshot().stalledReply).toBe(1);
+  });
+
+  it('si ya consultó con herramientas, un "un momento" no dispara el reintento', async () => {
+    const w = world(new Store(), () => ({
+      content: 'Dame un momento y te confirmo los horarios 😊',
+      toolCallsExecuted: [
+        { name: 'disponibilidad_combo', arguments: {}, ok: true },
+      ],
+    }));
+    w.inbound(A, '¿Tienes cupo mañana?');
+    await settle(DELAY_MS + 2_000);
+    expect(w.aiCalls).toHaveLength(1);
+    expect(w.metrics.snapshot().stalledReply).toBe(0);
+  });
+
+  it('si la IA marca [NO_RESPONDER] (mensaje personal), no se envía nada y no queda pendiente', async () => {
+    const store = new Store();
+    const w = world(store, () => '[NO_RESPONDER]');
+    w.inbound(A, 'Hola hijo como vas');
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.sends.filter((s) => s.to === A)).toHaveLength(0);
+    expect(w.metrics.snapshot().silenced).toBe(1);
+    expect(
+      store.messages.filter(
+        (m) => m.direction === 'INBOUND' && m.processedBy !== 'ignored',
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('antes de callar se confirma una vez: si la segunda vez responde, la clienta recibe esa respuesta', async () => {
+    const w = world(new Store(), (_m, call) =>
+      call === 1 ? '[NO_RESPONDER]' : '¡Hola, linda! ¿En qué te ayudo? 🌿',
+    );
+    w.inbound(A, 'Buenas mija');
+    await settle(DELAY_MS + 2_000);
+    expect(w.aiCalls).toHaveLength(2);
+    expect(w.sends.filter((s) => s.to === A).map((s) => s.content)).toEqual([
+      '¡Hola, linda! ¿En qué te ayudo? 🌿',
+    ]);
+    expect(w.metrics.snapshot().silenceOverturned).toBe(1);
+    expect(w.metrics.snapshot().silenced).toBe(0);
+  });
+
+  it('si el modelo rodea la marca con su razonamiento, no se envía nada', async () => {
+    const w = world(
+      new Store(),
+      () =>
+        'Según las instrucciones, este saludo familiar debe recibir [NO_RESPONDER]. Así que no respondo.',
+    );
+    w.inbound(A, 'Hola hijo como vas');
+    await settle(DELAY_MS + 2_000);
+    expect(w.sends.filter((s) => s.to === A)).toHaveLength(0);
+    expect(w.metrics.snapshot().silenced).toBe(1);
+  });
+
+  it('[NO_RESPONDER] no se respeta si la IA ya ejecutó una acción que escribe', async () => {
+    const w = world(new Store(), () => ({
+      content: '[NO_RESPONDER]',
+      toolCallsExecuted: [
+        { name: 'crear_reserva_whatsapp', arguments: {}, ok: true },
+      ],
+    }));
+    w.inbound(A, 'sí, apártala');
+    await settle(DELAY_MS + 2_000);
+    expect(w.metrics.snapshot().silenced).toBe(0);
+    expect(w.sends.map((s) => s.content).join(' ')).not.toContain(
+      'NO_RESPONDER',
+    );
+  });
+
   it('una pregunta nueva no dispara reintentos', async () => {
     const store = new Store();
     store.historyValue = [
@@ -1613,6 +1794,434 @@ describe('Respuestas coherentes: avisos y preguntas ya respondidas', () => {
     w.inbound(A, 'hidratación');
     await settle(DELAY_MS + 2_000);
     expect(w.aiCalls).toHaveLength(1);
+  });
+});
+
+describe('Situación del chat: primera vez, traspaso y mensajes personales', () => {
+  beforeEach(() => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  const handedOff = (store: Store, phone: string) => {
+    const conversation = store.conversationOf(phone)!;
+    conversation.context = {
+      ...conversation.context,
+      handoffAt: new Date().toISOString(),
+      handoffReason: 'Pide las fotos de su visita',
+      botPausedUntil: new Date(Date.now() + 3_600_000).toISOString(),
+    };
+  };
+
+  const INTRO =
+    'Desde ahora yo atiendo y gestiono tus citas por aquí; cualquier duda de citas me la puedes escribir 😊';
+
+  const newClient = (w: ReturnType<typeof world>, registered = false) => {
+    w.setTools(['consultar_cliente']);
+    w.setToolResults({
+      consultar_cliente: {
+        status: 'SUCCESS',
+        body: registered
+          ? { registered: true, firstName: 'Luz' }
+          : { registered: false, firstContactNotice: INTRO },
+      },
+    });
+    w.setToolScript(async (exec) => {
+      await exec({ name: 'consultar_cliente', arguments: {} });
+    });
+  };
+  const introCount = (w: ReturnType<typeof world>) =>
+    w.sends.filter((s) => s.content.includes('Desde ahora yo atiendo')).length;
+
+  it('a una clienta nueva la presentación le llega sí o sí, y solo la primera vez', async () => {
+    const w = world(
+      new Store(),
+      () => 'Hola, soy Sofía 🌿\n\n¿En qué te ayudo?',
+    );
+    newClient(w);
+    w.inbound(A, 'Hola, buenas tardes');
+    await settle(DELAY_MS + 2_000);
+    expect(introCount(w)).toBe(1);
+
+    w.inbound(A, '¿Qué servicios tienen?');
+    await settle(DELAY_MS + 2_000);
+    expect(introCount(w)).toBe(1);
+  });
+
+  it('una clienta registrada no recibe la presentación aunque sea la primera vez que escribe al asistente', async () => {
+    const w = world(new Store(), () => '¡Te esperamos, Luz! 🌿');
+    newClient(w, true);
+    w.inbound(A, 'Sii señora estoy llegando');
+    await settle(DELAY_MS + 2_000);
+    expect(introCount(w)).toBe(0);
+    expect(w.sends.map((s) => s.content)).toEqual(['¡Te esperamos, Luz! 🌿']);
+  });
+
+  it('si la IA calla un mensaje personal, la presentación tampoco sale', async () => {
+    const w = world(new Store(), () => '[NO_RESPONDER]');
+    newClient(w);
+    w.inbound(A, 'Hola hijo como vas');
+    await settle(DELAY_MS + 2_000);
+    expect(w.sends.filter((s) => s.to === A)).toHaveLength(0);
+  });
+
+  it('tras callar un mensaje personal, el siguiente turno calla sin una segunda llamada y sin presentación', async () => {
+    const w = world(new Store(), () => '[NO_RESPONDER]');
+    newClient(w);
+    w.inbound(A, 'Hola hijo como vas');
+    await settle(DELAY_MS + 2_000);
+    expect(w.aiCalls).toHaveLength(2);
+    w.inbound(A, 'Bien gracias a Dios, ya me entregaron el carro');
+    await settle(DELAY_MS + 2_000);
+    expect(w.aiCalls).toHaveLength(3);
+    expect(w.sends.filter((s) => s.to === A)).toHaveLength(0);
+  });
+
+  it('tras un traspaso, un "muchas gracias" no se responde ni llama a la IA', async () => {
+    const store = new Store();
+    const w = world(store, () => 'Ya le pasé tu mensaje al equipo 🙏');
+    w.inbound(A, 'Hola, me pasas las fotos que me tomaron el sábado?');
+    await settle(DELAY_MS + 2_000);
+    handedOff(store, A);
+    w.setBotPaused(true);
+    (w.conversations.lastOutboundContent as jest.Mock).mockResolvedValue(
+      '¿Te ayudo con algo más?',
+    );
+
+    w.inbound(A, 'Muchas gracias 🙏');
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.aiCalls).toHaveLength(1);
+    expect(w.sends.filter((s) => s.to === A)).toHaveLength(1);
+    expect(w.metrics.snapshot().silenced).toBe(1);
+    expect(store.pendingOf(store.conversationOf(A)!.id)).toHaveLength(0);
+  });
+
+  it('tras un traspaso, una pregunta por una cita sí se responde, sin herramientas de traspaso y con la situación explicada', async () => {
+    const store = new Store();
+    const w = world(store, (m) =>
+      m.includes('cupo') ? 'El viernes tengo a las 2:00 p. m.' : 'Listo 🙏',
+    );
+    w.setTools(
+      ['consultar_disponibilidad', 'pasar_a_persona'],
+      ['pasar_a_persona'],
+    );
+    w.inbound(A, 'Hola, me pasas las fotos que me tomaron el sábado?');
+    await settle(DELAY_MS + 2_000);
+    handedOff(store, A);
+    w.setBotPaused(true);
+
+    w.inbound(A, '¿Tienes cupo el viernes para hidratación?');
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.aiCalls).toHaveLength(2);
+    expect(w.intentHandle).toHaveBeenCalledTimes(1);
+    expect(w.aiInputs[1].tools?.map((t) => t.name)).toEqual([
+      'consultar_disponibilidad',
+    ]);
+    expect((w.promptInputs[1].situation as string[]).join(' ')).toContain(
+      'Este chat ya se pasó al equipo (motivo: Pide las fotos de su visita)',
+    );
+    expect(w.sends.at(-1)?.content).toContain('2:00 p. m.');
+  });
+
+  it('tras un traspaso, si la IA juzga que no es una cita, no se responde ni se guarda como charla personal', async () => {
+    const store = new Store();
+    const w = world(store, (m) =>
+      m.includes('fotos')
+        ? 'Ya le pasé tu mensaje al equipo 🙏'
+        : '[NO_RESPONDER]',
+    );
+    w.inbound(A, 'Hola, me pasas las fotos que me tomaron el sábado?');
+    await settle(DELAY_MS + 2_000);
+    handedOff(store, A);
+    w.setBotPaused(true);
+
+    w.inbound(A, 'Es que las necesito para hoy, porfa');
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.sends.filter((s) => s.to === A)).toHaveLength(1);
+    expect(store.conversationOf(A)!.context.personalChatAt).toBeUndefined();
+  });
+
+  it('una pausa puesta a mano desde el panel sigue dejando todo al equipo', async () => {
+    const store = new Store();
+    const w = world(store);
+    w.inbound(A, 'Hola');
+    await settle(DELAY_MS + 2_000);
+    w.setBotPaused(true);
+
+    w.inbound(A, '¿Tienes cupo mañana?');
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.aiCalls).toHaveLength(1);
+    expect(store.pendingOf(store.conversationOf(A)!.id)).toHaveLength(1);
+  });
+
+  it('tras callar un mensaje personal, el siguiente turno sabe qué se calló para no contestar la continuación', async () => {
+    const store = new Store();
+    const w = world(store, () => '[NO_RESPONDER]');
+    w.inbound(A, 'Hola hijo como vas');
+    await settle(DELAY_MS + 2_000);
+
+    w.inbound(A, 'Bien gracias a Dios, ya me entregaron el carro');
+    await settle(DELAY_MS + 2_000);
+
+    expect((w.promptInputs[1].situation as string[]).join(' ')).toContain(
+      '«Hola hijo como vas»',
+    );
+    expect(w.sends.filter((s) => s.to === A)).toHaveLength(0);
+  });
+
+  it('el recuerdo del mensaje personal caduca a las 12 horas', async () => {
+    const store = new Store();
+    const w = world(store, (_m, call) =>
+      call === 1 ? '[NO_RESPONDER]' : 'Hola, ¿en qué te ayudo?',
+    );
+    w.inbound(A, 'Hola hijo como vas');
+    await settle(DELAY_MS + 2_000);
+    const conversation = store.conversationOf(A)!;
+    conversation.context = {
+      ...conversation.context,
+      personalChatAt: new Date(Date.now() - 13 * 3_600_000).toISOString(),
+    };
+
+    w.inbound(A, 'Hola, quiero una cita');
+    await settle(DELAY_MS + 2_000);
+
+    expect(
+      ((w.promptInputs[1].situation ?? []) as string[]).join(' '),
+    ).not.toContain('Hace poco no respondiste');
+  });
+});
+
+describe('Respuestas que la clienta entiende y acciones que sí se hacen', () => {
+  beforeEach(() => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('si la clienta acepta el horario propuesto y la IA no actúa, se reintenta y se hace la reserva', async () => {
+    const store = new Store();
+    store.lastOutboundValue = {
+      content: '¿Te aparto el lunes 23 a las 8:00 a. m. por $200.000?',
+      at: new Date(),
+    };
+    const w = world(store, (_m, call) =>
+      call === 1
+        ? 'Antes de reservar, te pido un momento para validarlo 🌿'
+        : {
+            content:
+              'Listo, tu cita quedó apartada para el lunes 23 a las 8:00 a. m.',
+            toolCallsExecuted: [
+              { name: 'crear_reserva_whatsapp', arguments: {}, ok: true },
+            ],
+          },
+    );
+    w.setTools(['crear_reserva_whatsapp']);
+    w.inbound(A, 'Sí, confírmala');
+    await settle(DELAY_MS + 2_000);
+    expect(w.aiCalls).toHaveLength(2);
+    expect(w.sends.at(-1)?.content).toContain('quedó apartada');
+    expect(w.metrics.snapshot().confirmWithoutAction).toBe(1);
+  });
+
+  it('ante un "sí" al horario propuesto, ese turno solo puede ejecutar la acción: ni consultar de nuevo ni pasar el chat a una persona', async () => {
+    const store = new Store();
+    store.lastOutboundValue = {
+      content: '¿Te aparto el lunes 23 a las 8:00 a. m.?',
+      at: new Date(),
+    };
+    const w = world(store, () => ({
+      content: 'Listo, tu cita quedó apartada.',
+      toolCallsExecuted: [
+        { name: 'crear_reserva_whatsapp', arguments: {}, ok: true },
+      ],
+    }));
+    w.setTools(
+      [
+        'consultar_cliente',
+        'listar_tratamientos',
+        'disponibilidad_combo',
+        'crear_reserva_whatsapp',
+        'pasar_a_persona',
+      ],
+      ['pasar_a_persona'],
+      [],
+      [],
+      ['consultar_cliente'],
+    );
+    w.inbound(A, 'Sí, confírmala');
+    await settle(DELAY_MS + 2_000);
+    expect(w.aiInputs[0].tools?.map((t) => t.name)).toEqual([
+      'consultar_cliente',
+      'crear_reserva_whatsapp',
+    ]);
+  });
+
+  it('un "sí" a una lista de varios horarios no fuerza ninguna reserva', async () => {
+    const store = new Store();
+    store.lastOutboundValue = {
+      content:
+        'Tengo cupo el sábado 21 a las 2:00 p. m. o el lunes 23 a las 8:00 a. m. ¿Cuál te aparto?',
+      at: new Date(),
+    };
+    const w = world(
+      store,
+      () => '¿Me dices el día y la hora exactos que quieres? 🌿',
+    );
+    w.setTools(
+      ['disponibilidad_combo', 'crear_reserva_whatsapp', 'pasar_a_persona'],
+      ['pasar_a_persona'],
+    );
+    w.inbound(A, 'Sí, confirmo');
+    await settle(DELAY_MS + 2_000);
+    expect(w.aiCalls).toHaveLength(1);
+    expect(w.aiInputs[0].tools?.map((t) => t.name)).toContain(
+      'disponibilidad_combo',
+    );
+    expect(w.metrics.snapshot().confirmWithoutAction).toBe(0);
+  });
+
+  it('un "sí" a algo que no es un horario no fuerza ninguna acción', async () => {
+    const store = new Store();
+    store.lastOutboundValue = {
+      content: '¿Quieres que te ayude a agendarla?',
+      at: new Date(),
+    };
+    const w = world(store, () => 'Perfecto, ¿qué servicio te interesa?');
+    w.setTools(['crear_reserva_whatsapp']);
+    (w.conversations.lastOutboundContent as jest.Mock).mockResolvedValue(
+      '¿Quieres que te ayude a agendarla?',
+    );
+    w.inbound(A, 'sí');
+    await settle(DELAY_MS + 2_000);
+    expect(w.aiCalls).toHaveLength(1);
+  });
+
+  it('si la respuesta muestra nombres de herramientas o ids, se reescribe en lenguaje sencillo', async () => {
+    const w = world(new Store(), (_m, call) =>
+      call === 1
+        ? 'Tu cita quedó pendiente. Te pido consultar con info_negocio cómo pagarlo.'
+        : 'Tu cita quedó pendiente del anticipo; te paso cómo pagarlo 🌿',
+    );
+    w.setTools(['info_negocio']);
+    w.inbound(A, '¿cómo pago?');
+    await settle(DELAY_MS + 2_000);
+    expect(w.sends.map((s) => s.content).join(' ')).not.toMatch(/info_negocio/);
+    expect(w.metrics.snapshot().technicalLeak).toBe(1);
+  });
+
+  it('si la reescritura también muestra detalles internos, se quita esa frase', async () => {
+    const w = world(
+      new Store(),
+      () =>
+        'Ese es tu horario. Veo que el ID que usé corresponde a otro servicio.',
+    );
+    w.inbound(A, '¿a qué hora es?');
+    await settle(DELAY_MS + 2_000);
+    expect(w.sends.map((s) => s.content)).toEqual(['Ese es tu horario.']);
+  });
+
+  it('si dice que algo no lo tenemos sin haber revisado, revisa y responde con lo real', async () => {
+    const w = world(new Store(), (_m, call) =>
+      call === 1
+        ? 'No tenemos servicio de nutrición en el spa 🌿'
+        : {
+            content: 'Sí tenemos la Terapia de nutrición: $200.000, 2 h 🌿',
+            toolCallsExecuted: [
+              { name: 'listar_tratamientos', arguments: {}, ok: true },
+            ],
+          },
+    );
+    w.setTools(['listar_tratamientos']);
+    w.inbound(A, 'quiero otra cita de nutrición');
+    await settle(DELAY_MS + 2_000);
+    expect(w.sends.at(-1)?.content).toContain(
+      'Sí tenemos la Terapia de nutrición',
+    );
+    expect(w.metrics.snapshot().uncheckedDenial).toBe(1);
+  });
+
+  it('decir que no hay algo después de revisarlo no se reintenta', async () => {
+    const w = world(new Store(), () => ({
+      content: 'No tenemos uñas acrílicas; somos un spa capilar 🌿',
+      toolCallsExecuted: [
+        { name: 'listar_tratamientos', arguments: {}, ok: true },
+      ],
+    }));
+    w.setTools(['listar_tratamientos']);
+    w.inbound(A, '¿hacen uñas acrílicas?');
+    await settle(DELAY_MS + 2_000);
+    expect(w.aiCalls).toHaveLength(1);
+  });
+
+  it('si pregunta qué día quiere en vez de ofrecer cupos, se reintenta para dar los cupos', async () => {
+    const w = world(new Store(), (_m, call) =>
+      call === 1
+        ? 'La Terapia de hidratación cuesta $200.000. ¿Qué día te gustaría venir?'
+        : 'El cupo más cercano es el viernes a las 2:00 p. m. ¿Te lo aparto?',
+    );
+    w.setTools(['disponibilidad_combo']);
+    w.inbound(A, 'Hola, quiero agendar una terapia de hidratación');
+    await settle(DELAY_MS + 2_000);
+    expect(w.aiCalls).toHaveLength(2);
+    expect(w.sends.at(-1)?.content).toContain('viernes a las 2:00 p. m.');
+    expect(w.metrics.snapshot().askedDayNotSlots).toBe(1);
+  });
+});
+
+describe('Audios de la clienta', () => {
+  beforeEach(() => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('un audio transcrito llega al bot como lo que dijo y se responde', async () => {
+    const w = world(new Store(), (m) => `respuesta a: ${m}`);
+    w.setAudioResult({
+      kind: 'TEXT',
+      text: 'Hola, quiero una cita de hidratación',
+      seconds: 6,
+    });
+    w.inboundAudio(A);
+    await settle(DELAY_MS + 2_000);
+    expect(w.aiCalls[0]).toBe(
+      '[audio transcrito] Hola, quiero una cita de hidratación',
+    );
+    expect(w.metrics.snapshot().audioTranscribed).toBe(1);
+  });
+
+  it('un audio largo llega marcado como largo, sin transcribir', async () => {
+    const w = world(new Store());
+    w.setAudioResult({ kind: 'TOO_LONG', seconds: 300 });
+    w.inboundAudio(A, 300);
+    await settle(DELAY_MS + 2_000);
+    expect(w.aiCalls[0]).toContain('demasiado largo');
+    expect(w.metrics.snapshot().audioTooLong).toBe(1);
+  });
+
+  it('si no se pudo transcribir, el bot ve [audio] y pide que lo escriba', async () => {
+    const w = world(new Store());
+    w.setAudioResult({ kind: 'FAILED' });
+    w.inboundAudio(A);
+    await settle(DELAY_MS + 2_000);
+    expect(w.aiCalls[0]).toBe('[audio]');
+    expect(w.metrics.snapshot().audioUntranscribed).toBe(1);
+  });
+
+  it('con el bot apagado no se transcribe nada (no se gasta)', async () => {
+    const w = world(new Store());
+    w.setBotStatus(BotStatus.INACTIVE);
+    w.inboundAudio(A);
+    await settle(DELAY_MS + 2_000);
+    expect(w.audioTranscribe).not.toHaveBeenCalled();
   });
 });
 

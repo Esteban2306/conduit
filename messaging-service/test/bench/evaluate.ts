@@ -75,6 +75,7 @@ interface EvaluateInput {
   finalState: Record<string, unknown>;
   inbound: Array<{ phone: string; content: string }>;
   adminPhone: string;
+  ownerPhone?: string;
   durationMs: number;
   now?: Date;
 }
@@ -281,12 +282,17 @@ export function evaluateScenario(input: EvaluateInput): ScenarioResult {
     .filter(
       (s) =>
         phoneList.some((p) => samePhone(s.to, p)) ||
-        ((samePhone(s.to, input.adminPhone) || s.channel === 'EMAIL') &&
+        ((samePhone(s.to, input.adminPhone) ||
+          (input.ownerPhone !== undefined &&
+            samePhone(s.to, input.ownerPhone)) ||
+          s.channel === 'EMAIL') &&
           phoneList.some((p) => s.content.includes(digits(p).slice(-10)))),
     )
     .map((s) => ({ to: s.to, channel: s.channel, content: s.content }));
   const handedOff = ownTools.some(
-    (t) => t.name === 'pasar_a_persona' && t.status === 'SUCCESS',
+    (t) =>
+      (t.name === 'pasar_a_persona' || t.name === 'avisar_a_leo') &&
+      t.status === 'SUCCESS',
   );
   const teamNotified =
     handedOff ||

@@ -1,0 +1,230 @@
+import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { AiModelConfig, AiModelRole, AiProvider } from '@prisma/client';
+import type { WAMessage } from '@whiskeysockets/baileys';
+import { maskError } from 'src/shared/security/mask-secrets';
+import { AiModelSelectorService } from './AiModelSelectorService';
+import { AiErrorType } from './interface/AiError';
+
+export type TranscriptionProbe =
+  | { ok: true }
+  | { ok: false; error: { type: AiErrorType; message: string } };
+
+export type TranscriptionResult =
+  | { kind: 'TEXT'; text: string; seconds: number | null }
+  | { kind: 'TOO_LONG'; seconds: number }
+  | { kind: 'UNAVAILABLE' }
+  | { kind: 'FAILED' };
+
+export const DEFAULT_MAX_AUDIO_SECONDS = 120;
+const TRANSCRIPTION_TIMEOUT_MS = 25_000;
+const MAX_TRANSCRIPT_CHARS = 2000;
+
+const OPENAI_COMPATIBLE_BASE: Partial<Record<AiProvider, string>> = {
+  GROQ: 'https://api.groq.com/openai/v1',
+  OPENAI: 'https://api.openai.com/v1',
+};
+
+const PROBE_TIMEOUT_MS = 10_000;
+
+export function transcriptionBaseUrl(
+  provider: AiProvider,
+  baseUrl: string | null | undefined,
+): string | undefined {
+  return baseUrl?.trim() || OPENAI_COMPATIBLE_BASE[provider];
+}
+
+type Downloader = (message: WAMessage) => Promise<Buffer>;
+
+@Injectable()
+export class AudioTranscriptionService {
+  private readonly logger = new Logger(AudioTranscriptionService.name);
+  private download: Downloader = async (message) => {
+    const { downloadMediaMessage } = await import('@whiskeysockets/baileys');
+    return await downloadMediaMessage(message, 'buffer', {});
+  };
+
+  constructor(
+    private readonly selector: AiModelSelectorService,
+    private readonly config: ConfigService,
+  ) {}
+
+  useDownloader(downloader: Downloader): void {
+    this.download = downloader;
+  }
+
+  maxSeconds(): number {
+    const configured = Number(this.config.get('audio.maxSeconds'));
+    return Number.isFinite(configured) && configured > 0
+      ? configured
+      : DEFAULT_MAX_AUDIO_SECONDS;
+  }
+
+  async probe(model: AiModelConfig): Promise<TranscriptionProbe> {
+    const base = transcriptionBaseUrl(model.provider, model.baseUrl);
+    if (!base) {
+      return {
+        ok: false,
+        error: {
+          type: AiErrorType.INVALID_REQUEST,
+          message: `${model.provider} no tiene transcripción de audios: usa GROQ u OPENAI.`,
+        },
+      };
+    }
+    try {
+      const res = await fetch(
+        `${base.replace(/\/+$/, '')}/models/${encodeURIComponent(model.model)}`,
+        {
+          headers: {
+            Authorization: `Bearer ${await this.selector.resolveApiKey(model)}`,
+          },
+          signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+        },
+      );
+      if (res.ok) return { ok: true };
+      if (res.status === 401 || res.status === 403) {
+        await this.selector.markCredentialInvalid(
+          model.id,
+          AiErrorType.AUTHENTICATION,
+        );
+        return {
+          ok: false,
+          error: {
+            type: AiErrorType.AUTHENTICATION,
+            message: 'El proveedor rechazó la clave.',
+          },
+        };
+      }
+      const type =
+        res.status === 429
+          ? AiErrorType.RATE_LIMIT
+          : res.status >= 500
+            ? AiErrorType.SERVER_ERROR
+            : AiErrorType.INVALID_REQUEST;
+      await this.selector.recordFailure(model.id, type);
+      return {
+        ok: false,
+        error: {
+          type,
+          message:
+            res.status === 404
+              ? `El proveedor no tiene el modelo ${model.model}.`
+              : `El proveedor respondió ${res.status}.`,
+        },
+      };
+    } catch (error) {
+      const type =
+        error instanceof Error && error.name === 'TimeoutError'
+          ? AiErrorType.TIMEOUT
+          : AiErrorType.NETWORK_ERROR;
+      await this.selector.recordFailure(model.id, type).catch(() => undefined);
+      return { ok: false, error: { type, message: maskError(error) } };
+    }
+  }
+
+  async transcribe(
+    message: WAMessage,
+    botConfigId: string,
+    language = 'es',
+  ): Promise<TranscriptionResult> {
+    const audio = message.message?.audioMessage;
+    if (!audio) return { kind: 'FAILED' };
+
+    const seconds = Number(audio.seconds ?? 0) || null;
+    if (seconds !== null && seconds > this.maxSeconds()) {
+      return { kind: 'TOO_LONG', seconds };
+    }
+
+    const model = await this.selector.selectModel(
+      botConfigId,
+      AiModelRole.TRANSCRIPTION,
+    );
+    const base = model
+      ? transcriptionBaseUrl(model.provider, model.baseUrl)
+      : undefined;
+    if (!model || !base) return { kind: 'UNAVAILABLE' };
+
+    try {
+      const [buffer, apiKey] = await Promise.all([
+        this.download(message),
+        this.selector.resolveApiKey(model),
+      ]);
+      const mime = (audio.mimetype ?? 'audio/ogg').split(';')[0].trim();
+      const form = new FormData();
+      form.append(
+        'file',
+        new Blob([new Uint8Array(buffer)], { type: mime }),
+        `audio.${mime.includes('mp4') ? 'm4a' : 'ogg'}`,
+      );
+      form.append('model', model.model);
+      form.append('language', language.slice(0, 2));
+      form.append('response_format', 'json');
+      form.append('temperature', '0');
+
+      const res = await fetch(
+        `${base.replace(/\/+$/, '')}/audio/transcriptions`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${apiKey}` },
+          body: form,
+          signal: AbortSignal.timeout(TRANSCRIPTION_TIMEOUT_MS),
+        },
+      );
+
+      if (res.status === 401 || res.status === 403) {
+        await this.selector.markCredentialInvalid(
+          model.id,
+          AiErrorType.AUTHENTICATION,
+        );
+        this.logger.error(
+          `La clave de transcripción (${model.provider}/${model.model}) fue rechazada.`,
+        );
+        return { kind: 'FAILED' };
+      }
+      if (!res.ok) {
+        await this.selector.recordFailure(
+          model.id,
+          res.status === 429
+            ? AiErrorType.RATE_LIMIT
+            : res.status >= 500
+              ? AiErrorType.SERVER_ERROR
+              : AiErrorType.INVALID_REQUEST,
+        );
+        this.logger.warn(
+          `La transcripción respondió ${res.status} (${model.provider}/${model.model}).`,
+        );
+        return { kind: 'FAILED' };
+      }
+
+      const body = (await res.json()) as { text?: unknown };
+      const text =
+        typeof body.text === 'string'
+          ? body.text.trim().slice(0, MAX_TRANSCRIPT_CHARS)
+          : '';
+      await this.selector.recordSuccess(model);
+      return text ? { kind: 'TEXT', text, seconds } : { kind: 'FAILED' };
+    } catch (error) {
+      await this.selector
+        .recordFailure(
+          model.id,
+          error instanceof Error && error.name === 'TimeoutError'
+            ? AiErrorType.TIMEOUT
+            : AiErrorType.NETWORK_ERROR,
+        )
+        .catch(() => undefined);
+      this.logger.warn(`No se pudo transcribir el audio: ${maskError(error)}`);
+      return { kind: 'FAILED' };
+    }
+  }
+}
+
+export function transcribedContent(result: TranscriptionResult): string {
+  switch (result.kind) {
+    case 'TEXT':
+      return `[audio transcrito] ${result.text}`;
+    case 'TOO_LONG':
+      return `[audio de ${Math.round(result.seconds / 60)} min, demasiado largo para escucharlo]`;
+    default:
+      return '[audio]';
+  }
+}

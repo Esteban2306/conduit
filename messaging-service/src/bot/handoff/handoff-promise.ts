@@ -16,6 +16,7 @@ const PROMISES: RegExp[] = [
   /\b(?:una persona|alguien|el equipo|un asesor|una asesora)\b.{0,60}\b(?:continuara|continuaran|te escribira|te contactara|te respondera)\b/,
   /\bya (?:avise|notifique|pase|le pase|le avise) (?:al equipo|a una persona|tu mensaje|tu caso|la conversacion)\b/,
   /\b(?:el equipo|una persona) (?:ya )?(?:fue|esta) (?:notificad[oa]|avisad[oa]|enterad[oa])\b/,
+  /\bya le (?:avise|notifique|escribi|deje tu mensaje|pase tu mensaje) a\b/,
 ];
 
 const EXEMPT_CONTEXT =
@@ -24,7 +25,8 @@ const EXEMPT_CONTEXT =
 const OFFER_MARKERS =
   /\b(?:puedo|podria|quieres que|quieres|si prefieres|si deseas|si lo prefieres|te gustaria|prefieres que|te paso con|te puedo pasar|desea que)\b/;
 
-const CONSUMED = /\bya (?:avise|notifique|pase|le pase|le avise)\b/;
+const CONSUMED =
+  /\bya (?:avise|notifique|pase|le pase|le avise|le notifique|le escribi)\b/;
 
 export function promisesHumanContact(reply: string): boolean {
   return reply
@@ -34,7 +36,7 @@ export function promisesHumanContact(reply: string): boolean {
       (sentence) =>
         sentence !== '' &&
         PROMISES.some((p) => p.test(sentence)) &&
-        !OFFER_MARKERS.test(sentence) &&
+        !(OFFER_MARKERS.test(sentence) && !CONSUMED.test(sentence)) &&
         !(EXEMPT_CONTEXT.test(sentence) && !CONSUMED.test(sentence)),
     );
 }

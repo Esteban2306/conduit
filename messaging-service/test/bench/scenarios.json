@@ -156,7 +156,8 @@
       ],
       "expect": {
         "toolsAny": [
-          "listar_tratamientos"
+          "listar_tratamientos",
+          "info_tratamiento"
         ],
         "replyMatches": "250"
       },
@@ -361,7 +362,7 @@
     {
       "id": "b14",
       "category": "agendar",
-      "title": "Agendar sin valoración, clienta recurrente",
+      "title": "Agendar sin valoración, clienta recurrente (con día y hora pedidos)",
       "prior": {
         "client": {
           "name": "Diana Pardo",
@@ -373,7 +374,7 @@
           "actor": "A",
           "messages": [
             {
-              "text": "Hola! quiero separar uñas acrílicas para el próximo lunes a las 9am"
+              "text": "Hola! quiero separar una terapia de hidratación para el próximo lunes a las 9am"
             }
           ]
         },
@@ -953,7 +954,7 @@
     {
       "id": "b31",
       "category": "persona",
-      "title": "Persona tras traspaso: el bot calla",
+      "title": "Persona tras traspaso: el bot calla lo que no es una cita",
       "turns": [
         {
           "actor": "A",
@@ -969,16 +970,14 @@
             {
               "text": "hola? sigue ahí?"
             }
-          ],
-          "expect": {
-            "route": "ignorado"
-          }
+          ]
         }
       ],
       "expect": {
         "toolsAll": [
           "pasar_a_persona"
-        ]
+        ],
+        "replyNotMatches": "sigo aqu[ií]|aqu[ií] estoy|s[ií],? (?:aqu[ií]|sigo)"
       }
     },
     {
@@ -1267,11 +1266,14 @@
       ],
       "expect": {
         "toolsAll": [
-          "consultar_cliente",
-          "listar_tratamientos"
+          "consultar_cliente"
         ],
         "replyMatches": "330\\.000",
-        "replyNotMatches": "380\\.000|250\\.000"
+        "replyNotMatches": "380\\.000|250\\.000",
+        "toolsAny": [
+          "info_tratamiento",
+          "listar_tratamientos"
+        ]
       }
     },
     {
@@ -1290,10 +1292,13 @@
       ],
       "expect": {
         "toolsAll": [
-          "consultar_cliente",
-          "listar_tratamientos"
+          "consultar_cliente"
         ],
-        "replyMatches": "(?=[\\s\\S]*250\\.000)(?=[\\s\\S]*380\\.000)(?=[\\s\\S]*diagn[oó]stico)"
+        "replyMatches": "(?=[\\s\\S]*250\\.000)(?=[\\s\\S]*380\\.000)(?=[\\s\\S]*(?:diagn[oó]stico|valoraci[oó]n))",
+        "toolsAny": [
+          "info_tratamiento",
+          "listar_tratamientos"
+        ]
       },
       "expectActive": {
         "route": "directo",
@@ -1326,11 +1331,14 @@
       ],
       "expect": {
         "toolsAll": [
-          "consultar_cliente",
-          "listar_tratamientos"
+          "consultar_cliente"
         ],
-        "replyMatches": "(?=[\\s\\S]*Sara)(?=[\\s\\S]*diagn[oó]stico)",
-        "replyNotMatches": "fecha de nacimiento|nombre completo|apellido"
+        "replyMatches": "(?=[\\s\\S]*Sara)(?=[\\s\\S]*(?:diagn[oó]stico|valoraci[oó]n))",
+        "replyNotMatches": "fecha de nacimiento|nombre completo|apellido",
+        "toolsAny": [
+          "info_tratamiento",
+          "listar_tratamientos"
+        ]
       },
       "expectActive": {
         "route": "directo",
@@ -1849,7 +1857,7 @@
           "actor": "A",
           "messages": [
             {
-              "text": "Hola! quiero separar uñas acrílicas para el próximo miércoles a las 9am"
+              "text": "Hola! quiero separar una terapia de hidratación para el próximo miércoles a las 9am"
             }
           ]
         },
@@ -2006,7 +2014,7 @@
     {
       "id": "b66",
       "category": "leo",
-      "title": "Pregunta por Leo: citas por aquí y número de Leo para otros temas",
+      "title": "Pregunta por Leo: no da su número ni avisa a nadie si no lo pide",
       "prior": {
         "client": {
           "name": "Luz Marina Vargas",
@@ -2024,9 +2032,10 @@
         }
       ],
       "expect": {
-        "replyMatches": "310 000 1122",
+        "replyNotMatches": "1122|310\\s?000",
         "toolsForbidden": [
-          "pasar_a_persona"
+          "pasar_a_persona",
+          "avisar_a_leo"
         ],
         "noFalseHumanPromise": true
       }
@@ -2034,7 +2043,7 @@
     {
       "id": "b67",
       "category": "leo",
-      "title": "Leo y cita en el mismo mensaje: atiende las dos cosas",
+      "title": "Leo y cita en el mismo mensaje: atiende la cita, sin dar el número de Leo",
       "prior": {
         "client": {
           "name": "Luz Marina Vargas",
@@ -2052,12 +2061,11 @@
         }
       ],
       "expect": {
-        "replyMatches": "310 000 1122",
+        "replyNotMatches": "1122|310\\s?000|fecha de nacimiento|nombre completo|apellido|cu[aá]ndo naciste",
         "toolsForbidden": [
           "pasar_a_persona",
           "registrar_cliente"
-        ],
-        "replyNotMatches": "fecha de nacimiento|nombre completo|apellido|cu[aá]ndo naciste"
+        ]
       }
     },
     {
@@ -2090,7 +2098,7 @@
     {
       "id": "b69",
       "category": "leo",
-      "title": "Quiere a Leo para un tema que no es cita: da el número, sin traspaso",
+      "title": "Quiere a Leo para un tema que no es cita: se le avisa solo a Leo, sin dar su número",
       "prior": {
         "client": {
           "name": "Luz Marina Vargas",
@@ -2108,11 +2116,13 @@
         }
       ],
       "expect": {
-        "replyMatches": "310 000 1122",
+        "toolsAll": [
+          "avisar_a_leo"
+        ],
         "toolsForbidden": [
           "pasar_a_persona"
         ],
-        "noFalseHumanPromise": true
+        "replyNotMatches": "1122|310\\s?000"
       }
     },
     {
@@ -2265,6 +2275,14 @@
           "actor": "A",
           "messages": [
             {
+              "text": "Sí, ese horario"
+            }
+          ]
+        },
+        {
+          "actor": "A",
+          "messages": [
+            {
               "image": {
                 "caption": "listo, ya pagué"
               }
@@ -2383,6 +2401,569 @@
           "info_tratamiento"
         ],
         "replyMatches": "3\\s?h|3 horas|tres horas",
+        "notCutOrEmpty": true
+      }
+    },
+    {
+      "id": "r01",
+      "category": "chat-real",
+      "title": "Recomendación por síntomas (frizz, poco cabello, caída) y luego cuándo y cuánto",
+      "turns": [
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "Buenos días"
+            }
+          ]
+        },
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "Nena necesito una cita para mi cabello pero oriéntame tengo mucho frizz pero mi cabello es poco tengo caída que tratamiento me recomiendas"
+            }
+          ]
+        },
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "Cuando me puedes dar una cita"
+            },
+            {
+              "text": "Y el valor"
+            }
+          ]
+        }
+      ],
+      "expect": {
+        "toolsAll": [
+          "recomendar_para"
+        ],
+        "toolsAny": [
+          "disponibilidad_combo",
+          "consultar_disponibilidad"
+        ],
+        "toolsForbidden": [
+          "crear_reserva_whatsapp",
+          "pasar_a_persona"
+        ],
+        "replyMatches": "\\$\\s?\\d",
+        "notCutOrEmpty": true,
+        "noFalseHumanPromise": true,
+        "replyNotMatches": "rehabilitaci"
+      }
+    },
+    {
+      "id": "r02",
+      "category": "chat-real",
+      "title": "\"Mi leo me regalas dirección\": da la dirección",
+      "turns": [
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "Buen dia"
+            },
+            {
+              "text": "Mi leo me regalas dirección por favor"
+            }
+          ]
+        }
+      ],
+      "expect": {
+        "replyMatches": "Direcci[oó]n de prueba",
+        "toolsForbidden": [
+          "pasar_a_persona"
+        ],
+        "notCutOrEmpty": true,
+        "replyNotMatches": "WhatsApp|[Hh]orario|1122"
+      }
+    },
+    {
+      "id": "r03",
+      "category": "chat-real",
+      "title": "Clienta con cita oye que en la mañana no hay cupo",
+      "prior": {
+        "client": {
+          "name": "Diana Torres",
+          "birthDate": "1990-05-12"
+        },
+        "reservations": [
+          {
+            "treatment": "Terapia de hidratación",
+            "daysFromNow": 1,
+            "hour": 8,
+            "status": "CONFIRMADA",
+            "deposit": "CONFIRMADO"
+          }
+        ]
+      },
+      "turns": [
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "Hola buenos dias"
+            },
+            {
+              "text": "Leo pregunta tecnica"
+            }
+          ]
+        },
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "Es que me dice Dayi que en la mañana no tienes espacio"
+            },
+            {
+              "text": "Que hasta las dos lo tendrías"
+            },
+            {
+              "text": "Es así?"
+            }
+          ]
+        }
+      ],
+      "expect": {
+        "toolsAny": [
+          "reservas_proximas"
+        ],
+        "toolsForbidden": [
+          "crear_reserva_whatsapp",
+          "cancelar_reserva_whatsapp"
+        ],
+        "replyMatches": "Terapia de hidrataci[oó]n",
+        "noFalseHumanPromise": true,
+        "notCutOrEmpty": true,
+        "replyNotMatches": "no est[aá] atendiendo"
+      }
+    },
+    {
+      "id": "r04",
+      "category": "chat-real",
+      "title": "\"Estoy llegando\" el día de la cita: acuse corto, sin flujo de reserva",
+      "prior": {
+        "client": {
+          "name": "Marta Gil",
+          "birthDate": "1975-09-02"
+        },
+        "reservations": [
+          {
+            "treatment": "Terapia de nutrición",
+            "daysFromNow": 0,
+            "hour": 17,
+            "status": "CONFIRMADA",
+            "deposit": "CONFIRMADO"
+          }
+        ]
+      },
+      "turns": [
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "Sii señora estoy llegando"
+            }
+          ]
+        }
+      ],
+      "expect": {
+        "replyNotMatches": "servicio te interesa|fecha de nacimiento|agendar|reservar|soy Sof[ií]a|desde ahora",
+        "toolsForbidden": [
+          "crear_reserva_whatsapp",
+          "pasar_a_persona"
+        ]
+      }
+    },
+    {
+      "id": "r05",
+      "category": "chat-real",
+      "title": "Mensaje personal de un familiar en el número del spa: no se responde nada",
+      "turns": [
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "Hola hijo como vas"
+            }
+          ]
+        },
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "Bien gracias a Dios, ya me entregaron el carro"
+            }
+          ]
+        }
+      ],
+      "expect": {
+        "replyNotMatches": "[\\s\\S]",
+        "toolsForbidden": [
+          "crear_reserva_whatsapp",
+          "registrar_cliente"
+        ]
+      }
+    },
+    {
+      "id": "r06",
+      "category": "chat-real",
+      "title": "Clienta manda un audio",
+      "turns": [
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "audio": true
+            }
+          ]
+        }
+      ],
+      "expect": {}
+    },
+    {
+      "id": "r07",
+      "category": "chat-real",
+      "title": "Saludo cariñoso de clienta (\"mi reina\"): se responde",
+      "turns": [
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "Hola mi reina cómo estás"
+            }
+          ]
+        }
+      ],
+      "expect": {
+        "replyMatches": "[\\s\\S]",
+        "notCutOrEmpty": true
+      }
+    },
+    {
+      "id": "r08",
+      "category": "chat-real",
+      "title": "Saludo cariñoso de clienta (\"mija\"): se responde",
+      "turns": [
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "Buenas mija"
+            }
+          ]
+        }
+      ],
+      "expect": {
+        "replyMatches": "[\\s\\S]",
+        "notCutOrEmpty": true
+      }
+    },
+    {
+      "id": "r09",
+      "category": "chat-real",
+      "title": "Saludo cariñoso de clienta (\"nena\"): se responde",
+      "turns": [
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "Hola nena"
+            }
+          ]
+        }
+      ],
+      "expect": {
+        "replyMatches": "[\\s\\S]",
+        "notCutOrEmpty": true
+      }
+    },
+    {
+      "id": "r10",
+      "category": "chat-real",
+      "title": "Clienta que dice \"tía\" pero pide cita: se responde",
+      "turns": [
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "Hola tía, ¿me apartas una cita para mañana?"
+            }
+          ]
+        }
+      ],
+      "expect": {
+        "replyMatches": "[\\s\\S]",
+        "notCutOrEmpty": true
+      }
+    },
+    {
+      "id": "r11",
+      "category": "chat-real",
+      "title": "Pide hablar con Leo por un tema personal: se le avisa solo a Leo, sin dar su número, y el gracias no se responde",
+      "turns": [
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "Hola, necesito hablar con Leo, es un tema personal"
+            }
+          ]
+        },
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "Muchas gracias"
+            }
+          ]
+        }
+      ],
+      "expect": {
+        "toolsAll": [
+          "avisar_a_leo"
+        ],
+        "toolsForbidden": [
+          "pasar_a_persona",
+          "crear_reserva_whatsapp"
+        ],
+        "replyNotMatches": "1122|310\\s?000|de nada",
+        "notCutOrEmpty": true
+      }
+    },
+    {
+      "id": "r12",
+      "category": "chat-real",
+      "title": "Pide fotos y videos de su visita: pasa al equipo, no responde el gracias y sí una pregunta de cita",
+      "turns": [
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "Buenas tardes, me puedes enviar las fotos y el video que me tomaron el sábado en el spa?"
+            }
+          ]
+        },
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "Muchas gracias 🙏"
+            }
+          ]
+        },
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "Otra cosa, ¿tienes cupo el viernes para una terapia de hidratación?"
+            }
+          ]
+        }
+      ],
+      "expect": {
+        "toolsAll": [
+          "pasar_a_persona"
+        ],
+        "toolsAny": [
+          "consultar_disponibilidad",
+          "disponibilidad_combo"
+        ],
+        "toolsForbidden": [
+          "crear_reserva_whatsapp"
+        ],
+        "replyMatches": "viernes",
+        "replyNotMatches": "de nada"
+      }
+    },
+    {
+      "id": "r13",
+      "category": "chat-real",
+      "title": "Transferencia que no es un anticipo pendiente: pasa al equipo",
+      "turns": [
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "Hola, ya te hice la transferencia de lo que te debía del mes pasado"
+            }
+          ]
+        }
+      ],
+      "expect": {
+        "toolsAll": [
+          "pasar_a_persona"
+        ],
+        "toolsForbidden": [
+          "registrar_comprobante_automatico",
+          "crear_reserva_whatsapp"
+        ],
+        "noFalseHumanPromise": true
+      }
+    },
+    {
+      "id": "r14",
+      "category": "chat-real",
+      "title": "Primera vez que el asistente atiende a una persona nueva: se presenta como el nuevo canal de citas",
+      "turns": [
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "Hola buenas tardes, ¿qué servicios tienen?"
+            }
+          ]
+        }
+      ],
+      "expect": {
+        "toolsAll": [
+          "listar_tratamientos"
+        ],
+        "replyMatches": "desde ahora",
+        "notCutOrEmpty": true
+      }
+    },
+    {
+      "id": "r15",
+      "category": "chat-real",
+      "title": "Clienta registrada que escribe por primera vez al asistente: sin presentación y sin pedirle datos",
+      "prior": {
+        "client": {
+          "name": "Marta Gómez",
+          "birthDate": "1985-04-02"
+        }
+      },
+      "turns": [
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "Hola, quiero agendar una terapia de hidratación"
+            }
+          ]
+        }
+      ],
+      "expect": {
+        "toolsAny": [
+          "disponibilidad_combo",
+          "consultar_disponibilidad"
+        ],
+        "replyMatches": "\\d{1,2}:\\d{2}",
+        "replyNotMatches": "desde ahora|fecha de nacimiento|apellido",
+        "toolsForbidden": [
+          "registrar_cliente"
+        ]
+      }
+    },
+    {
+      "id": "r16",
+      "category": "chat-real",
+      "title": "Pregunta si habla con Leo: no se avisa a nadie, no se da el número ni se inventa si está",
+      "turns": [
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "Hola, ¿tú eres Leo?"
+            }
+          ]
+        }
+      ],
+      "expect": {
+        "toolsForbidden": [
+          "avisar_a_leo",
+          "pasar_a_persona"
+        ],
+        "replyNotMatches": "1122|310\\s?000|no est[aá] atendiendo",
+        "notCutOrEmpty": true
+      }
+    },
+    {
+      "id": "r17",
+      "category": "chat-real",
+      "title": "Solo caída del cabello: no inventa un servicio y recomienda los productos anticaída reales",
+      "turns": [
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "Hola, se me está cayendo mucho el cabello, ¿qué tratamiento me sirve?"
+            }
+          ]
+        }
+      ],
+      "expect": {
+        "toolsAll": [
+          "recomendar_para"
+        ],
+        "toolsForbidden": [
+          "crear_reserva_whatsapp"
+        ],
+        "replyNotMatches": "(?:Terapia|servicio|tratamiento)[^.\\n]{0,60}\\b(?:frena|detiene|controla|reduce|evita|trata|combate)\\w*\\s+(?:la\\s+|tu\\s+)?ca[ií]da",
+        "notCutOrEmpty": true,
+        "replyMatches": "anticaída|anticaida|Hair Therapy|Purify|Natural Fresh|Rosemary"
+      }
+    },
+    {
+      "id": "r18",
+      "category": "chat-real",
+      "title": "Audio transcrito: se responde lo que dijo como si lo hubiera escrito",
+      "turns": [
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "[audio transcrito] Hola buenas, quería saber cuánto vale la hidratación y si tienen cupo el viernes"
+            }
+          ]
+        }
+      ],
+      "expect": {
+        "toolsAny": [
+          "consultar_disponibilidad",
+          "disponibilidad_combo"
+        ],
+        "replyMatches": "200\\.000",
+        "replyNotMatches": "escr[ií]beme|no puedo escuchar|no pude escuchar",
+        "notCutOrEmpty": true
+      }
+    },
+    {
+      "id": "r19",
+      "category": "agendar",
+      "title": "\"El primero que tengas\" o \"sí\" a varios horarios: no agenda sin día y hora exactos",
+      "prior": {
+        "client": {
+          "name": "Paola Ríos",
+          "birthDate": "1988-06-10"
+        }
+      },
+      "turns": [
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "Hola, quiero agendar una terapia de hidratación"
+            }
+          ]
+        },
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "el primero que tengas"
+            }
+          ]
+        }
+      ],
+      "expect": {
+        "toolsForbidden": [
+          "crear_reserva_whatsapp"
+        ],
+        "replyMatches": "d[ií]a y (?:la )?hora|\\?",
         "notCutOrEmpty": true
       }
     }

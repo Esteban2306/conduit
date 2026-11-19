@@ -62,6 +62,10 @@ export function prepareConduitEnv(runtimeDir: string): void {
       WA_TIMEZONE: 'America/Bogota',
       QUEUE_MAX_ATTEMPTS: '5',
       QUEUE_BACKOFF_DELAY: '120000',
+      ALLOW_PUBLIC_REGISTRATION: 'false',
+      LINE_AUTO_ADOPT: 'false',
+      SPECIALISTS_ENABLED: process.env.BENCH_SPECIALISTS_ENABLED ?? 'false',
+      IMAGE_PREFETCH_ENABLED: 'true',
     }),
   );
 }
@@ -268,6 +272,20 @@ export async function startConduit(
       }
       if (table === 'BotEscalationContact') row.connectionId = null;
       await insertRow(db, table, row);
+    }
+  }
+
+  const promptFile = process.env.BENCH_PROMPT_FILE;
+  if (promptFile) {
+    const content = fs.readFileSync(path.resolve(promptFile), 'utf8').trim();
+    const updated = await db.query(
+      `UPDATE "BotPromptTemplate" SET content = $1, "updatedAt" = now() WHERE "botConfigId" = $2 AND type = 'CONVERSATION' AND "isActive"`,
+      [content, BENCH.sourceBotId],
+    );
+    if (updated.rowCount !== 1) {
+      throw new Error(
+        `BENCH_PROMPT_FILE: se esperaba un prompt de conversación activo y hay ${updated.rowCount}`,
+      );
     }
   }
 

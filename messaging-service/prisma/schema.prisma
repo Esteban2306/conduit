@@ -94,6 +94,7 @@ enum AiModelRole {
   IMAGE_ANALYSIS 
   FALLBACK         
   CLASSIFIER
+  TRANSCRIPTION
 }
 
 enum PromptTemplateType {

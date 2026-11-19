@@ -13,6 +13,7 @@ describe('promisesHumanContact', () => {
     'Perfecto, te llamará una asesora en unos minutos.',
     'UNA PERSONA DEL SPA TE CONTACTARÁ',
     'Una persona te atenderá por este chat en unos minutos.',
+    'Con gusto 🌿 Ya le avisé a Leo que quieres hablar con ella.',
   ])('"%s" es una promesa', (text) => {
     expect(promisesHumanContact(text)).toBe(true);
   });

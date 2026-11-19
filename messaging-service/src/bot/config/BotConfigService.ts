@@ -20,6 +20,7 @@ import { SecretEncryptionService } from 'src/shared/security/secret-encryption.s
 import { AI_MODEL_PUBLIC_SELECT } from '../dto/ai-model-public';
 import { resolveUniqueKey, slugifyKey } from 'src/shared/stable-key';
 import { findUnknownToolReferences } from '../prompt/tool-references';
+import { transcriptionBaseUrl } from '../ai/AudioTranscriptionService';
 
 @Injectable()
 export class BotConfigService {
@@ -243,6 +244,14 @@ export class BotConfigService {
     tenantId: string,
   ) {
     await this.findOne(botConfigId, tenantId);
+    if (
+      dto.role === AiModelRole.TRANSCRIPTION &&
+      !transcriptionBaseUrl(dto.provider, dto.baseUrl)
+    ) {
+      throw new BadRequestException(
+        'Para audios usa GROQ u OPENAI, o indica la URL base de un proveedor compatible con OpenAI.',
+      );
+    }
 
     return this.prisma.aiModelConfig.create({
       data: {

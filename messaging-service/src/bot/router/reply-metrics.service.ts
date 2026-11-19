@@ -13,7 +13,17 @@ export type ReplyCounter =
   | 'promiseBlocked'
   | 'successClaimBlocked'
   | 'superseded'
-  | 'repeatedQuestion';
+  | 'repeatedQuestion'
+  | 'stalledReply'
+  | 'silenced'
+  | 'silenceChecked'
+  | 'silenceOverturned'
+  | 'technicalLeak'
+  | 'askedDayNotSlots'
+  | 'uncheckedDenial'
+  | 'audioTranscribed'
+  | 'audioTooLong'
+  | 'audioUntranscribed';
 
 @Injectable()
 export class ReplyMetricsService {
@@ -32,6 +42,16 @@ export class ReplyMetricsService {
     blockedEmpty: 0,
     superseded: 0,
     repeatedQuestion: 0,
+    stalledReply: 0,
+    silenced: 0,
+    silenceChecked: 0,
+    silenceOverturned: 0,
+    technicalLeak: 0,
+    askedDayNotSlots: 0,
+    uncheckedDenial: 0,
+    audioTranscribed: 0,
+    audioTooLong: 0,
+    audioUntranscribed: 0,
   };
 
   increment(counter: ReplyCounter): void {

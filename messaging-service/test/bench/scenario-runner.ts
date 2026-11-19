@@ -1,7 +1,7 @@
 import { BENCH } from './bench.config';
 import { recorder, turnStorage, TurnContext } from './recorder';
 import { evaluateScenario, ScenarioResult, TurnResult } from './evaluate';
-import { ADMIN_PHONE, Stack, sleep, waMessage } from './stack';
+import { ADMIN_PHONE, OWNER_PHONE, Stack, sleep, waMessage } from './stack';
 import type { Scenario } from './scenario-types';
 export type { Scenario, ScenarioExpect, TurnSpec } from './scenario-types';
 import { chatKey } from 'src/channels/whatsapp/utils/chat-key';
@@ -127,6 +127,7 @@ export function createRunner(stack: Stack, options: RunnerOptions = {}) {
       finalState,
       inbound: inbound.rows,
       adminPhone: ADMIN_PHONE,
+      ownerPhone: OWNER_PHONE,
       durationMs: Date.now() - scenarioStart,
     });
   }

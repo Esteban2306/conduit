@@ -22,6 +22,7 @@ export interface BotRouterInternals {
 }
 
 export const ADMIN_PHONE = '573000000999';
+export const OWNER_PHONE = '573000000998';
 export const log = (m: string) => process.stdout.write(`[bench] ${m}\n`);
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -240,8 +241,10 @@ export async function startStack(
     return outcome;
   };
 
-  for (const connectionId of conduit.connectionIds)
+  for (const connectionId of conduit.connectionIds) {
     await contacts.recordInbound(connectionId, ADMIN_PHONE);
+    await contacts.recordInbound(connectionId, OWNER_PHONE);
+  }
 
   const leoniceProcess = await startLeonice(
     conduit,

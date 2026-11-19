@@ -15,6 +15,8 @@ const HANDOFF_TOOL = {
 
 interface Options {
   tool?: object | null;
+  tools?: object[];
+  intents?: object[];
   backend?: { status: string; body?: unknown } | Error;
   contacts?: boolean | Error;
   variants?: Record<string, string[]>;
@@ -79,6 +81,7 @@ function build(options: Options = {}) {
           ),
           agent: 'Sofía',
           business: 'Leonice Spa',
+          all: options.intents ?? [],
         }),
     } as never,
   );
@@ -97,7 +100,8 @@ function build(options: Options = {}) {
     context: {},
     loadTools: () =>
       Promise.resolve(
-        options.tool === null ? [] : [options.tool ?? HANDOFF_TOOL],
+        options.tools ??
+          (options.tool === null ? [] : [options.tool ?? HANDOFF_TOOL]),
       ) as never,
     ...extra,
   });
@@ -105,6 +109,27 @@ function build(options: Options = {}) {
 }
 
 describe('HandoffService.perform', () => {
+  it('sin herramienta indicada usa la de las intenciones de traspaso, no otra que también pause (avisar solo a la dueña)', async () => {
+    const owner = {
+      ...HANDOFF_TOOL,
+      definitionId: 'def-owner',
+      spec: { name: 'avisar_a_leo' },
+    };
+    const w = build({
+      tools: [owner, HANDOFF_TOOL],
+      intents: [
+        { handler: 'TEMPLATE', mode: 'ACTIVE', config: {} },
+        {
+          handler: 'HANDOFF',
+          mode: 'ACTIVE',
+          config: { tool: 'pasar_a_persona' },
+        },
+      ],
+    });
+    await w.service.perform(w.request());
+    expect(w.executed[0]).toMatchObject({ toolDefinitionId: 'def-h' });
+  });
+
   it('el backend confirma el aviso: pausa el bot con los minutos de la herramienta y promete una persona', async () => {
     const w = build();
     const out = await w.service.perform(w.request());
