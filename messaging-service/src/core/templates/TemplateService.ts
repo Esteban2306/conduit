@@ -144,9 +144,16 @@ export class TemplateService {
         )
       : undefined;
 
+    const { variadblesSchema, ...fields } = dto;
     return this.prisma.template.update({
       where: { id },
-      data: { ...dto, ...(bodyVariants && { bodyVariants }) },
+      data: {
+        ...fields,
+        ...(bodyVariants && { bodyVariants }),
+        ...(variadblesSchema && {
+          variablesSchema: JSON.stringify(variadblesSchema),
+        }),
+      },
       include: {
         tags: { include: { tag: true } },
       },
