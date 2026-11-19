@@ -73,6 +73,13 @@ import {
   isNoReply,
   NO_REPLY_CONFIRM_INSTRUCTION,
   QUIET_NO_REPLY_CONFIRM_INSTRUCTION,
+  askedDayInstruction,
+  asksForDay,
+  deniesOffer,
+  uncheckedDenialInstruction,
+  leaksInternals,
+  scrubInternals,
+  TECHNICAL_LEAK_INSTRUCTION,
   STALLED_REPLY_INSTRUCTION,
 } from './stalled-reply';
 import { withNotices } from './notice-coverage';
@@ -86,7 +93,9 @@ import {
   isIgnorableAcknowledgement,
 } from './acknowledgement';
 import {
+  firstContactNoticeOf,
   handoffQuietNote,
+  silenceNeedsCheck,
   personalChatNote,
   personalChatPatch,
 } from './chat-situation';
@@ -812,9 +821,17 @@ export class BotRouter {
     const allTools = await this.toolDefinitionService.getActiveToolsForBot(
       botConfig.id,
     );
+    const affirmsSlot =
+      !freshStart &&
+      lastBotMessage?.content.includes('?') === true &&
+      ACTION_PROPOSAL.test(lastBotMessage.content) &&
+      PROPOSED_SLOT.test(lastBotMessage.content) &&
+      isAffirmation(intentText);
     const tools = (
       slim ? allTools.filter((t) => slim.tools.includes(t.spec.name)) : allTools
-    ).filter((t) => !handoffQuiet || (t.pausesBotMinutes ?? 0) === 0);
+    ).filter(
+      (t) => !(handoffQuiet || affirmsSlot) || (t.pausesBotMinutes ?? 0) === 0,
+    );
     const toolByName = new Map(tools.map((t) => [t.spec.name, t]));
     const readOnlyTools = new Set(
       tools.filter((t) => t.readOnly).map((t) => t.spec.name),
@@ -824,17 +841,14 @@ export class BotRouter {
     if (handoffQuiet) situation.push(handoffQuietNote(aiData.context));
     const personalNote = handoffQuiet ? null : personalChatNote(aiData.context);
     if (personalNote) situation.push(personalNote);
-    if (
+    const firstContact =
       !handoffQuiet &&
       !personalNote &&
       !(await this.conversationService.assistantHasReplied(
         botConfig.id,
         phoneNumber,
-      ))
-    ) {
-      const intro = await this.intentHandler.firstContactText(botConfig.id);
-      if (intro) notices.push({ key: 'rule.first_contact', text: intro });
-    }
+      ));
+    let firstContactNotice: string | null = null;
 
     const promptInput = {
       userMessage: userMessageForAI,
@@ -871,6 +885,9 @@ export class BotRouter {
         outcome,
         teamNotified: outcome.kind === 'SUCCESS' && reportsTeamNotified(body),
       });
+      const notice =
+        outcome.kind === 'SUCCESS' ? firstContactNoticeOf(body) : null;
+      if (notice) firstContactNotice = notice;
     };
 
     const budget = new TurnBudget();
@@ -1105,6 +1122,18 @@ export class BotRouter {
       aiResult = { ...aiResult, content: '' };
     }
 
+    if (
+      isNoReply(aiResult.content) &&
+      !silenceNeedsCheck(handoffQuiet, personalNote, combinedText)
+    ) {
+      this.replyMetrics.increment('silenced');
+      this.logger.log(
+        `La IA juzgó que el mensaje de ${maskChat(phoneNumber)} no es para el negocio (${handoffQuiet ? 'chat ya traspasado y sin pregunta de citas' : 'sigue una charla personal'}): no se responde.`,
+      );
+      await this.silenceTurn(conversationId, aiData.pending, handoffQuiet);
+      return;
+    }
+
     if (isNoReply(aiResult.content)) {
       this.replyMetrics.increment('silenceChecked');
       let second: typeof aiResult | null = null;
@@ -1226,6 +1255,34 @@ export class BotRouter {
               ...aiResult,
               content: UNCONFIRMED_ACTION_TEXT,
             };
+    }
+
+    if (
+      !consistencyRetried &&
+      confirmedProposal &&
+      PROPOSED_SLOT.test(lastBotMessage?.content ?? '') &&
+      !wrote(aiResult)
+    ) {
+      consistencyRetried = true;
+      this.replyMetrics.increment('confirmWithoutAction');
+      this.logger.warn(
+        `La clienta aceptó el horario propuesto y la IA no ejecutó ninguna acción para ${maskChat(phoneNumber)}; se reintenta una vez.`,
+      );
+      try {
+        const retried = await generate({
+          appendInstruction: slotConfirmedInstruction(combinedText),
+        });
+        if (!isBlank(retried.content)) {
+          aiResult =
+            claimsCompleted(retried.content) && !wrote(retried)
+              ? { ...retried, content: UNCONFIRMED_ACTION_TEXT }
+              : retried;
+        }
+      } catch (error) {
+        this.logger.error(
+          `Fallo el reintento del horario aceptado: ${maskError(error)}`,
+        );
+      }
     }
 
     if (!consistencyRetried && !isBlank(aiResult.content)) {
@@ -1388,14 +1445,115 @@ export class BotRouter {
       }
     }
 
+    const slotTools = tools
+      .map((t) => t.spec.name)
+      .filter((name) => /disponib|availab|horario|slot/i.test(name));
+    const calledSlots = (aiResult.toolCallsExecuted ?? []).some((call) =>
+      slotTools.includes(call.name),
+    );
+    if (
+      !guarded.replaced &&
+      !consistencyRetried &&
+      slotTools.length > 0 &&
+      !calledSlots &&
+      !wrote(aiResult) &&
+      asksForDay(reply)
+    ) {
+      this.replyMetrics.increment('askedDayNotSlots');
+      this.logger.warn(
+        `La IA preguntó el día en vez de ofrecer cupos para ${maskChat(phoneNumber)}; se reintenta una vez.`,
+      );
+      try {
+        const retried = await generate({
+          appendInstruction: askedDayInstruction(slotTools),
+        });
+        if (
+          !isBlank(retried.content) &&
+          !isNoReply(retried.content) &&
+          !(claimsCompleted(retried.content) && !wrote(retried))
+        ) {
+          reply = retried.content;
+        }
+      } catch (error) {
+        this.logger.error(
+          `Fallo el reintento para ofrecer cupos: ${maskError(error)}`,
+        );
+      }
+    }
+
+    if (
+      !guarded.replaced &&
+      tools.length > 0 &&
+      (aiResult.toolCallsExecuted ?? []).length === 0 &&
+      deniesOffer(reply)
+    ) {
+      this.replyMetrics.increment('uncheckedDenial');
+      this.logger.warn(
+        `La IA dijo que algo no existe sin revisarlo para ${maskChat(phoneNumber)}; se reintenta una vez.`,
+      );
+      try {
+        const retried = await generate({
+          appendInstruction: uncheckedDenialInstruction(
+            tools
+              .filter((t) => readOnlyTools.has(t.spec.name))
+              .map((t) => t.spec.name),
+          ),
+        });
+        if (
+          !isBlank(retried.content) &&
+          !isNoReply(retried.content) &&
+          (retried.toolCallsExecuted ?? []).length > 0 &&
+          !(claimsCompleted(retried.content) && !wrote(retried))
+        ) {
+          aiResult = retried;
+          reply = retried.content;
+        }
+      } catch (error) {
+        this.logger.error(
+          `Fallo el reintento para revisar antes de negar: ${maskError(error)}`,
+        );
+      }
+    }
+
+    const toolNames = allTools.map((t) => t.spec.name);
+    if (!guarded.replaced && leaksInternals(reply, toolNames)) {
+      this.replyMetrics.increment('technicalLeak');
+      this.logger.warn(
+        `La respuesta para ${maskChat(phoneNumber)} mostraba detalles internos; se reescribe.`,
+      );
+      let rewritten: string | null = null;
+      if (!wrote(aiResult)) {
+        try {
+          const retried = await generate({
+            appendInstruction: TECHNICAL_LEAK_INSTRUCTION,
+          });
+          if (
+            !isBlank(retried.content) &&
+            !isNoReply(retried.content) &&
+            !leaksInternals(retried.content, toolNames) &&
+            !(claimsCompleted(retried.content) && !wrote(retried))
+          ) {
+            rewritten = retried.content;
+          }
+        } catch (error) {
+          this.logger.error(
+            `Fallo la reescritura sin detalles internos: ${maskError(error)}`,
+          );
+        }
+      }
+      reply = rewritten ?? scrubInternals(reply, toolNames);
+      if (isBlank(reply)) reply = UNCONFIRMED_ACTION_TEXT;
+    }
+
     // Se espera el envío dentro del lock: la respuesta queda guardada antes
     // de la siguiente pasada, así lo ya respondido no vuelve a verse como
     // pendiente (evita contestar dos veces lo mismo).
     // Si el turno ya hizo algo con efectos (una reserva, un traspaso), el
     // cliente tiene que enterarse aunque haya escrito de nuevo.
-    const deliverable = modelHandoff
-      ? notices.filter((notice) => notice.key !== 'rule.first_contact')
-      : notices;
+    const deliverable =
+      firstContact && firstContactNotice && !modelHandoff
+        ? [...notices, { key: 'first_contact', text: firstContactNotice }]
+        : notices;
     if (!guarded.replaced && deliverable.length > 0) {
       reply = withNotices(
         reply,
@@ -2465,6 +2623,12 @@ const COMPLETED_CLAIM =
   /\b(?:qued[oó]|quedaron|ya est[aá]|fue|ha sido|se (?:agend[oó]|reserv[oó]|cancel[oó]|reagend[oó]|registr[oó]|cre[oó]))\s*(?:ya\s*)?(?:agendad[ao]s?|reservad[ao]s?|cancelad[ao]s?|reagendad[ao]s?|confirmad[ao]s?|registrad[ao]s?|cread[ao]s?)?\b/i;
 const ACTION_PROPOSAL =
   /\b(?:confirm|agend|apart|reserv|separ|cancel|reagend|registr)/i;
+
+const PROPOSED_SLOT =
+  /\b\d{1,2}(?::\d{2})?\s*(?:a\.?\s?m\.?|p\.?\s?m\.?)(?=\s|$|[^a-z])/i;
+
+const slotConfirmedInstruction = (said: string) =>
+  `ATENCIÓN: la clienta aceptó («${said.slice(0, 200)}») el día y la hora que le propusiste. Ejecuta ahora la acción con la herramienta que corresponde (crear la reserva o reagendar) usando los datos que ya están en la conversación. No vuelvas a consultar listas ni disponibilidad, no pidas otra confirmación y no anuncies que vas a verificar: responde según el resultado real de la herramienta.`;
 
 const RECONFIRMATION =
   /\b(?:te (?:funciona|sirve|queda|parece)|est[aá] bien|de acuerdo|correcto|seguro|lo dejamos|la dejamos)\b/i;

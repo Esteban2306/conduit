@@ -1,5 +1,6 @@
 import { ConversationContext } from '../conversation/interfaces/ConversationContext';
 import { HANDOFF_REASON_KEY } from '../handoff/handoff-defaults';
+import { normalizeText } from '../intent/normalize';
 import { NO_REPLY_MARKER } from './stalled-reply';
 
 export const PERSONAL_CHAT_AT_KEY = 'personalChatAt';
@@ -7,6 +8,16 @@ export const PERSONAL_CHAT_TEXT_KEY = 'personalChatText';
 
 const PERSONAL_CHAT_WINDOW_MS = 12 * 60 * 60 * 1000;
 const PERSONAL_TEXT_MAX = 200;
+
+const MAX_FIRST_CONTACT_NOTICE = 300;
+
+export function firstContactNoticeOf(body: unknown): string | null {
+  if (!body || typeof body !== 'object') return null;
+  const notice = (body as Record<string, unknown>).firstContactNotice;
+  return typeof notice === 'string' && notice.trim() !== ''
+    ? notice.trim().slice(0, MAX_FIRST_CONTACT_NOTICE)
+    : null;
+}
 
 export function handoffQuietNote(context: ConversationContext): string {
   const reason = context[HANDOFF_REASON_KEY];
@@ -40,4 +51,16 @@ export function personalChatNote(
   if (!Number.isFinite(elapsed) || elapsed < 0) return null;
   if (elapsed > PERSONAL_CHAT_WINDOW_MS) return null;
   return `Hace poco no respondiste un mensaje de esta persona porque era personal y no del negocio: «${text}». Si lo nuevo sigue esa charla personal, responde solo ${NO_REPLY_MARKER}; si pregunta por el negocio, atiéndela.`;
+}
+
+const BUSINESS_WORDS =
+  /\b(?:cita|citas|cupo|cupos|horario|horarios|disponib\w*|agend\w*|reserv\w*|apart\w*|precio|precios|valor|cuanto|costo|cuesta|servicio|servicios|tratamiento\w*|producto\w*|promoci\w*|reagend\w*|cancel\w*|hoy|manana|lunes|martes|miercoles|jueves|viernes|sabado|domingo|semana)\b/;
+
+export function silenceNeedsCheck(
+  handoffQuiet: boolean,
+  personalNote: string | null,
+  text: string,
+): boolean {
+  if (handoffQuiet) return BUSINESS_WORDS.test(normalizeText(text));
+  return personalNote === null;
 }

@@ -362,7 +362,7 @@
     {
       "id": "b14",
       "category": "agendar",
-      "title": "Agendar sin valoración, clienta recurrente",
+      "title": "Agendar sin valoración, clienta recurrente (con día y hora pedidos)",
       "prior": {
         "client": {
           "name": "Diana Pardo",
@@ -374,7 +374,7 @@
           "actor": "A",
           "messages": [
             {
-              "text": "Hola! quiero separar uñas acrílicas para el próximo lunes a las 9am"
+              "text": "Hola! quiero separar una terapia de hidratación para el próximo lunes a las 9am"
             }
           ]
         },
@@ -2431,7 +2431,7 @@
       ],
       "expect": {
         "toolsAll": [
-          "listar_tratamientos"
+          "recomendar_para"
         ],
         "toolsAny": [
           "disponibilidad_combo",
@@ -2563,7 +2563,7 @@
         }
       ],
       "expect": {
-        "replyNotMatches": "servicio te interesa|fecha de nacimiento|agendar|reservar",
+        "replyNotMatches": "servicio te interesa|fecha de nacimiento|agendar|reservar|soy Sof[ií]a|desde ahora",
         "toolsForbidden": [
           "crear_reserva_whatsapp",
           "pasar_a_persona"
@@ -2821,7 +2821,7 @@
     {
       "id": "r15",
       "category": "chat-real",
-      "title": "Clienta registrada que escribe por primera vez al asistente: se presenta y no le pide datos",
+      "title": "Clienta registrada que escribe por primera vez al asistente: sin presentación y sin pedirle datos",
       "prior": {
         "client": {
           "name": "Marta Gómez",
@@ -2843,8 +2843,8 @@
           "disponibilidad_combo",
           "consultar_disponibilidad"
         ],
-        "replyMatches": "desde ahora",
-        "replyNotMatches": "fecha de nacimiento|apellido",
+        "replyMatches": "\\d{1,2}:\\d{2}",
+        "replyNotMatches": "desde ahora|fecha de nacimiento|apellido",
         "toolsForbidden": [
           "registrar_cliente"
         ]
@@ -2876,7 +2876,7 @@
     {
       "id": "r17",
       "category": "chat-real",
-      "title": "Solo caída del cabello: no le atribuye a ningún servicio frenar la caída",
+      "title": "Solo caída del cabello: no inventa un servicio y recomienda los productos anticaída reales",
       "turns": [
         {
           "actor": "A",
@@ -2889,13 +2889,14 @@
       ],
       "expect": {
         "toolsAll": [
-          "listar_tratamientos"
+          "recomendar_para"
         ],
         "toolsForbidden": [
           "crear_reserva_whatsapp"
         ],
-        "replyNotMatches": "(frena|detiene|controla|reduce|evita|trata|combate|ayuda con)\\w*\\s+(la\\s+|tu\\s+)?ca[ií]da",
-        "notCutOrEmpty": true
+        "replyNotMatches": "(?:Terapia|servicio|tratamiento)[^.\\n]{0,60}\\b(?:frena|detiene|controla|reduce|evita|trata|combate)\\w*\\s+(?:la\\s+|tu\\s+)?ca[ií]da",
+        "notCutOrEmpty": true,
+        "replyMatches": "anticaída|anticaida|Hair Therapy|Purify|Natural Fresh|Rosemary"
       }
     }
   ]

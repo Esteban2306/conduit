@@ -140,16 +140,6 @@ export class IntentHandler {
       : outcome;
   }
 
-  async firstContactText(botConfigId: string): Promise<string> {
-    try {
-      return (
-        await this.repository.ruleText(botConfigId, 'rule.first_contact', '')
-      ).trim();
-    } catch {
-      return '';
-    }
-  }
-
   markNoticesDelivered(conversationId: string, keys: string[]): void {
     const now = Date.now();
     for (const key of keys) this.lastFired.set(`${conversationId}|${key}`, now);
