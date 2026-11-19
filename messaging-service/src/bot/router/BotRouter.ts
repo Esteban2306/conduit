@@ -829,9 +829,12 @@ export class BotRouter {
       isAffirmation(intentText);
     const tools = (
       slim ? allTools.filter((t) => slim.tools.includes(t.spec.name)) : allTools
-    ).filter(
-      (t) => !(handoffQuiet || affirmsSlot) || (t.pausesBotMinutes ?? 0) === 0,
-    );
+    )
+      .filter(
+        (t) =>
+          !(handoffQuiet || affirmsSlot) || (t.pausesBotMinutes ?? 0) === 0,
+      )
+      .filter((t) => !affirmsSlot || !t.readOnly || t.pinResultInMemory);
     const toolByName = new Map(tools.map((t) => [t.spec.name, t]));
     const readOnlyTools = new Set(
       tools.filter((t) => t.readOnly).map((t) => t.spec.name),

@@ -2008,7 +2008,7 @@ describe('Respuestas que la clienta entiende y acciones que sí se hacen', () =>
     expect(w.metrics.snapshot().confirmWithoutAction).toBe(1);
   });
 
-  it('ante un "sí" al horario propuesto, ese turno no puede pasar el chat a una persona', async () => {
+  it('ante un "sí" al horario propuesto, ese turno solo puede ejecutar la acción: ni consultar de nuevo ni pasar el chat a una persona', async () => {
     const store = new Store();
     store.lastOutboundValue = {
       content: '¿Te aparto el lunes 23 a las 8:00 a. m.?',
@@ -2021,12 +2021,22 @@ describe('Respuestas que la clienta entiende y acciones que sí se hacen', () =>
       ],
     }));
     w.setTools(
-      ['crear_reserva_whatsapp', 'pasar_a_persona'],
+      [
+        'consultar_cliente',
+        'listar_tratamientos',
+        'disponibilidad_combo',
+        'crear_reserva_whatsapp',
+        'pasar_a_persona',
+      ],
       ['pasar_a_persona'],
+      [],
+      [],
+      ['consultar_cliente'],
     );
     w.inbound(A, 'Sí, confírmala');
     await settle(DELAY_MS + 2_000);
     expect(w.aiInputs[0].tools?.map((t) => t.name)).toEqual([
+      'consultar_cliente',
       'crear_reserva_whatsapp',
     ]);
   });
