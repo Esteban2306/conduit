@@ -128,6 +128,7 @@ import {
 import { cutAtSentence, isBlank } from './reply-guard';
 import { ReplyMetricsService } from './reply-metrics.service';
 import { RetainedImages } from './retained-images';
+import { shownOutcomes } from './image-outcomes';
 import { OutboundReplyService } from 'src/channels/whatsapp/outbox/OutboundReply.service';
 
 interface TurnContext {
@@ -1925,6 +1926,7 @@ export class BotRouter {
     const { result } = outcome;
     if (
       outcome.mode !== 'ACTIVE' ||
+      outcome.capability !== IMAGE_ANALYSIS_CAPABILITY ||
       (result.verdict !== 'NEEDS_REVIEW' && result.verdict !== 'ERROR')
     ) {
       return;
@@ -2092,14 +2094,15 @@ export class BotRouter {
     }
     ctx.aiData.context = { ...ctx.aiData.context, [FACTS_KEY]: facts };
 
-    const verdicts = bundle.outcomes.map((outcome) => outcome.result.verdict);
+    const shown = shownOutcomes(bundle.outcomes);
+    const verdicts = shown.map((outcome) => outcome.result.verdict);
     const imageVerified = verdicts.includes('INVALID')
       ? false
       : verdicts.every((verdict) => verdict === 'VALID')
         ? true
         : undefined;
     const hasError = verdicts.includes('ERROR');
-    const details = bundle.outcomes
+    const details = shown
       .map((outcome) => outcome.result.humanSummary)
       .join(' | ')
       .slice(0, 100);
@@ -2135,13 +2138,15 @@ export class BotRouter {
       };
     }
 
-    const single = bundle.outcomes.length === 1;
-    const lines = bundle.outcomes.map((outcome) => {
+    const lines = shown.map((outcome) => {
       const codes =
         outcome.result.reasonCodes.length > 0
           ? `, ${outcome.result.reasonCodes.join(',')}`
           : '';
-      const label = single ? '' : ` · ${outcome.capability}`;
+      const label =
+        shown.length === 1 && outcome.capability === IMAGE_ANALYSIS_CAPABILITY
+          ? ''
+          : ` · ${outcome.capability}`;
       return `[imagen verificada por el sistema${label}: ${outcome.result.verdict}${codes}]`;
     });
     return { kind: 'CONTINUE', imageVerified, prefix: lines.join('\n') };

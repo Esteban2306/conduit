@@ -261,3 +261,123 @@ describe('BotRouter: recoger el resultado adelantado', () => {
     expect(inline).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('BotRouter: un segundo especialista no cambia los comprobantes', () => {
+  type Outcome = Record<string, unknown>;
+  const ran = (verdict: string, codes: string[], summary: string): Outcome =>
+    executed(verdict as Verdict, {
+      result: {
+        version: 1,
+        verdict,
+        confidence: 0.9,
+        fields: {},
+        reasonCodes: codes,
+        humanSummary: summary,
+      },
+    });
+
+  function twoSpecialists(byCapability: Record<string, Outcome>) {
+    const botEscalation = {
+      notifyVerificationReview: jest.fn(() => Promise.resolve(true)),
+    };
+    const updateContext = jest.fn(() => Promise.resolve());
+    const router = Object.create(BotRouter.prototype) as Record<
+      string,
+      unknown
+    >;
+    router.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    router.imageAnalysisService = {
+      downloadOriginal: jest.fn(() => Promise.resolve(Buffer.from('img'))),
+      analyzeBuffer: jest.fn(),
+      analyzeFromMessage: jest.fn(),
+    };
+    router.imagePrefetch = { downloadTimeoutMs: () => 10_000 };
+    router.specialistRuntime = {
+      findBindings: jest.fn(() =>
+        Promise.resolve(
+          Object.keys(byCapability).map((capability) => ({
+            capability,
+            mode: 'ACTIVE',
+            timeoutMs: 12000,
+          })),
+        ),
+      ),
+      run: jest.fn((input: { capability: string }) =>
+        Promise.resolve(byCapability[input.capability]),
+      ),
+    };
+    router.conversationService = { updateContext };
+    router.botEscalation = botEscalation;
+    const target = router as unknown as {
+      buildImageBundle: (job: unknown) => Promise<unknown>;
+      applyImageBundle: (
+        bundle: unknown,
+        ctx: unknown,
+      ) => Promise<{
+        kind: string;
+        prefix?: string | null;
+        imageVerified?: boolean;
+      }>;
+    };
+    const verify = async () =>
+      target.applyImageBundle(
+        await target.buildImageBundle({
+          message: {},
+          botConfigId: 'bot-1',
+          systemPrompt: 'x',
+          conversationId: 'conv-1',
+          tenantId: 'tenant-1',
+          phoneNumber: '573001112233',
+        }),
+        {
+          conversationId: 'conv-1',
+          phoneNumber: '573001112233',
+          aiData: { context: {} },
+        },
+      );
+    return { verify, botEscalation };
+  }
+
+  it('un comprobante bueno se ve igual que con un solo especialista', async () => {
+    const { verify } = twoSpecialists({
+      'image-analysis': ran('VALID', ['RULES_PASSED'], 'Cumple'),
+      'foto-cabello': ran('NOT_APPLICABLE', ['NOT_EXPECTED_DOCUMENT'], 'No'),
+    });
+    const out = await verify();
+    expect(out.prefix).toBe(
+      '[imagen verificada por el sistema: VALID, RULES_PASSED]',
+    );
+    expect(out.imageVerified).toBe(true);
+  });
+
+  it('una foto del cabello se nombra por su especialista y no pasa por comprobante', async () => {
+    const { verify, botEscalation } = twoSpecialists({
+      'image-analysis': ran('NOT_APPLICABLE', ['NOT_EXPECTED_DOCUMENT'], 'No'),
+      'foto-cabello': ran('VALID', ['NO_RULES_CONFIGURED'], 'Cabello'),
+    });
+    const out = await verify();
+    expect(out.prefix).toBe(
+      '[imagen verificada por el sistema · foto-cabello: VALID, NO_RULES_CONFIGURED]',
+    );
+    expect(botEscalation.notifyVerificationReview).not.toHaveBeenCalled();
+  });
+
+  it('la revisión de comprobantes no se dispara por otro especialista', async () => {
+    const { verify, botEscalation } = twoSpecialists({
+      'image-analysis': ran('NOT_APPLICABLE', ['NOT_EXPECTED_DOCUMENT'], 'No'),
+      'foto-cabello': ran('NEEDS_REVIEW', ['LEGIBILITY_PARTIAL'], 'Parcial'),
+    });
+    await verify();
+    expect(botEscalation.notifyVerificationReview).not.toHaveBeenCalled();
+  });
+
+  it('una foto cualquiera se sigue viendo como antes', async () => {
+    const { verify } = twoSpecialists({
+      'image-analysis': ran('NOT_APPLICABLE', ['NOT_EXPECTED_DOCUMENT'], 'No'),
+      'foto-cabello': ran('NOT_APPLICABLE', ['NOT_EXPECTED_DOCUMENT'], 'No'),
+    });
+    expect((await verify()).prefix).toBe(
+      '[imagen verificada por el sistema: NOT_APPLICABLE, NOT_EXPECTED_DOCUMENT]',
+    );
+  });
+});
