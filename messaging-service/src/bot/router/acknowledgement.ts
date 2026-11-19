@@ -89,7 +89,7 @@ const squash = (word: string) => word.replace(/(.)\1+/g, '$1');
 const CORE = new Set([...ACK_CORE].map(squash));
 const FILLER = new Set([...ACK_FILLER].map(squash));
 
-function acknowledgesOnly(text: string): boolean {
+export function acknowledgesOnly(text: string): boolean {
   if (/[?¿]/.test(text)) return false;
 
   const emojis = text.match(/\p{Extended_Pictographic}/gu) ?? [];

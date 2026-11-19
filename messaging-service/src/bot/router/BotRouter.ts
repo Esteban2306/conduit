@@ -65,12 +65,14 @@ import {
   readDelayMs,
 } from 'src/channels/whatsapp/baileys/human-timing';
 import { IntentHandler } from '../intent/IntentHandler';
-import { isTaskDone } from '../intent/intent-turn';
+import { IntentOutcome, isTaskDone } from '../intent/intent-turn';
 import { isAffirmation } from '../intent/normalize';
 import { findRepeatedQuestion } from './repeated-question';
 import {
   announcesPendingCheck,
   isNoReply,
+  NO_REPLY_CONFIRM_INSTRUCTION,
+  QUIET_NO_REPLY_CONFIRM_INSTRUCTION,
   STALLED_REPLY_INSTRUCTION,
 } from './stalled-reply';
 import { withNotices } from './notice-coverage';
@@ -79,7 +81,15 @@ import { AiOutageDigestService } from '../tools/AiOutageDigest.service';
 import { ImagePrefetchService } from './ImagePrefetch.service';
 import { BotEscalationService } from '../tools/BotEscalation.service';
 import { ConversationSummarizer } from '../conversation/ConversationSummarizer';
-import { isIgnorableAcknowledgement } from './acknowledgement';
+import {
+  acknowledgesOnly,
+  isIgnorableAcknowledgement,
+} from './acknowledgement';
+import {
+  handoffQuietNote,
+  personalChatNote,
+  personalChatPatch,
+} from './chat-situation';
 import {
   conversationAddress,
   isIgnorableJid,
@@ -665,11 +675,28 @@ export class BotRouter {
       turn.answeredUntil = this.lastInboundAt(aiData.pending);
     }
 
+    let handoffQuiet = false;
     if (this.conversationService.isBotPaused(aiData.context)) {
-      this.logger.debug(
-        `Bot en pausa en ${conversationId} (${String(aiData.context.botPauseReason ?? 'sin motivo')}); los mensajes quedan para el equipo.`,
-      );
-      return;
+      const leaveToTeam =
+        !this.handoffService.isActive(aiData.context) ||
+        aiData.pending.some((m) => m.hasImage);
+      if (leaveToTeam) {
+        this.logger.debug(
+          `Bot en pausa en ${conversationId} (${String(aiData.context.botPauseReason ?? 'sin motivo')}); los mensajes quedan para el equipo.`,
+        );
+        return;
+      }
+      if (aiData.pending.every((m) => acknowledgesOnly(m.content))) {
+        this.replyMetrics.increment('silenced');
+        this.logger.log(
+          `Chat ${conversationId} ya traspasado al equipo: un agradecimiento o acuse no se responde.`,
+        );
+        await this.conversationService.ignorePending(
+          aiData.pending.map((m) => m.id),
+        );
+        return;
+      }
+      handoffQuiet = true;
     }
 
     if (await this.exceedsReplyBudget(turn, aiData.context)) return;
@@ -678,34 +705,38 @@ export class BotRouter {
       .filter((m) => !m.hasImage)
       .map((m) => m.content)
       .join('\n');
-    const intentOutcome = await this.intentHandler.handle({
-      tenantId,
-      botConfigId: botConfig.id,
-      conversationId,
-      phoneNumber,
-      connectionId,
-      text: aiData.pending.some((m) => m.hasImage) ? '' : intentText,
-      hasImage: aiData.pending.some((m) => m.hasImage),
-      turnId: aiData.pending[aiData.pending.length - 1].id,
-      context: aiData.context,
-      pendingIds: aiData.pending.map((m) => m.id),
-      lastBotMessage: freshStart ? null : lastBotMessage,
-      loadTools: () =>
-        this.toolDefinitionService.getActiveToolsForBot(botConfig.id),
-      send: async (reply) => {
-        this.publishResponseRequest(
+    const intentOutcome: IntentOutcome = handoffQuiet
+      ? { handled: false }
+      : await this.intentHandler.handle({
+          tenantId,
+          botConfigId: botConfig.id,
           conversationId,
-          botConfig.id,
-          intentText,
-          false,
-        );
-        // Reglas e intenciones fijas (baja, abuso…) ya dejaron su efecto.
-        await this.sendReply(turn, reply, 0, undefined, { mustDeliver: true });
-      },
-    });
+          phoneNumber,
+          connectionId,
+          text: aiData.pending.some((m) => m.hasImage) ? '' : intentText,
+          hasImage: aiData.pending.some((m) => m.hasImage),
+          turnId: aiData.pending[aiData.pending.length - 1].id,
+          context: aiData.context,
+          pendingIds: aiData.pending.map((m) => m.id),
+          lastBotMessage: freshStart ? null : lastBotMessage,
+          loadTools: () =>
+            this.toolDefinitionService.getActiveToolsForBot(botConfig.id),
+          send: async (reply) => {
+            this.publishResponseRequest(
+              conversationId,
+              botConfig.id,
+              intentText,
+              false,
+            );
+            // Reglas e intenciones fijas (baja, abuso…) ya dejaron su efecto.
+            await this.sendReply(turn, reply, 0, undefined, {
+              mustDeliver: true,
+            });
+          },
+        });
     if (intentOutcome.handled) return;
     const slim = intentOutcome.slim;
-    const notices = intentOutcome.notices ?? [];
+    const notices = [...(intentOutcome.notices ?? [])];
 
     if (!botConfig.aiModels || botConfig.aiModels.length === 0) {
       this.logger.error(
@@ -781,13 +812,29 @@ export class BotRouter {
     const allTools = await this.toolDefinitionService.getActiveToolsForBot(
       botConfig.id,
     );
-    const tools = slim
-      ? allTools.filter((t) => slim.tools.includes(t.spec.name))
-      : allTools;
+    const tools = (
+      slim ? allTools.filter((t) => slim.tools.includes(t.spec.name)) : allTools
+    ).filter((t) => !handoffQuiet || (t.pausesBotMinutes ?? 0) === 0);
     const toolByName = new Map(tools.map((t) => [t.spec.name, t]));
     const readOnlyTools = new Set(
       tools.filter((t) => t.readOnly).map((t) => t.spec.name),
     );
+
+    const situation: string[] = [];
+    if (handoffQuiet) situation.push(handoffQuietNote(aiData.context));
+    const personalNote = handoffQuiet ? null : personalChatNote(aiData.context);
+    if (personalNote) situation.push(personalNote);
+    if (
+      !handoffQuiet &&
+      !personalNote &&
+      !(await this.conversationService.assistantHasReplied(
+        botConfig.id,
+        phoneNumber,
+      ))
+    ) {
+      const intro = await this.intentHandler.firstContactText(botConfig.id);
+      if (intro) notices.push({ key: 'rule.first_contact', text: intro });
+    }
 
     const promptInput = {
       userMessage: userMessageForAI,
@@ -796,6 +843,7 @@ export class BotRouter {
       summary: aiData.summary,
       leadingBotMessages: aiData.leadingBotMessages,
       notices: notices.map((notice) => notice.text),
+      situation,
       hasImage,
       hasTools: tools.length > 0,
     };
@@ -1058,14 +1106,29 @@ export class BotRouter {
     }
 
     if (isNoReply(aiResult.content)) {
-      this.replyMetrics.increment('silenced');
-      this.logger.log(
-        `La IA juzgó que el mensaje de ${maskChat(phoneNumber)} no es para el spa: no se responde y queda para el equipo.`,
-      );
-      await this.conversationService.ignorePending(
-        aiData.pending.map((message) => message.id),
-      );
-      return;
+      this.replyMetrics.increment('silenceChecked');
+      let second: typeof aiResult | null = null;
+      try {
+        second = await generate({
+          appendInstruction: handoffQuiet
+            ? QUIET_NO_REPLY_CONFIRM_INSTRUCTION
+            : NO_REPLY_CONFIRM_INSTRUCTION,
+        });
+      } catch (error) {
+        this.logger.warn(
+          `No se pudo confirmar el silencio para ${maskChat(phoneNumber)}: ${maskError(error)}`,
+        );
+      }
+      if (!second || isNoReply(second.content)) {
+        this.replyMetrics.increment('silenced');
+        this.logger.log(
+          `La IA juzgó dos veces que el mensaje de ${maskChat(phoneNumber)} no es para el negocio: no se responde y queda para el equipo.`,
+        );
+        await this.silenceTurn(conversationId, aiData.pending, handoffQuiet);
+        return;
+      }
+      this.replyMetrics.increment('silenceOverturned');
+      aiResult = second;
     }
 
     if (isBlank(aiResult.content)) {
@@ -1271,9 +1334,7 @@ export class BotRouter {
       this.logger.log(
         `La IA marcó [NO_RESPONDER] tras un reintento para ${maskChat(phoneNumber)}: no se responde y queda para el equipo.`,
       );
-      await this.conversationService.ignorePending(
-        aiData.pending.map((message) => message.id),
-      );
+      await this.silenceTurn(conversationId, aiData.pending, handoffQuiet);
       return;
     }
 
@@ -1332,10 +1393,13 @@ export class BotRouter {
     // pendiente (evita contestar dos veces lo mismo).
     // Si el turno ya hizo algo con efectos (una reserva, un traspaso), el
     // cliente tiene que enterarse aunque haya escrito de nuevo.
-    if (!guarded.replaced && notices.length > 0) {
+    const deliverable = modelHandoff
+      ? notices.filter((notice) => notice.key !== 'rule.first_contact')
+      : notices;
+    if (!guarded.replaced && deliverable.length > 0) {
       reply = withNotices(
         reply,
-        notices.map((notice) => notice.text),
+        deliverable.map((notice) => notice.text),
       );
     }
 
@@ -2281,6 +2345,23 @@ export class BotRouter {
     }
 
     return { text: null, hasImage: false, imageBuffer: null };
+  }
+
+  private async silenceTurn(
+    conversationId: string,
+    pending: Array<{ id: string; content: string; hasImage: boolean }>,
+    handoffQuiet: boolean,
+  ): Promise<void> {
+    await this.conversationService.ignorePending(pending.map((m) => m.id));
+    if (handoffQuiet) return;
+    const text = pending
+      .filter((m) => !m.hasImage)
+      .map((m) => m.content)
+      .join('\n');
+    if (text.trim() === '') return;
+    await this.conversationService.updateContext(conversationId, {
+      contextPatch: personalChatPatch(text),
+    });
   }
 
   private async humanTakeoverEndsAt(

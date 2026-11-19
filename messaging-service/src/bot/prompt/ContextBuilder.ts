@@ -3,6 +3,10 @@ import { ConversationContext } from '../conversation/interfaces/ConversationCont
 import { FACTS_KEY, renderFacts } from '../specialists/facts';
 import { IMAGE_WARNING_KEY } from '../conversation/image-warning';
 import {
+  PERSONAL_CHAT_AT_KEY,
+  PERSONAL_CHAT_TEXT_KEY,
+} from '../router/chat-situation';
+import {
   PINNED_MEMORY_KEY,
   pinnedEntriesOf,
 } from '../conversation/pinned-memory';
@@ -38,6 +42,8 @@ const EXCLUDED = new Set([
   'failureStreaks',
   'closedAt',
   'aiFallbackNotified',
+  PERSONAL_CHAT_AT_KEY,
+  PERSONAL_CHAT_TEXT_KEY,
 ]);
 
 export const MAX_SUMMARY_CHARS = 1500;

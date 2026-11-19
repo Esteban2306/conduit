@@ -670,6 +670,21 @@ export class ConversationService {
     return message ? { content: message.content, at: message.createdAt } : null;
   }
 
+  async assistantHasReplied(
+    botConfigId: string,
+    phoneNumber: string,
+  ): Promise<boolean> {
+    const message = await this.prisma.botMessage.findFirst({
+      where: {
+        direction: MessageDirection.OUTBOUND,
+        processedBy: 'bot',
+        conversation: { botConfigId, phoneNumber },
+      },
+      select: { id: true },
+    });
+    return message !== null;
+  }
+
   async lastOutboundContent(
     botConfigId: string,
     phoneNumber: string,

@@ -117,6 +117,22 @@ describe('PromptEngine.preview de CONVERSATION', () => {
     expect(built.cacheablePrompt).not.toContain('Fecha y hora actual');
     expect(built.systemPrompt.endsWith(built.dynamicPrompt!)).toBe(true);
   });
+
+  it('la situación del chat va en el bloque dinámico, para no romper la caché', async () => {
+    const built = await engine().buildConversationPrompt('bot', {
+      userMessage: 'hola',
+      history: [],
+      context: {},
+      summary: null,
+      situation: [
+        'Es la primera vez que el asistente le responde a esta persona por este chat.',
+      ],
+    });
+    expect(built.dynamicPrompt).toContain(
+      'Situación de este chat (la indica el sistema, no la clienta):\n- Es la primera vez',
+    );
+    expect(built.cacheablePrompt).not.toContain('Situación de este chat');
+  });
 });
 
 describe('PromptService.update: coherencia de herramientas', () => {

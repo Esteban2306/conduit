@@ -38,8 +38,13 @@ export interface PromptBuildInput {
   /** Mensajes del negocio previos al primer turno del cliente en el historial. */
   leadingBotMessages?: string[];
   notices?: string[];
+  situation?: string[];
   hasImage?: boolean;
   hasTools?: boolean;
+}
+
+function situationBlock(situation: string[]): string {
+  return `Situación de este chat (la indica el sistema, no la clienta):\n${situation.map((s) => `- ${s}`).join('\n')}`;
 }
 
 function noticeBlock(notices: string[]): string {
@@ -114,6 +119,7 @@ export class PromptEngine {
     const dynamic: string[] = [promptDateLine(timeZone)];
     const { block } = this.contextBuilder.build(input.context, input.summary);
     if (block) dynamic.push(block);
+    if (input.situation?.length) dynamic.push(situationBlock(input.situation));
     if (input.notices?.length) dynamic.push(noticeBlock(input.notices));
     if (input.leadingBotMessages?.length) {
       const previous = input.leadingBotMessages.map((m) => `- ${m}`).join('\n');
@@ -178,6 +184,7 @@ export class PromptEngine {
     if (plan.hint) dynamic.push(plan.hint);
     const { block } = this.contextBuilder.build(input.context, input.summary);
     if (block) dynamic.push(block);
+    if (input.situation?.length) dynamic.push(situationBlock(input.situation));
     if (input.notices?.length) dynamic.push(noticeBlock(input.notices));
     if (input.leadingBotMessages?.length) {
       const previous = input.leadingBotMessages.map((m) => `- ${m}`).join('\n');
