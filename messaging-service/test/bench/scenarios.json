@@ -2385,6 +2385,223 @@
         "replyMatches": "3\\s?h|3 horas|tres horas",
         "notCutOrEmpty": true
       }
+    },
+    {
+      "id": "r01",
+      "category": "chat-real",
+      "title": "Recomendación por síntomas (frizz, poco cabello, caída) y luego cuándo y cuánto",
+      "turns": [
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "Buenos días"
+            }
+          ]
+        },
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "Nena necesito una cita para mi cabello pero oriéntame tengo mucho frizz pero mi cabello es poco tengo caída que tratamiento me recomiendas"
+            }
+          ]
+        },
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "Cuando me puedes dar una cita"
+            },
+            {
+              "text": "Y el valor"
+            }
+          ]
+        }
+      ],
+      "expect": {
+        "toolsAll": [
+          "listar_tratamientos"
+        ],
+        "toolsAny": [
+          "disponibilidad_combo",
+          "consultar_disponibilidad"
+        ],
+        "toolsForbidden": [
+          "crear_reserva_whatsapp",
+          "pasar_a_persona"
+        ],
+        "replyMatches": "\\$\\s?\\d",
+        "notCutOrEmpty": true,
+        "noFalseHumanPromise": true
+      }
+    },
+    {
+      "id": "r02",
+      "category": "chat-real",
+      "title": "\"Mi leo me regalas dirección\": da la dirección",
+      "turns": [
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "Buen dia"
+            },
+            {
+              "text": "Mi leo me regalas dirección por favor"
+            }
+          ]
+        }
+      ],
+      "expect": {
+        "replyMatches": "Direcci[oó]n de prueba",
+        "toolsForbidden": [
+          "pasar_a_persona"
+        ],
+        "notCutOrEmpty": true
+      }
+    },
+    {
+      "id": "r03",
+      "category": "chat-real",
+      "title": "Clienta con cita oye que en la mañana no hay cupo",
+      "prior": {
+        "client": {
+          "name": "Diana Torres",
+          "birthDate": "1990-05-12"
+        },
+        "reservations": [
+          {
+            "treatment": "Terapia de hidratación",
+            "daysFromNow": 1,
+            "hour": 8,
+            "status": "CONFIRMADA",
+            "deposit": "CONFIRMADO"
+          }
+        ]
+      },
+      "turns": [
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "Hola buenos dias"
+            },
+            {
+              "text": "Leo pregunta tecnica"
+            }
+          ]
+        },
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "Es que me dice Dayi que en la mañana no tienes espacio"
+            },
+            {
+              "text": "Que hasta las dos lo tendrías"
+            },
+            {
+              "text": "Es así?"
+            }
+          ]
+        }
+      ],
+      "expect": {
+        "toolsAny": [
+          "reservas_proximas"
+        ],
+        "toolsForbidden": [
+          "crear_reserva_whatsapp",
+          "cancelar_reserva_whatsapp"
+        ],
+        "replyMatches": "Terapia de hidrataci[oó]n",
+        "noFalseHumanPromise": true,
+        "notCutOrEmpty": true
+      }
+    },
+    {
+      "id": "r04",
+      "category": "chat-real",
+      "title": "\"Estoy llegando\" el día de la cita: acuse corto, sin flujo de reserva",
+      "prior": {
+        "client": {
+          "name": "Marta Gil",
+          "birthDate": "1975-09-02"
+        },
+        "reservations": [
+          {
+            "treatment": "Terapia de nutrición",
+            "daysFromNow": 0,
+            "hour": 17,
+            "status": "CONFIRMADA",
+            "deposit": "CONFIRMADO"
+          }
+        ]
+      },
+      "turns": [
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "Sii señora estoy llegando"
+            }
+          ]
+        }
+      ],
+      "expect": {
+        "replyNotMatches": "servicio te interesa|fecha de nacimiento|agendar|reservar",
+        "toolsForbidden": [
+          "crear_reserva_whatsapp",
+          "pasar_a_persona"
+        ]
+      }
+    },
+    {
+      "id": "r05",
+      "category": "chat-real",
+      "title": "Mensaje personal de un familiar en el número del spa",
+      "turns": [
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "Hola hijo como vas"
+            }
+          ]
+        },
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "Bien gracias a Dios, ya me entregaron el carro"
+            }
+          ]
+        }
+      ],
+      "expect": {
+        "replyNotMatches": "agendar|servicios|cupo",
+        "toolsForbidden": [
+          "crear_reserva_whatsapp",
+          "registrar_cliente"
+        ]
+      }
+    },
+    {
+      "id": "r06",
+      "category": "chat-real",
+      "title": "Clienta manda un audio",
+      "turns": [
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "audio": true
+            }
+          ]
+        }
+      ],
+      "expect": {}
     }
   ]
 }
