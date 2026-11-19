@@ -38,6 +38,7 @@ export const configValidationSchema = Joi.object({
     .max(600)
     .default(10),
   IMAGE_PREFETCH_ENABLED: Joi.boolean().default(true),
+  AUDIO_MAX_SECONDS: Joi.number().integer().min(5).max(900).default(120),
   IMAGE_PREFETCH_SETTLE_MS: Joi.number()
     .integer()
     .min(0)
@@ -125,6 +126,9 @@ export interface AppConfig {
     settleMs: number;
     downloadTimeoutMs: number;
   };
+  audio: {
+    maxSeconds: number;
+  };
   specialists: {
     enabled: boolean;
     retentionDays: number;
@@ -200,6 +204,9 @@ export const configFactory = (): AppConfig => ({
   },
   channels: {
     lineAutoAdopt: process.env.LINE_AUTO_ADOPT === 'true',
+  },
+  audio: {
+    maxSeconds: parseInt(process.env.AUDIO_MAX_SECONDS ?? '120', 10),
   },
   imagePrefetch: {
     enabled: process.env.IMAGE_PREFETCH_ENABLED !== 'false',

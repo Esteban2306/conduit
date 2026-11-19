@@ -54,6 +54,10 @@ import {
   AttachedImage,
 } from '../tools/ToolExecutor.service';
 import { HandoffService } from '../handoff/Handoff.service';
+import {
+  AudioTranscriptionService,
+  transcribedContent,
+} from '../ai/AudioTranscriptionService';
 import { SystemPauseService } from '../pause/SystemPause.service';
 import { FAILURE_STREAKS_KEY } from '../handoff/handoff-defaults';
 import { promisesHumanContact } from '../handoff/handoff-promise';
@@ -226,6 +230,8 @@ export class BotRouter {
     private readonly imagePrefetch: ImagePrefetchService<ImageBundle>,
     @Optional() private readonly legacyUsage?: LegacyImageUsageService,
     @Optional() private readonly outbox?: OutboundReplyService,
+    @Optional()
+    private readonly audioTranscription?: AudioTranscriptionService,
   ) {}
 
   async route(
@@ -306,7 +312,23 @@ export class BotRouter {
       return;
     }
 
-    const { text, hasImage } = this.extractContent(message);
+    const extracted = this.extractContent(message);
+    const { hasImage } = extracted;
+    let text = extracted.text;
+    if (!silent && message.message?.audioMessage && this.audioTranscription) {
+      const result = await this.audioTranscription.transcribe(
+        message,
+        botConfig.id,
+      );
+      this.replyMetrics.increment(
+        result.kind === 'TEXT'
+          ? 'audioTranscribed'
+          : result.kind === 'TOO_LONG'
+            ? 'audioTooLong'
+            : 'audioUntranscribed',
+      );
+      text = transcribedContent(result);
+    }
 
     if (!text && !hasImage) {
       if (!silent) await this.markAsRead(message, connectionId);

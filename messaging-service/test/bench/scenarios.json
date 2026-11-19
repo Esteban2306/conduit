@@ -2898,6 +2898,30 @@
         "notCutOrEmpty": true,
         "replyMatches": "anticaída|anticaida|Hair Therapy|Purify|Natural Fresh|Rosemary"
       }
+    },
+    {
+      "id": "r18",
+      "category": "chat-real",
+      "title": "Audio transcrito: se responde lo que dijo como si lo hubiera escrito",
+      "turns": [
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "[audio transcrito] Hola buenas, quería saber cuánto vale la hidratación y si tienen cupo el viernes"
+            }
+          ]
+        }
+      ],
+      "expect": {
+        "toolsAny": [
+          "consultar_disponibilidad",
+          "disponibilidad_combo"
+        ],
+        "replyMatches": "200\\.000",
+        "replyNotMatches": "escr[ií]beme|no puedo escuchar|no pude escuchar",
+        "notCutOrEmpty": true
+      }
     }
   ]
 }

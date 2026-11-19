@@ -513,6 +513,8 @@ function world(
           )[key],
   } as never);
   const legacyUsageRecord = jest.fn();
+  let audioResult: Record<string, unknown> = { kind: 'UNAVAILABLE' };
+  const audioTranscribe = jest.fn(() => Promise.resolve(audioResult));
   const router = new BotRouter(
     sessionManager as never,
     {
@@ -614,6 +616,8 @@ function world(
     { findBindings: specialistFindMode, run: specialistRun } as never,
     prefetch,
     { record: legacyUsageRecord } as never,
+    undefined,
+    { transcribe: audioTranscribe } as never,
   );
   (router as unknown as { logger: object }).logger = {
     debug: jest.fn(),
@@ -686,6 +690,19 @@ function world(
           key: { remoteJid: `${phone}@s.whatsapp.net`, fromMe: false, id },
           messageTimestamp: Math.floor(Date.now() / 1000),
           message: { imageMessage: { caption } },
+        },
+      ],
+    });
+    return id;
+  };
+  const inboundAudio = (phone: string, seconds = 6, id = `WA${++seq}`) => {
+    ev.emit('messages.upsert', {
+      type: 'notify',
+      messages: [
+        {
+          key: { remoteJid: `${phone}@s.whatsapp.net`, fromMe: false, id },
+          messageTimestamp: Math.floor(Date.now() / 1000),
+          message: { audioMessage: { seconds, mimetype: 'audio/ogg' } },
         },
       ],
     });
@@ -792,6 +809,11 @@ function world(
     activeOutcome,
     imageOriginal: original,
     legacyUsageRecord,
+    inboundAudio,
+    audioTranscribe,
+    setAudioResult: (value: Record<string, unknown>) => {
+      audioResult = value;
+    },
     setSpecialistMode: (value: 'OFF' | 'SHADOW' | 'ACTIVE') => {
       specialistMode = value;
     },
@@ -2126,6 +2148,56 @@ describe('Respuestas que la clienta entiende y acciones que sí se hacen', () =>
     expect(w.aiCalls).toHaveLength(2);
     expect(w.sends.at(-1)?.content).toContain('viernes a las 2:00 p. m.');
     expect(w.metrics.snapshot().askedDayNotSlots).toBe(1);
+  });
+});
+
+describe('Audios de la clienta', () => {
+  beforeEach(() => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('un audio transcrito llega al bot como lo que dijo y se responde', async () => {
+    const w = world(new Store(), (m) => `respuesta a: ${m}`);
+    w.setAudioResult({
+      kind: 'TEXT',
+      text: 'Hola, quiero una cita de hidratación',
+      seconds: 6,
+    });
+    w.inboundAudio(A);
+    await settle(DELAY_MS + 2_000);
+    expect(w.aiCalls[0]).toBe(
+      '[audio transcrito] Hola, quiero una cita de hidratación',
+    );
+    expect(w.metrics.snapshot().audioTranscribed).toBe(1);
+  });
+
+  it('un audio largo llega marcado como largo, sin transcribir', async () => {
+    const w = world(new Store());
+    w.setAudioResult({ kind: 'TOO_LONG', seconds: 300 });
+    w.inboundAudio(A, 300);
+    await settle(DELAY_MS + 2_000);
+    expect(w.aiCalls[0]).toContain('demasiado largo');
+    expect(w.metrics.snapshot().audioTooLong).toBe(1);
+  });
+
+  it('si no se pudo transcribir, el bot ve [audio] y pide que lo escriba', async () => {
+    const w = world(new Store());
+    w.setAudioResult({ kind: 'FAILED' });
+    w.inboundAudio(A);
+    await settle(DELAY_MS + 2_000);
+    expect(w.aiCalls[0]).toBe('[audio]');
+    expect(w.metrics.snapshot().audioUntranscribed).toBe(1);
+  });
+
+  it('con el bot apagado no se transcribe nada (no se gasta)', async () => {
+    const w = world(new Store());
+    w.setBotStatus(BotStatus.INACTIVE);
+    w.inboundAudio(A);
+    await settle(DELAY_MS + 2_000);
+    expect(w.audioTranscribe).not.toHaveBeenCalled();
   });
 });
 

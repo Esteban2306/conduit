@@ -71,7 +71,7 @@ export class AiModelSelectorService {
       );
     }
 
-    if (role !== AiModelRole.FALLBACK) {
+    if (role !== AiModelRole.FALLBACK && role !== AiModelRole.TRANSCRIPTION) {
       return this.selectModel(owner, AiModelRole.FALLBACK, exclude);
     }
 

@@ -20,7 +20,10 @@ export type ReplyCounter =
   | 'silenceOverturned'
   | 'technicalLeak'
   | 'askedDayNotSlots'
-  | 'uncheckedDenial';
+  | 'uncheckedDenial'
+  | 'audioTranscribed'
+  | 'audioTooLong'
+  | 'audioUntranscribed';
 
 @Injectable()
 export class ReplyMetricsService {
@@ -46,6 +49,9 @@ export class ReplyMetricsService {
     technicalLeak: 0,
     askedDayNotSlots: 0,
     uncheckedDenial: 0,
+    audioTranscribed: 0,
+    audioTooLong: 0,
+    audioUntranscribed: 0,
   };
 
   increment(counter: ReplyCounter): void {
