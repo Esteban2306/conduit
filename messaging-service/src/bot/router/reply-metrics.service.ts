@@ -13,7 +13,9 @@ export type ReplyCounter =
   | 'promiseBlocked'
   | 'successClaimBlocked'
   | 'superseded'
-  | 'repeatedQuestion';
+  | 'repeatedQuestion'
+  | 'stalledReply'
+  | 'silenced';
 
 @Injectable()
 export class ReplyMetricsService {
@@ -32,6 +34,8 @@ export class ReplyMetricsService {
     blockedEmpty: 0,
     superseded: 0,
     repeatedQuestion: 0,
+    stalledReply: 0,
+    silenced: 0,
   };
 
   increment(counter: ReplyCounter): void {

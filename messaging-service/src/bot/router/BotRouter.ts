@@ -68,6 +68,11 @@ import { IntentHandler } from '../intent/IntentHandler';
 import { isTaskDone } from '../intent/intent-turn';
 import { isAffirmation } from '../intent/normalize';
 import { findRepeatedQuestion } from './repeated-question';
+import {
+  announcesPendingCheck,
+  isNoReply,
+  STALLED_REPLY_INSTRUCTION,
+} from './stalled-reply';
 import { withNotices } from './notice-coverage';
 import { MessageRole } from '../conversation/types/MessageRole';
 import { AiOutageDigestService } from '../tools/AiOutageDigest.service';
@@ -1043,6 +1048,26 @@ export class BotRouter {
       return;
     }
 
+    if (
+      isNoReply(aiResult.content) &&
+      (aiResult.toolCallsExecuted ?? []).some(
+        (call) => call.ok && !readOnlyTools.has(call.name),
+      )
+    ) {
+      aiResult = { ...aiResult, content: '' };
+    }
+
+    if (isNoReply(aiResult.content)) {
+      this.replyMetrics.increment('silenced');
+      this.logger.log(
+        `La IA juzgó que el mensaje de ${maskChat(phoneNumber)} no es para el spa: no se responde y queda para el equipo.`,
+      );
+      await this.conversationService.ignorePending(
+        aiData.pending.map((message) => message.id),
+      );
+      return;
+    }
+
     if (isBlank(aiResult.content)) {
       this.replyMetrics.increment('empty');
       this.logger.warn(
@@ -1056,7 +1081,7 @@ export class BotRouter {
         await this.handleAiUnavailable(turn, aiData.context, detail);
         return;
       }
-      if (isBlank(aiResult.content)) {
+      if (isBlank(aiResult.content) || isNoReply(aiResult.content)) {
         this.replyMetrics.increment('emptyFallback');
         await this.handleAiUnavailable(
           turn,
@@ -1184,6 +1209,32 @@ export class BotRouter {
       }
     }
 
+    if (
+      !consistencyRetried &&
+      (aiResult.toolCallsExecuted ?? []).length === 0 &&
+      announcesPendingCheck(aiResult.content)
+    ) {
+      this.replyMetrics.increment('stalledReply');
+      this.logger.warn(
+        `La IA anunció que iba a revisar sin llamar herramientas para ${maskChat(phoneNumber)}; se reintenta una vez.`,
+      );
+      try {
+        const retried = await generate({
+          appendInstruction: STALLED_REPLY_INSTRUCTION,
+        });
+        if (!isBlank(retried.content)) {
+          aiResult =
+            claimsCompleted(retried.content) && !wrote(retried)
+              ? { ...retried, content: UNCONFIRMED_ACTION_TEXT }
+              : retried;
+        }
+      } catch (error) {
+        this.logger.error(
+          `Fallo el reintento por respuesta sin consulta: ${maskError(error)}`,
+        );
+      }
+    }
+
     if (this.receiptTracker.isChatActive(sessionKey, 30000)) {
       this.logger.log(
         `Dueño activo mientras la IA procesaba. Respuesta descartada; se reintenta después.`,
@@ -1214,6 +1265,17 @@ export class BotRouter {
     const lastOutbound = aiData.history
       .filter((h) => h.role === 'assistant')
       .at(-1);
+
+    if (isNoReply(guarded.content)) {
+      this.replyMetrics.increment('silenced');
+      this.logger.log(
+        `La IA marcó [NO_RESPONDER] tras un reintento para ${maskChat(phoneNumber)}: no se responde y queda para el equipo.`,
+      );
+      await this.conversationService.ignorePending(
+        aiData.pending.map((message) => message.id),
+      );
+      return;
+    }
 
     let reply = guarded.content;
     let tokensUsed = aiResult.tokensUsed;

@@ -212,6 +212,11 @@ class Store {
               m.createdAt > after.getTime(),
           ),
       ),
+      ignorePending: later((ids: string[]) => {
+        for (const m of this.messages)
+          if (ids.includes(m.id) && m.direction === 'INBOUND')
+            m.processedBy = 'ignored';
+      }),
       acquireLock: later(() => true),
       releaseLock: later(() => undefined),
       isBotPaused: jest.fn(() => false),
@@ -1647,6 +1652,79 @@ describe('Respuestas coherentes: avisos y preguntas ya respondidas', () => {
     expect(w.sends.map((s) => s.content)).toEqual([
       'Tu cita de nutrición quedó apartada para el lunes 23.',
     ]);
+  });
+
+  it('si anuncia que va a revisar sin llamar herramientas, reintenta una vez para responder con datos', async () => {
+    let call = 0;
+    const w = world(new Store(), () => {
+      call += 1;
+      return call === 1
+        ? 'Te doy el valor y los cupos ahora mismo 🌿'
+        : 'Tiene un valor de *$300.000*. El cupo más cercano es hoy a las *2:00 p. m.* ¿Te lo aparto?';
+    });
+    w.inbound(A, 'Cuando me puedes dar una cita\nY el valor');
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.aiCalls).toHaveLength(2);
+    const all = w.sends.map((s) => s.content).join(' ');
+    expect(all).toMatch(/\$300\.000/);
+    expect(all).not.toMatch(/ahora mismo/);
+    expect(w.metrics.snapshot().stalledReply).toBe(1);
+  });
+
+  it('si ya consultó con herramientas, un "un momento" no dispara el reintento', async () => {
+    const w = world(new Store(), () => ({
+      content: 'Dame un momento y te confirmo los horarios 😊',
+      toolCallsExecuted: [
+        { name: 'disponibilidad_combo', arguments: {}, ok: true },
+      ],
+    }));
+    w.inbound(A, '¿Tienes cupo mañana?');
+    await settle(DELAY_MS + 2_000);
+    expect(w.aiCalls).toHaveLength(1);
+    expect(w.metrics.snapshot().stalledReply).toBe(0);
+  });
+
+  it('si la IA marca [NO_RESPONDER] (mensaje personal), no se envía nada y no queda pendiente', async () => {
+    const store = new Store();
+    const w = world(store, () => '[NO_RESPONDER]');
+    w.inbound(A, 'Hola hijo como vas');
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.sends.filter((s) => s.to === A)).toHaveLength(0);
+    expect(w.metrics.snapshot().silenced).toBe(1);
+    expect(
+      store.messages.filter(
+        (m) => m.direction === 'INBOUND' && m.processedBy !== 'ignored',
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('si el modelo rodea la marca con su razonamiento, no se envía nada', async () => {
+    const w = world(
+      new Store(),
+      () =>
+        'Según las instrucciones, este saludo familiar debe recibir [NO_RESPONDER]. Así que no respondo.',
+    );
+    w.inbound(A, 'Hola hijo como vas');
+    await settle(DELAY_MS + 2_000);
+    expect(w.sends.filter((s) => s.to === A)).toHaveLength(0);
+    expect(w.metrics.snapshot().silenced).toBe(1);
+  });
+
+  it('[NO_RESPONDER] no se respeta si la IA ya ejecutó una acción que escribe', async () => {
+    const w = world(new Store(), () => ({
+      content: '[NO_RESPONDER]',
+      toolCallsExecuted: [
+        { name: 'crear_reserva_whatsapp', arguments: {}, ok: true },
+      ],
+    }));
+    w.inbound(A, 'sí, apártala');
+    await settle(DELAY_MS + 2_000);
+    expect(w.metrics.snapshot().silenced).toBe(0);
+    expect(w.sends.map((s) => s.content).join(' ')).not.toContain(
+      'NO_RESPONDER',
+    );
   });
 
   it('una pregunta nueva no dispara reintentos', async () => {
