@@ -121,6 +121,50 @@ describe('TemplateService: validación de variantes', () => {
   });
 });
 
+describe('TemplateService: editar una plantilla', () => {
+  it('el esquema de variables se guarda en su columna y no rompe la edición', async () => {
+    const update = jest.fn(({ data }: { data: unknown }) =>
+      Promise.resolve(data),
+    );
+    const svc = new TemplateService(
+      {
+        template: {
+          findUnique: jest.fn(() =>
+            Promise.resolve({
+              id: 't1',
+              bodyHandlebars: MAIN,
+              bodyVariants: [],
+              tags: [],
+            }),
+          ),
+          update,
+        },
+      } as never,
+      new TemplateEngine(),
+      { get: () => undefined } as never,
+    );
+    await svc.update(
+      't1',
+      {
+        name: 'Recordatorio',
+        channel: 'WHATSAPP',
+        bodyHandlebars: MAIN,
+        bodyVariants: [V1],
+        variadblesSchema: { nombre: 'string', fecha: 'string', hora: 'string' },
+      } as never,
+      't',
+    );
+    const data = (
+      update.mock.calls[0] as unknown as [{ data: Record<string, unknown> }]
+    )[0].data;
+    expect(data).not.toHaveProperty('variadblesSchema');
+    expect(data.variablesSchema).toBe(
+      JSON.stringify({ nombre: 'string', fecha: 'string', hora: 'string' }),
+    );
+    expect(data.bodyVariants).toEqual([V1]);
+  });
+});
+
 describe('TemplateEngine en WhatsApp', () => {
   const engine = new TemplateEngine();
 
