@@ -2458,7 +2458,8 @@
         "toolsForbidden": [
           "pasar_a_persona"
         ],
-        "notCutOrEmpty": true
+        "notCutOrEmpty": true,
+        "replyNotMatches": "WhatsApp|[Hh]orario|1122"
       }
     },
     {
@@ -2550,7 +2551,7 @@
         }
       ],
       "expect": {
-        "replyNotMatches": "servicio te interesa|fecha de nacimiento|agendar|reservar",
+        "replyNotMatches": "servicio te interesa|fecha de nacimiento|agendar|reservar|soy Sof[ií]a",
         "toolsForbidden": [
           "crear_reserva_whatsapp",
           "pasar_a_persona"
@@ -2560,7 +2561,7 @@
     {
       "id": "r05",
       "category": "chat-real",
-      "title": "Mensaje personal de un familiar en el número del spa",
+      "title": "Mensaje personal de un familiar en el número del spa: no se responde nada",
       "turns": [
         {
           "actor": "A",
@@ -2580,7 +2581,7 @@
         }
       ],
       "expect": {
-        "replyNotMatches": "agendar|servicios|cupo",
+        "replyNotMatches": "[\\s\\S]",
         "toolsForbidden": [
           "crear_reserva_whatsapp",
           "registrar_cliente"
@@ -2602,6 +2603,82 @@
         }
       ],
       "expect": {}
+    },
+    {
+      "id": "r07",
+      "category": "chat-real",
+      "title": "Saludo cariñoso de clienta (\"mi reina\"): se responde",
+      "turns": [
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "Hola mi reina cómo estás"
+            }
+          ]
+        }
+      ],
+      "expect": {
+        "replyMatches": "[\\s\\S]",
+        "notCutOrEmpty": true
+      }
+    },
+    {
+      "id": "r08",
+      "category": "chat-real",
+      "title": "Saludo cariñoso de clienta (\"mija\"): se responde",
+      "turns": [
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "Buenas mija"
+            }
+          ]
+        }
+      ],
+      "expect": {
+        "replyMatches": "[\\s\\S]",
+        "notCutOrEmpty": true
+      }
+    },
+    {
+      "id": "r09",
+      "category": "chat-real",
+      "title": "Saludo cariñoso de clienta (\"nena\"): se responde",
+      "turns": [
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "Hola nena"
+            }
+          ]
+        }
+      ],
+      "expect": {
+        "replyMatches": "[\\s\\S]",
+        "notCutOrEmpty": true
+      }
+    },
+    {
+      "id": "r10",
+      "category": "chat-real",
+      "title": "Clienta que dice \"tía\" pero pide cita: se responde",
+      "turns": [
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "Hola tía, ¿me apartas una cita para mañana?"
+            }
+          ]
+        }
+      ],
+      "expect": {
+        "replyMatches": "[\\s\\S]",
+        "notCutOrEmpty": true
+      }
     }
   ]
 }
