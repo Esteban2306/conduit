@@ -70,6 +70,7 @@ import {
 } from 'src/channels/whatsapp/baileys/human-timing';
 import { IntentHandler } from '../intent/IntentHandler';
 import { IntentOutcome, isTaskDone } from '../intent/intent-turn';
+import { proposesSingleSlot } from '../intent/slot-proposal';
 import { isAffirmation } from '../intent/normalize';
 import { findRepeatedQuestion } from './repeated-question';
 import {
@@ -847,7 +848,7 @@ export class BotRouter {
       !freshStart &&
       lastBotMessage?.content.includes('?') === true &&
       ACTION_PROPOSAL.test(lastBotMessage.content) &&
-      PROPOSED_SLOT.test(lastBotMessage.content) &&
+      proposesSingleSlot(lastBotMessage.content) &&
       isAffirmation(intentText);
     const tools = (
       slim ? allTools.filter((t) => slim.tools.includes(t.spec.name)) : allTools
@@ -1285,7 +1286,7 @@ export class BotRouter {
     if (
       !consistencyRetried &&
       confirmedProposal &&
-      PROPOSED_SLOT.test(lastBotMessage?.content ?? '') &&
+      proposesSingleSlot(lastBotMessage?.content ?? '') &&
       !wrote(aiResult)
     ) {
       consistencyRetried = true;
@@ -2648,9 +2649,6 @@ const COMPLETED_CLAIM =
   /\b(?:qued[oó]|quedaron|ya est[aá]|fue|ha sido|se (?:agend[oó]|reserv[oó]|cancel[oó]|reagend[oó]|registr[oó]|cre[oó]))\s*(?:ya\s*)?(?:agendad[ao]s?|reservad[ao]s?|cancelad[ao]s?|reagendad[ao]s?|confirmad[ao]s?|registrad[ao]s?|cread[ao]s?)?\b/i;
 const ACTION_PROPOSAL =
   /\b(?:confirm|agend|apart|reserv|separ|cancel|reagend|registr)/i;
-
-const PROPOSED_SLOT =
-  /\b\d{1,2}(?::\d{2})?\s*(?:a\.?\s?m\.?|p\.?\s?m\.?)(?=\s|$|[^a-z])/i;
 
 const slotConfirmedInstruction = (said: string) =>
   `ATENCIÓN: la clienta aceptó («${said.slice(0, 200)}») el día y la hora que le propusiste. Ejecuta ahora la acción con la herramienta que corresponde (crear la reserva o reagendar) usando los datos que ya están en la conversación. No vuelvas a consultar listas ni disponibilidad, no pidas otra confirmación y no anuncies que vas a verificar: responde según el resultado real de la herramienta.`;

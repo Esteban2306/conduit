@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { proposesSeveralSlots } from './slot-proposal';
 import { isLidAddress } from 'src/channels/whatsapp/utils/jid.util';
 import { HandoffService } from '../handoff/Handoff.service';
 import { ConversationService } from '../conversation/ConversationService';
@@ -375,6 +376,7 @@ export class IntentHandler {
     const confirmed =
       Boolean(slim.confirmHint) &&
       turn.lastBotMessage?.content.includes('?') === true &&
+      !proposesSeveralSlots(turn.lastBotMessage.content) &&
       isAffirmation(turn.text);
     return {
       ...slim,

@@ -2063,6 +2063,30 @@ describe('Respuestas que la clienta entiende y acciones que sí se hacen', () =>
     ]);
   });
 
+  it('un "sí" a una lista de varios horarios no fuerza ninguna reserva', async () => {
+    const store = new Store();
+    store.lastOutboundValue = {
+      content:
+        'Tengo cupo el sábado 21 a las 2:00 p. m. o el lunes 23 a las 8:00 a. m. ¿Cuál te aparto?',
+      at: new Date(),
+    };
+    const w = world(
+      store,
+      () => '¿Me dices el día y la hora exactos que quieres? 🌿',
+    );
+    w.setTools(
+      ['disponibilidad_combo', 'crear_reserva_whatsapp', 'pasar_a_persona'],
+      ['pasar_a_persona'],
+    );
+    w.inbound(A, 'Sí, confirmo');
+    await settle(DELAY_MS + 2_000);
+    expect(w.aiCalls).toHaveLength(1);
+    expect(w.aiInputs[0].tools?.map((t) => t.name)).toContain(
+      'disponibilidad_combo',
+    );
+    expect(w.metrics.snapshot().confirmWithoutAction).toBe(0);
+  });
+
   it('un "sí" a algo que no es un horario no fuerza ninguna acción', async () => {
     const store = new Store();
     store.lastOutboundValue = {

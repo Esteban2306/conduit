@@ -2275,6 +2275,14 @@
           "actor": "A",
           "messages": [
             {
+              "text": "Sí, ese horario"
+            }
+          ]
+        },
+        {
+          "actor": "A",
+          "messages": [
+            {
               "image": {
                 "caption": "listo, ya pagué"
               }
@@ -2920,6 +2928,42 @@
         ],
         "replyMatches": "200\\.000",
         "replyNotMatches": "escr[ií]beme|no puedo escuchar|no pude escuchar",
+        "notCutOrEmpty": true
+      }
+    },
+    {
+      "id": "r19",
+      "category": "agendar",
+      "title": "\"El primero que tengas\" o \"sí\" a varios horarios: no agenda sin día y hora exactos",
+      "prior": {
+        "client": {
+          "name": "Paola Ríos",
+          "birthDate": "1988-06-10"
+        }
+      },
+      "turns": [
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "Hola, quiero agendar una terapia de hidratación"
+            }
+          ]
+        },
+        {
+          "actor": "A",
+          "messages": [
+            {
+              "text": "el primero que tengas"
+            }
+          ]
+        }
+      ],
+      "expect": {
+        "toolsForbidden": [
+          "crear_reserva_whatsapp"
+        ],
+        "replyMatches": "d[ií]a y (?:la )?hora|\\?",
         "notCutOrEmpty": true
       }
     }
