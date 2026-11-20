@@ -306,11 +306,14 @@ export class BotRouter {
     const paused = await this.systemPause.isPaused(tenantId);
     const muted =
       !botInactive && !paused && this.mutedContacts
-        ? await this.mutedContacts.isMuted(
-            botConfig.id,
-            phoneNumber,
-            connectionId,
-          )
+        ? await this.mutedContacts
+            .isMuted(botConfig.id, phoneNumber, connectionId)
+            .catch((error: unknown) => {
+              this.logger.warn(
+                `No se pudo revisar si ${phoneNumber} está silenciado; se atiende normal: ${maskError(error)}`,
+              );
+              return false;
+            })
         : false;
     const silent = botInactive || paused || muted;
 

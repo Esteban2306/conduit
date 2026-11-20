@@ -2736,6 +2736,16 @@ describe('Contactos silenciados', () => {
     expect(w.sends).toHaveLength(0);
   });
 
+  it('si no se puede revisar el silencio, el mensaje se guarda y se atiende normal', async () => {
+    const w = world(new Store(), (m) => `respuesta a: ${m}`);
+    w.isMuted.mockRejectedValueOnce(new Error('base de datos caída'));
+    w.inbound(A, 'hola, quiero una cita');
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.store.inboundTexts(A)).toEqual(['hola, quiero una cita']);
+    expect(w.aiCalls).toEqual(['hola, quiero una cita']);
+  });
+
   it('silenciar un chat no afecta a los demás', async () => {
     const w = world(new Store(), (m) => `respuesta a: ${m}`);
     w.mute(A);
