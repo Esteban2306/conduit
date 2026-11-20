@@ -12,7 +12,10 @@ import {
   Optional,
 } from '@nestjs/common';
 import { BotConfigService } from '../config/BotConfigService';
-import { ConversationService } from '../conversation/ConversationService';
+import {
+  stripTeamMarker,
+  ConversationService,
+} from '../conversation/ConversationService';
 import { downloadMediaMessage, WAMessage } from '@whiskeysockets/baileys';
 import { BotStatus, ReasoningMode } from '@prisma/client';
 import { EventBusService } from 'src/infra/events/event.service';
@@ -1581,6 +1584,8 @@ export class BotRouter {
       reply = rewritten ?? scrubInternals(reply, toolNames);
       if (isBlank(reply)) reply = UNCONFIRMED_ACTION_TEXT;
     }
+
+    reply = stripTeamMarker(reply);
 
     // Se espera el envío dentro del lock: la respuesta queda guardada antes
     // de la siguiente pasada, así lo ya respondido no vuelve a verse como

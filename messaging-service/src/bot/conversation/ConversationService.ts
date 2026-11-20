@@ -84,6 +84,21 @@ export interface ConversationForAI {
   summary: string | null;
 }
 
+export const TEAM_MESSAGE_MARKER = '[Persona del equipo]';
+
+export function markTeamMessage(content: string): string {
+  return `${TEAM_MESSAGE_MARKER} ${content}`;
+}
+
+export function stripTeamMarker(text: string): string {
+  return text
+    .split(TEAM_MESSAGE_MARKER)
+    .join('')
+    .replace(/^\s*:\s*/, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+}
+
 @Injectable()
 export class ConversationService {
   private readonly logger = new Logger(ConversationService.name);
@@ -494,7 +509,12 @@ export class ConversationService {
           msg.direction === MessageDirection.INBOUND
             ? MessageRole.USER
             : MessageRole.ASSISTANT,
-        content: this.truncateChars(msg.content, MAX_MESSAGE_CHARS),
+        content: this.truncateChars(
+          msg.processedBy === 'human'
+            ? markTeamMessage(msg.content)
+            : msg.content,
+          MAX_MESSAGE_CHARS,
+        ),
       })),
     );
 
