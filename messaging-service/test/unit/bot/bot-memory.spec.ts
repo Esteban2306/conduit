@@ -11,7 +11,13 @@ jest.mock('@whiskeysockets/baileys', () => ({
 }));
 
 import { isIgnorableAcknowledgement } from 'src/bot/router/acknowledgement';
-import { ConversationService } from 'src/bot/conversation/ConversationService';
+import { MessageRole } from 'src/bot/conversation/types/MessageRole';
+import {
+  TEAM_MESSAGE_MARKER,
+  markTeamMessage,
+  stripTeamMarker,
+  ConversationService,
+} from 'src/bot/conversation/ConversationService';
 import { ContextBuilder } from 'src/bot/prompt/ContextBuilder';
 import { BotRouter } from 'src/bot/router/BotRouter';
 
@@ -188,6 +194,38 @@ describe('ConversationService.getConversationForAI', () => {
     expect(data.pending.map((p) => p.content)).toEqual(['hola de nuevo']);
   });
 
+  it('lo que escribió una persona del equipo llega marcado; lo del bot no', async () => {
+    const service = serviceWith([
+      ['INBOUND', '¿cuánto cuesta el alisado?'],
+      [
+        'OUTBOUND',
+        'Depende del largo, ¿me envías una foto?',
+        false,
+        undefined,
+        'bot',
+      ],
+      ['INBOUND', '[imagen]', true],
+      [
+        'OUTBOUND',
+        'Tiene un costo de 350.000 pesos',
+        false,
+        undefined,
+        'human',
+      ],
+      ['INBOUND', 'listo, agéndame'],
+    ]);
+
+    const data = await service.getConversationForAI('c1', 6);
+
+    const said = data.history
+      .filter((h) => h.role === MessageRole.ASSISTANT)
+      .map((h) => h.content);
+    expect(said).toEqual([
+      'Depende del largo, ¿me envías una foto?',
+      '[Persona del equipo] Tiene un costo de 350.000 pesos',
+    ]);
+  });
+
   it('pasa aparte el recordatorio previo para que el historial empiece por el cliente', async () => {
     const service = serviceWith([
       ['OUTBOUND', 'Te recordamos tu cita mañana. ¿Nos confirmas?'],
@@ -315,5 +353,24 @@ describe('BotRouter — nunca deja mensajes sin responder', () => {
 
     expect(r.answerPending).toHaveBeenCalledTimes(2);
     expect(r.conversationService.releaseLock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('marca de los mensajes del equipo', () => {
+  it('nunca le llega a la clienta aunque el modelo la copie', () => {
+    expect(stripTeamMarker('[Persona del equipo] Te esperamos el sábado')).toBe(
+      'Te esperamos el sábado',
+    );
+    expect(stripTeamMarker('[Persona del equipo]: Listo')).toBe('Listo');
+    expect(stripTeamMarker('Hola [Persona del equipo] Diana')).toBe(
+      'Hola Diana',
+    );
+    expect(stripTeamMarker('Sin marca')).toBe('Sin marca');
+  });
+
+  it('se agrega una sola vez al inicio', () => {
+    expect(markTeamMessage('Precio: $350.000')).toBe(
+      `${TEAM_MESSAGE_MARKER} Precio: $350.000`,
+    );
   });
 });

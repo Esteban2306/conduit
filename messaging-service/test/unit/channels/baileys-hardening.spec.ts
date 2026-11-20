@@ -137,6 +137,39 @@ describe('BaileysPlugin — endurecimiento', () => {
     );
   });
 
+  it('el id del mensaje queda registrado como del bot antes de enviarlo, para que su eco nunca parezca de una persona', async () => {
+    const registered: string[] = [];
+    const order: string[] = [];
+    plugin = new BaileysPlugin(
+      { get: () => runNow, getOrCreate: () => runNow } as any,
+      session as any,
+      {
+        register: (id: string) => {
+          registered.push(id);
+          order.push('register');
+        },
+      } as any,
+      contacts as any,
+      { remember: jest.fn() } as any,
+    );
+    const realSend = sock.sendMessage.getMockImplementation();
+    sock.sendMessage.mockImplementation((...args: unknown[]) => {
+      order.push('send');
+      return realSend ? realSend(...args) : Promise.resolve(undefined);
+    });
+
+    await send({ to: '573001234567', priority: 'conversation' });
+
+    expect(order.slice(0, 2)).toEqual(['register', 'send']);
+    const [, , options] = sock.sendMessage.mock.calls[0] as [
+      string,
+      unknown,
+      { messageId: string },
+    ];
+    expect(registered[0]).toBe(options.messageId);
+    expect(options.messageId).toMatch(/^3EB0[0-9A-F]{20}$/);
+  });
+
   it('responde a un LID solo en conversación', async () => {
     const reply = await send({
       to: '123456789012345@lid',
@@ -146,6 +179,7 @@ describe('BaileysPlugin — endurecimiento', () => {
     expect(sock.sendMessage).toHaveBeenCalledWith(
       '123456789012345@lid',
       expect.any(Object),
+      expect.objectContaining({ messageId: expect.any(String) }),
     );
 
     const campaign = await send({ to: '123456789012345@lid' });

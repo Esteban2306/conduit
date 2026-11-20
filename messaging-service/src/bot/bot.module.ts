@@ -56,6 +56,8 @@ import { OrchestratorModule } from 'src/core/orchestrator/orchestrator.module';
 import { AiErrorClassifier } from './ai/AiErrorClassifier';
 import { ToolDefinitionController } from './tools/ToolDefinition.controller';
 import { ConversationAdminController } from './admin/ConversationAdmin.controller';
+import { MutedContactsController } from './mute/MutedContacts.controller';
+import { MutedContactService } from './mute/MutedContact.service';
 import { SystemPauseController } from './pause/SystemPause.controller';
 import { SystemPauseService } from './pause/SystemPause.service';
 
@@ -73,6 +75,7 @@ import { SystemPauseService } from './pause/SystemPause.service';
     AiModelController,
     ToolDefinitionController,
     ConversationAdminController,
+    MutedContactsController,
     IntentController,
     SystemPauseController,
     SpecialistController,
@@ -82,6 +85,7 @@ import { SystemPauseService } from './pause/SystemPause.service';
     LegacyImageUsageController,
   ],
   providers: [
+    MutedContactService,
     SystemPauseService,
     ConversationService,
     ConversationSummarizer,

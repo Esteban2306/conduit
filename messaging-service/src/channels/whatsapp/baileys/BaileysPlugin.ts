@@ -8,6 +8,7 @@ import {
 import { BaileysRateLimiterRegistry } from './BaileysRateLimiterRegistry';
 import { JobPriority, WarmupLevel } from './BaileysRateLimiter';
 import { BaileysSessionManager } from './BaileysSessionManager';
+import { randomBytes } from 'node:crypto';
 import { WASocket } from '@whiskeysockets/baileys';
 import { BotSentMessageRegistry } from 'src/channels/whatsapp/baileys/BotSentMessageRegistry';
 import { normalizeWhatsAppAddress } from '../utils/whatsapp-address.util';
@@ -155,16 +156,16 @@ export class BaileysPlugin implements IChannelPlugin {
       await sock.sendPresenceUpdate('paused', jid);
       if (stopped) return this.gated(stopped);
 
-      const response = payload.messageId
-        ? await sock.sendMessage(
-            jid,
-            { text },
-            { messageId: payload.messageId },
-          )
-        : await sock.sendMessage(jid, { text });
+      const messageId =
+        payload.messageId ??
+        `3EB0${randomBytes(10).toString('hex').toUpperCase()}`;
+      this.botSentRegistry.register(messageId);
+      const response = await sock.sendMessage(jid, { text }, { messageId });
 
       if (response?.key?.id) {
-        this.botSentRegistry.register(response.key.id);
+        if (response.key.id !== messageId) {
+          this.botSentRegistry.register(response.key.id);
+        }
         this.sentMessages.remember(response.key.id, response.message);
       }
 
