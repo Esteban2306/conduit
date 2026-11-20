@@ -111,6 +111,7 @@ import {
   phoneToJid,
 } from 'src/channels/whatsapp/utils/jid.util';
 import { chatKey } from 'src/channels/whatsapp/utils/chat-key';
+import { MutedContactService } from '../mute/MutedContact.service';
 import { maskError, maskSecrets } from 'src/shared/security/mask-secrets';
 import {
   EXPIRED_REPLY,
@@ -234,6 +235,7 @@ export class BotRouter {
     @Optional() private readonly outbox?: OutboundReplyService,
     @Optional()
     private readonly audioTranscription?: AudioTranscriptionService,
+    @Optional() private readonly mutedContacts?: MutedContactService,
   ) {}
 
   async route(
@@ -299,7 +301,15 @@ export class BotRouter {
     }
 
     const paused = await this.systemPause.isPaused(tenantId);
-    const silent = botInactive || paused;
+    const muted =
+      !botInactive && !paused && this.mutedContacts
+        ? await this.mutedContacts.isMuted(
+            botConfig.id,
+            phoneNumber,
+            connectionId,
+          )
+        : false;
+    const silent = botInactive || paused || muted;
 
     const messageTimestap = Number(message.messageTimestamp ?? 0) * 1000;
     const messageAgeMs = Date.now() - messageTimestap;
@@ -377,7 +387,7 @@ export class BotRouter {
 
     if (silent) {
       this.logger.debug(
-        `${paused ? 'Sistema en pausa' : 'Bot apagado'}: mensaje de ${phoneNumber} guardado sin respuesta automática.`,
+        `${muted ? 'Contacto silenciado' : paused ? 'Sistema en pausa' : 'Bot apagado'}: mensaje de ${phoneNumber} guardado sin respuesta automática.`,
       );
       return;
     }

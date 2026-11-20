@@ -359,6 +359,7 @@ model BotConfig {
   escalationContacts BotEscalationContact[]
   intents BotIntent[]
   specialistBindings BotSpecialistBinding[]
+  mutedContacts MutedContact[]
 
   @@unique([tenantId, key])
   @@unique([id, tenantId])
@@ -676,6 +677,23 @@ model WhatsAppContact {
   @@unique([connectionId, address])
   @@index([connectionId, lid])
   @@index([address])
+}
+
+/// Contactos a los que el bot nunca responde (por ejemplo, bots de otras
+/// empresas). Sus mensajes se guardan sin procesar: no se transcriben, no se
+/// verifican imágenes ni se llama al modelo.
+model MutedContact {
+  id          String   @id @default(uuid())
+  tenantId    String
+  botConfigId String
+  address     String
+  reason      String?
+  createdAt   DateTime @default(now())
+
+  botConfig BotConfig @relation(fields: [botConfigId], references: [id], onDelete: Cascade)
+
+  @@unique([botConfigId, address])
+  @@index([tenantId])
 }
 
 /// Rastro de las operaciones que fusionan conexiones. No tiene relación con

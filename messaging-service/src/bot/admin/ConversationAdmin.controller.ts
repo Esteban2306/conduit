@@ -8,6 +8,7 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  Optional,
   Query,
   UseGuards,
 } from '@nestjs/common';
@@ -22,6 +23,7 @@ import { EVENT_TYPES } from 'src/infra/events/constants/event.types';
 import { BotConfigService } from '../config/BotConfigService';
 import { ConversationService } from '../conversation/ConversationService';
 import { BotRouter } from '../router/BotRouter';
+import { MutedContactService } from '../mute/MutedContact.service';
 import { normalizeWhatsAppAddress } from 'src/channels/whatsapp/utils/whatsapp-address.util';
 import {
   CreateEscalationContactDto,
@@ -43,6 +45,7 @@ export class ConversationAdminController {
     private readonly conversations: ConversationService,
     private readonly router: BotRouter,
     private readonly eventBus: EventBusService,
+    @Optional() private readonly muted?: MutedContactService,
   ) {}
 
   @Get('conversations')
@@ -59,12 +62,25 @@ export class ConversationAdminController {
     if (status && !Object.values(ConversationStatus).includes(status)) {
       throw new BadRequestException('status inválido');
     }
-    return this.conversations.listForAdmin(botId, {
+    const result = await this.conversations.listForAdmin(botId, {
       status,
       search: search?.replace(/[^\d@lid]/g, ''),
       page: page ? Number(page) : undefined,
       limit: limit ? Number(limit) : undefined,
     });
+    const muted = this.muted
+      ? await this.muted.mutedAddresses(
+          botId,
+          result.data.map((row) => row.phoneNumber),
+        )
+      : new Set<string>();
+    return {
+      ...result,
+      data: result.data.map((row) => ({
+        ...row,
+        muted: muted.has(row.phoneNumber),
+      })),
+    };
   }
 
   @Get('conversations/:conversationId/messages')

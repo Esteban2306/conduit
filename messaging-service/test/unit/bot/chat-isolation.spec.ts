@@ -314,6 +314,10 @@ function world(
   let promptMaxTokens = 400;
   let notifyResult = true;
   let systemPaused = false;
+  const mutedAddresses = new Set<string>();
+  const isMuted = jest.fn((_bot: string, address: string) =>
+    Promise.resolve(mutedAddresses.has(address)),
+  );
   let botStatus: BotStatus = line.status ?? BotStatus.ACTIVE;
   const slimPrompts: unknown[] = [];
   const afterSlimTurn = jest.fn(() => Promise.resolve());
@@ -618,6 +622,7 @@ function world(
     { record: legacyUsageRecord } as never,
     undefined,
     { transcribe: audioTranscribe } as never,
+    { isMuted } as never,
   );
   (router as unknown as { logger: object }).logger = {
     debug: jest.fn(),
@@ -826,6 +831,10 @@ function world(
     setSystemPaused: (value: boolean) => {
       systemPaused = value;
     },
+    mute: (address: string) => {
+      mutedAddresses.add(address);
+    },
+    isMuted,
     setMaxTokens: (value: number) => {
       promptMaxTokens = value;
     },
@@ -2689,6 +2698,53 @@ describe('Secuencia humana por turno', () => {
 
     expect(w.socket.readMessages).not.toHaveBeenCalled();
     expect(w.order).toEqual([]);
+  });
+});
+
+describe('Contactos silenciados', () => {
+  beforeEach(() => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('un contacto silenciado queda guardado, pero el bot nunca le responde ni llama a la IA', async () => {
+    const w = world();
+    w.mute(A);
+    w.inbound(A, 'Hola, soy el asistente virtual de otra empresa');
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.store.inboundTexts(A)).toEqual([
+      'Hola, soy el asistente virtual de otra empresa',
+    ]);
+    expect(w.sends).toHaveLength(0);
+    expect(w.aiCalls).toHaveLength(0);
+  });
+
+  it('a un contacto silenciado no se le transcriben audios ni se le revisan imágenes', async () => {
+    const w = world();
+    w.setImageAnalysis(true);
+    w.mute(A);
+    w.inboundAudio(A);
+    w.inboundImage(A, 'foto');
+    await settle(DELAY_MS + 4_000);
+
+    expect(w.audioTranscribe).not.toHaveBeenCalled();
+    expect(w.imageAnalyze).not.toHaveBeenCalled();
+    expect(w.specialistRun).not.toHaveBeenCalled();
+    expect(w.sends).toHaveLength(0);
+  });
+
+  it('silenciar un chat no afecta a los demás', async () => {
+    const w = world(new Store(), (m) => `respuesta a: ${m}`);
+    w.mute(A);
+    w.inbound(A, 'mensaje del bot ajeno');
+    w.inbound(B, 'hola, quiero una cita');
+    await settle(DELAY_MS + 2_000);
+
+    expect(w.sends.map((s) => s.to)).toEqual([B]);
+    expect(w.aiCalls).toEqual(['hola, quiero una cita']);
   });
 });
 
