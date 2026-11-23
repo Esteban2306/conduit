@@ -658,6 +658,7 @@ export class ConversationService {
         botPausedUntil: this.isBotPaused(ctx) ? ctx.botPausedUntil : null,
         botPauseReason: this.isBotPaused(ctx) ? ctx.botPauseReason : null,
         warnings: warningsOf(ctx),
+        closedAt: typeof ctx.closedAt === 'string' ? ctx.closedAt : null,
         lastMessage: messages[0] ?? null,
         // Esperando respuesta: el último mensaje es del cliente.
         awaitingReply:

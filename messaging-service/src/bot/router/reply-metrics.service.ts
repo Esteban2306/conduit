@@ -15,6 +15,7 @@ export type ReplyCounter =
   | 'superseded'
   | 'repeatedQuestion'
   | 'stalledReply'
+  | 'leakedNarration'
   | 'silenced'
   | 'silenceChecked'
   | 'silenceOverturned'
@@ -43,6 +44,7 @@ export class ReplyMetricsService {
     superseded: 0,
     repeatedQuestion: 0,
     stalledReply: 0,
+    leakedNarration: 0,
     silenced: 0,
     silenceChecked: 0,
     silenceOverturned: 0,

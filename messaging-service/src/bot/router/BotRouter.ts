@@ -71,6 +71,10 @@ import {
   awaitsTeamAnswer,
   takeoverEndsAt,
 } from './team-reply';
+import {
+  SPANISH_ONLY_INSTRUCTION,
+  withoutEnglishNarration,
+} from './leaked-narration';
 import { promisesHumanContact } from '../handoff/handoff-promise';
 import { TurnBudget } from '../ai/turn-budget';
 import { limitToolData } from '../tools/tool-result-limit';
@@ -1420,6 +1424,40 @@ export class BotRouter {
         this.logger.error(
           `Fallo el reintento por respuesta sin consulta: ${maskError(error)}`,
         );
+      }
+    }
+
+    const narration = withoutEnglishNarration(aiResult.content);
+    if (narration.dropped > 0) {
+      this.replyMetrics.increment('leakedNarration');
+      this.logger.warn(
+        `La IA escribió ${narration.dropped} párrafo(s) en inglés para ${maskChat(phoneNumber)}: no se envían.`,
+      );
+      if (narration.content) {
+        aiResult = { ...aiResult, content: narration.content };
+      } else {
+        let retried: typeof aiResult | null = null;
+        try {
+          retried = await generate({
+            appendInstruction: SPANISH_ONLY_INSTRUCTION,
+          });
+        } catch (error) {
+          this.logger.error(
+            `Fallo el reintento en español: ${maskError(error)}`,
+          );
+        }
+        const clean = retried
+          ? withoutEnglishNarration(retried.content).content
+          : '';
+        if (!retried || isBlank(clean)) {
+          await this.handleAiUnavailable(
+            turn,
+            aiData.context,
+            'La IA respondió en inglés dos veces',
+          );
+          return;
+        }
+        aiResult = { ...retried, content: clean };
       }
     }
 
