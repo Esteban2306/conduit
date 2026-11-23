@@ -63,6 +63,14 @@ import {
 } from '../ai/AudioTranscriptionService';
 import { SystemPauseService } from '../pause/SystemPause.service';
 import { FAILURE_STREAKS_KEY } from '../handoff/handoff-defaults';
+import {
+  AWAITING_TEAM_KEY,
+  TEAM_ANSWER_KEY,
+  TEAM_ANSWER_TAKEOVER_MS,
+  answersWithAmount,
+  awaitsTeamAnswer,
+  takeoverEndsAt,
+} from './team-reply';
 import { promisesHumanContact } from '../handoff/handoff-promise';
 import { TurnBudget } from '../ai/turn-budget';
 import { limitToolData } from '../tools/tool-result-limit';
@@ -2142,10 +2150,16 @@ export class BotRouter {
       .join(' | ')
       .slice(0, 100);
 
+    const forTeam = shown.some(
+      (outcome) =>
+        outcome.capability !== IMAGE_ANALYSIS_CAPABILITY &&
+        outcome.result.verdict === 'VALID',
+    );
     try {
       await this.conversationService.updateContext(ctx.conversationId, {
         contextPatch: {
           [FACTS_KEY]: facts,
+          ...(forTeam && { [AWAITING_TEAM_KEY]: new Date().toISOString() }),
           ...(imageVerified !== undefined && { imageVerified }),
           lastImageDetails: details,
           ...(hasError
@@ -2522,7 +2536,34 @@ export class BotRouter {
 
     if (!conversation) return;
 
-    await this.conversationService.saveHumanOutbound(conversation.id, text);
+    const saved = await this.conversationService.saveHumanOutbound(
+      conversation.id,
+      text,
+    );
+    const context = (conversation.context ?? {}) as Record<string, unknown>;
+    if (awaitsTeamAnswer(context) && answersWithAmount(text)) {
+      await this.conversationService.updateContext(conversation.id, {
+        contextPatch: {
+          [AWAITING_TEAM_KEY]: null,
+          [TEAM_ANSWER_KEY]: saved.id,
+        },
+      });
+      this.logger.log(
+        `El equipo respondió con un precio la foto de ${maskChat(phoneNumber)}: el bot sigue enseguida.`,
+      );
+      this.scheduleRetry(
+        {
+          tenantId,
+          sessionKey,
+          phoneNumber,
+          botConfig,
+          connectionId,
+          conversationId: conversation.id,
+        },
+        TEAM_ANSWER_TAKEOVER_MS + 1000,
+      );
+      return;
+    }
 
     this.logger.debug(`Takeover humano registrado para ${phoneNumber}`);
   }
@@ -2604,7 +2645,7 @@ export class BotRouter {
       );
 
     return lastHumanMessage
-      ? new Date(lastHumanMessage.createdAt.getTime() + takeoverMs)
+      ? takeoverEndsAt(lastHumanMessage, takeoverMs)
       : null;
   }
 
