@@ -18,11 +18,26 @@ import { UpdateContextDto } from './dto/UpdateContext.dto';
 import { EventBusService } from 'src/infra/events/event.service';
 import { EVENT_TYPES } from 'src/infra/events/constants/event.types';
 import { PINNED_MEMORY_KEY, pinEntry } from './pinned-memory';
+import { TEAM_ANSWER_KEY, TEAM_ANSWER_RESUME_MS } from '../router/team-reply';
 
 const CLOSED_STATUSES: ConversationStatus[] = [
   ConversationStatus.COMPLETED,
   ConversationStatus.ABANDONED,
 ];
+
+export function currentSummary(conversation: {
+  summary: string | null;
+  context: unknown;
+}): string | null {
+  const context = (conversation.context ?? {}) as ConversationContext;
+  const closedAt = closedAtOf(context);
+  if (!closedAt || !conversation.summary) return conversation.summary;
+  const upTo =
+    typeof context.resumenHasta === 'string'
+      ? new Date(context.resumenHasta)
+      : null;
+  return upTo && upTo > closedAt ? conversation.summary : null;
+}
 
 function closedAtOf(context: ConversationContext | null): Date | null {
   const value = context?.closedAt;
@@ -168,7 +183,7 @@ export class ConversationService {
     botConfigId: string,
     phoneNumber: string,
     since: Date,
-  ): Promise<{ id: string; createdAt: Date } | null> {
+  ): Promise<{ id: string; createdAt: Date; answersPhoto: boolean } | null> {
     const conversation = await this.prisma.conversation.findFirst({
       where: { botConfigId, phoneNumber },
       orderBy: { createdAt: 'desc' },
@@ -177,9 +192,10 @@ export class ConversationService {
 
     if (!conversation) return null;
 
-    const closedAt = closedAtOf(conversation.context as ConversationContext);
+    const context = (conversation.context ?? {}) as ConversationContext;
+    const closedAt = closedAtOf(context);
 
-    return this.prisma.botMessage.findFirst({
+    const message = await this.prisma.botMessage.findFirst({
       where: {
         conversationId: conversation.id,
         direction: 'OUTBOUND',
@@ -189,6 +205,38 @@ export class ConversationService {
       orderBy: { createdAt: 'desc' },
       select: { id: true, createdAt: true },
     });
+    return message
+      ? { ...message, answersPhoto: context[TEAM_ANSWER_KEY] === message.id }
+      : null;
+  }
+
+  async teamAnswerToResume(
+    conversationId: string,
+    context: ConversationContext,
+    now = Date.now(),
+  ): Promise<{ id: string; content: string; createdAt: Date } | null> {
+    const id = context[TEAM_ANSWER_KEY];
+    if (typeof id !== 'string') return null;
+    const answer = await this.prisma.botMessage.findFirst({
+      where: {
+        id,
+        conversationId,
+        direction: MessageDirection.OUTBOUND,
+        processedBy: 'human',
+        createdAt: { gte: new Date(now - TEAM_ANSWER_RESUME_MS) },
+      },
+      select: { id: true, content: true, createdAt: true },
+    });
+    if (!answer) return null;
+    const answeredAfter = await this.prisma.botMessage.count({
+      where: {
+        conversationId,
+        direction: MessageDirection.OUTBOUND,
+        processedBy: { not: 'human' },
+        createdAt: { gt: answer.createdAt },
+      },
+    });
+    return answeredAfter === 0 ? answer : null;
   }
 
   async saveHumanOutbound(
@@ -534,7 +582,7 @@ export class ConversationService {
       history: merged,
       leadingBotMessages,
       pending,
-      summary: conversation.summary,
+      summary: currentSummary(conversation),
     };
   }
 
@@ -639,6 +687,7 @@ export class ConversationService {
         botPausedUntil: this.isBotPaused(ctx) ? ctx.botPausedUntil : null,
         botPauseReason: this.isBotPaused(ctx) ? ctx.botPauseReason : null,
         warnings: warningsOf(ctx),
+        closedAt: typeof ctx.closedAt === 'string' ? ctx.closedAt : null,
         lastMessage: messages[0] ?? null,
         // Esperando respuesta: el último mensaje es del cliente.
         awaitingReply:
@@ -758,10 +807,13 @@ export class ConversationService {
     const conversation = await this.findById(conversationId);
     const window = Math.max(maxMessages ?? 0, MIN_HISTORY_WINDOW);
     const context = (conversation.context ?? {}) as ConversationContext;
-    const coveredUntil =
+    const summarized =
       typeof context.resumenHasta === 'string'
         ? new Date(context.resumenHasta)
         : new Date(0);
+    const closedAt = closedAtOf(context);
+    const coveredUntil =
+      closedAt && closedAt > summarized ? closedAt : summarized;
 
     const candidates = await this.prisma.botMessage.findMany({
       where: { conversationId, createdAt: { gt: coveredUntil } },
@@ -959,6 +1011,7 @@ export class ConversationService {
       where: { id: conversationId },
       data: {
         status,
+        summary: null,
         updatedAt: new Date(),
         lockedUntil: null,
       },
@@ -969,6 +1022,9 @@ export class ConversationService {
         closedAt: new Date().toISOString(),
         botPausedUntil: null,
         botPauseReason: null,
+        memoriaAcciones: [],
+        [PINNED_MEMORY_KEY]: null,
+        resumenHasta: null,
       },
     });
 

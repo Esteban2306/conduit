@@ -18,6 +18,7 @@ import { EventEmitter } from 'events';
 import { downloadMediaMessage } from '@whiskeysockets/baileys';
 import { BotStatus } from '@prisma/client';
 import { BotRouter } from 'src/bot/router/BotRouter';
+import { TEAM_ANSWER_TURN } from 'src/bot/router/team-reply';
 import { ImagePrefetchService } from 'src/bot/router/ImagePrefetch.service';
 import { exposedVariables } from 'src/bot/specialists/facts';
 import { LEGACY_IMAGE_OUTPUT_SCHEMA } from 'src/bot/specialists/backfill/backfill-specialists';
@@ -169,15 +170,42 @@ class Store {
         },
       ),
       saveHumanOutbound: later((conversationId: string, content: string) => {
+        const id = `m${++this.seq}`;
         this.messages.push({
-          id: `m${++this.seq}`,
+          id,
           conversationId,
           direction: 'OUTBOUND',
           content,
           processedBy: 'human',
           createdAt: Date.now(),
         });
+        return { id };
       }),
+      teamAnswerToResume: later(
+        (conversationId: string, context: Record<string, unknown>) => {
+          const answer = this.messages.find(
+            (m) =>
+              m.id === context.respuestaEquipo &&
+              m.conversationId === conversationId &&
+              m.processedBy === 'human',
+          );
+          if (!answer) return null;
+          const answeredAfter = this.messages.some(
+            (m) =>
+              m.conversationId === conversationId &&
+              m.direction === 'OUTBOUND' &&
+              m.processedBy !== 'human' &&
+              m.createdAt > answer.createdAt,
+          );
+          return answeredAfter
+            ? null
+            : {
+                id: answer.id,
+                content: answer.content,
+                createdAt: new Date(answer.createdAt),
+              };
+        },
+      ),
       findActiveByPhone: later(
         (bot: string, phone: string) => this.conversationOf(phone, bot) ?? null,
       ),
@@ -250,7 +278,11 @@ class Store {
             )
             .sort((a, b) => b.createdAt - a.createdAt)[0];
           return latest
-            ? { id: latest.id, createdAt: new Date(latest.createdAt) }
+            ? {
+                id: latest.id,
+                createdAt: new Date(latest.createdAt),
+                answersPhoto: conv?.context.respuestaEquipo === latest.id,
+              }
             : null;
         },
       ),
@@ -981,6 +1013,89 @@ describe('Aislamiento de chats (etapa 1)', () => {
     expect(w.sends.filter((s) => s.to === A)).toHaveLength(0);
   });
 
+  it('cuando el equipo da el precio de la foto, el bot retoma sin que la clienta escriba y lo hace una sola vez', async () => {
+    const store = new Store();
+    const w = world(store, (m) =>
+      m === TEAM_ANSWER_TURN
+        ? 'Perfecto, tu alisado queda en $250.000. ¿Te confirmo el miércoles a las 8:00 a. m.?'
+        : `respuesta a: ${m}`,
+    );
+    w.inbound(A, 'Les mando la foto de mi cabello');
+    await settle(DELAY_MS + 2_000);
+    store.conversationOf(A)!.context.esperaRespuestaEquipo =
+      new Date().toISOString();
+    w.ownerWrites(A, 'Para tu pelo valdría 250 mil');
+    await settle(60_000);
+    expect(w.aiCalls).toEqual([
+      'Les mando la foto de mi cabello',
+      TEAM_ANSWER_TURN,
+    ]);
+    expect(w.sends.filter((s) => s.to === A).at(-1)?.content).toBe(
+      'Perfecto, tu alisado queda en $250.000. ¿Te confirmo el miércoles a las 8:00 a. m.?',
+    );
+    await settle(20 * 60_000);
+    expect(w.aiCalls).toHaveLength(2);
+  });
+
+  it('si el equipo escribe algo sin precio, el bot no retoma por su cuenta', async () => {
+    const store = new Store();
+    const w = world(store);
+    w.inbound(A, 'Les mando la foto de mi cabello');
+    await settle(DELAY_MS + 2_000);
+    store.conversationOf(A)!.context.esperaRespuestaEquipo =
+      new Date().toISOString();
+    w.ownerWrites(A, 'Ya la estoy revisando');
+    await settle(20 * 60_000);
+    expect(w.aiCalls).toHaveLength(1);
+  });
+
+  it('un monto del equipo sin una foto esperando su precio (por ejemplo, un anticipo) no hace retomar al bot', async () => {
+    const store = new Store();
+    const w = world(store);
+    w.inboundImage(A);
+    await settle(DELAY_MS + 2_000);
+    w.ownerWrites(A, 'Recibido tu anticipo de 50 mil');
+    await settle(20 * 60_000);
+    expect(w.aiCalls).toHaveLength(1);
+    expect(store.conversationOf(A)!.context.respuestaEquipo).toBeUndefined();
+  });
+
+  it('cuando el equipo escribe en un chat traspasado, termina la pausa del traspaso', async () => {
+    const store = new Store();
+    const w = world(store);
+    w.inbound(A, 'Hola');
+    await settle(DELAY_MS + 2_000);
+    Object.assign(store.conversationOf(A)!.context, {
+      botPausedUntil: new Date(Date.now() + 4 * 60 * 60_000).toISOString(),
+      botPauseReason: 'Traspaso: queja',
+      handoffAt: new Date().toISOString(),
+    });
+    w.setBotPaused(true);
+    w.ownerWrites(A, 'Hola, ya te ayudo');
+    await settle(2_000);
+    expect(store.conversationOf(A)!.context).toMatchObject({
+      botPausedUntil: null,
+      botPauseReason: null,
+      handoffAt: null,
+    });
+  });
+
+  it('una pausa puesta desde el panel no la quita un mensaje del equipo', async () => {
+    const store = new Store();
+    const w = world(store);
+    w.inbound(A, 'Hola');
+    await settle(DELAY_MS + 2_000);
+    const until = new Date(Date.now() + 60 * 60_000).toISOString();
+    Object.assign(store.conversationOf(A)!.context, {
+      botPausedUntil: until,
+      botPauseReason: 'Pausa manual',
+    });
+    w.setBotPaused(true);
+    w.ownerWrites(A, 'Hola, ya te ayudo');
+    await settle(2_000);
+    expect(store.conversationOf(A)!.context.botPausedUntil).toBe(until);
+  });
+
   it('cada mensaje queda guardado al llegar, antes del debounce', async () => {
     const w = world();
     w.inbound(A, 'guardado de inmediato');
@@ -1360,6 +1475,32 @@ describe('Reinicio por inactividad de la clienta', () => {
     expect(store.resets[0].since).toEqual(last);
     const turn = w.intentHandle.mock.calls[0][0] as { lastBotMessage: unknown };
     expect(turn.lastBotMessage).toBeNull();
+  });
+
+  it('tras reiniciar por inactividad del mismo día no vuelve a saludar ni a presentarse', async () => {
+    const store = new Store();
+    store.lastOutboundValue = { content: 'Hola, Luz 🌿', at: minutesAgo(67) };
+    const w = world(
+      store,
+      () => 'Hola, Luz 🌿 ¿Qué servicio te gustaría agendar el miércoles?',
+    );
+    w.inbound(A, 'Ayúdame a agendar una cita para el miércoles');
+    await settle(DELAY_MS + 2_000);
+    expect((w.promptInputs[0].situation as string[]).join(' ')).toContain(
+      'Ya saludaste a esta persona',
+    );
+    expect(w.sends.map((s) => s.content)).toEqual([
+      '¿Qué servicio te gustaría agendar el miércoles?',
+    ]);
+  });
+
+  it('en la primera respuesta de la conversación sí saluda', async () => {
+    const w = world(new Store(), () => 'Hola, Luz 🌿 ¿En qué te ayudo?');
+    w.inbound(A, 'Hola buenas tardes');
+    await settle(DELAY_MS + 2_000);
+    expect(w.sends.map((s) => s.content)).toEqual([
+      'Hola, Luz 🌿 ¿En qué te ayudo?',
+    ]);
   });
 
   it('dentro del tiempo no se reinicia', async () => {
@@ -1908,7 +2049,7 @@ describe('Situación del chat: primera vez, traspaso y mensajes personales', () 
     expect(store.pendingOf(store.conversationOf(A)!.id)).toHaveLength(0);
   });
 
-  it('tras un traspaso, una pregunta por una cita sí se responde, sin herramientas de traspaso y con la situación explicada', async () => {
+  it('tras un traspaso, una pregunta por una cita sí se responde, sin poder pasar el chat otra vez y con la situación explicada', async () => {
     const store = new Store();
     const w = world(store, (m) =>
       m.includes('cupo') ? 'El viernes tengo a las 2:00 p. m.' : 'Listo 🙏',
@@ -1922,6 +2063,14 @@ describe('Situación del chat: primera vez, traspaso y mensajes personales', () 
     handedOff(store, A);
     w.setBotPaused(true);
 
+    let handoffAttempt:
+      | { ok: boolean; content: Record<string, unknown> }
+      | undefined;
+    w.setToolScript(async (exec, call) => {
+      if (call === 2) {
+        handoffAttempt = await exec({ name: 'pasar_a_persona', arguments: {} });
+      }
+    });
     w.inbound(A, '¿Tienes cupo el viernes para hidratación?');
     await settle(DELAY_MS + 2_000);
 
@@ -1929,7 +2078,9 @@ describe('Situación del chat: primera vez, traspaso y mensajes personales', () 
     expect(w.intentHandle).toHaveBeenCalledTimes(1);
     expect(w.aiInputs[1].tools?.map((t) => t.name)).toEqual([
       'consultar_disponibilidad',
+      'pasar_a_persona',
     ]);
+    expect(handoffAttempt?.content.status).toBe('NOT_ALLOWED_THIS_TURN');
     expect((w.promptInputs[1].situation as string[]).join(' ')).toContain(
       'Este chat ya se pasó al equipo (motivo: Pide las fotos de su visita)',
     );
@@ -2039,7 +2190,7 @@ describe('Respuestas que la clienta entiende y acciones que sí se hacen', () =>
     expect(w.metrics.snapshot().confirmWithoutAction).toBe(1);
   });
 
-  it('ante un "sí" al horario propuesto, ese turno solo puede ejecutar la acción: ni consultar de nuevo ni pasar el chat a una persona', async () => {
+  it('ante un "sí" al horario propuesto, ese turno solo puede ejecutar la acción: ni consultar de nuevo ni pasar el chat a una persona, sin cambiar la lista de herramientas (el prefijo cacheado)', async () => {
     const store = new Store();
     store.lastOutboundValue = {
       content: '¿Te aparto el lunes 23 a las 8:00 a. m.?',
@@ -2051,25 +2202,42 @@ describe('Respuestas que la clienta entiende y acciones que sí se hacen', () =>
         { name: 'crear_reserva_whatsapp', arguments: {}, ok: true },
       ],
     }));
-    w.setTools(
-      [
-        'consultar_cliente',
-        'listar_tratamientos',
+    const offered = [
+      'consultar_cliente',
+      'listar_tratamientos',
+      'disponibilidad_combo',
+      'crear_reserva_whatsapp',
+      'pasar_a_persona',
+    ];
+    w.setTools(offered, ['pasar_a_persona'], [], [], ['consultar_cliente']);
+    const results: Record<
+      string,
+      { ok: boolean; content: Record<string, unknown> }
+    > = {};
+    w.setToolScript(async (exec) => {
+      for (const name of [
         'disponibilidad_combo',
-        'crear_reserva_whatsapp',
         'pasar_a_persona',
-      ],
-      ['pasar_a_persona'],
-      [],
-      [],
-      ['consultar_cliente'],
-    );
+        'consultar_cliente',
+      ]) {
+        results[name] = await exec({ name, arguments: {} });
+      }
+    });
     w.inbound(A, 'Sí, confírmala');
     await settle(DELAY_MS + 2_000);
-    expect(w.aiInputs[0].tools?.map((t) => t.name)).toEqual([
-      'consultar_cliente',
-      'crear_reserva_whatsapp',
-    ]);
+    expect(w.aiInputs[0].tools?.map((t) => t.name)).toEqual(offered);
+    expect(results.disponibilidad_combo.content.status).toBe(
+      'NOT_ALLOWED_THIS_TURN',
+    );
+    expect(results.pasar_a_persona.content.status).toBe(
+      'NOT_ALLOWED_THIS_TURN',
+    );
+    expect(results.consultar_cliente.content.status).not.toBe(
+      'NOT_ALLOWED_THIS_TURN',
+    );
+    expect((w.promptInputs[0].situation as string[]).join(' ')).toContain(
+      'acaba de aceptar el único día y hora',
+    );
   });
 
   it('un "sí" a una lista de varios horarios no fuerza ninguna reserva', async () => {
@@ -2562,8 +2730,44 @@ describe('Resultados de herramientas y traspaso (etapa 6)', () => {
     expect(w.handoffPerform.mock.calls[0][0]).toMatchObject({
       reason: expect.stringMatching(/prometió/),
     });
-    expect(w.sends.map((s) => s.content)).toEqual(['TEXTO FIJO DE TRASPASO']);
+    expect(w.sends.map((s) => s.content)).toEqual([
+      'Una persona de nuestro equipo se pondrá en contacto contigo en breve.',
+    ]);
     expect(w.metrics.snapshot().promiseBlocked).toBe(1);
+  });
+
+  it('si no se pudo avisar a nadie, no se deja la promesa y va el texto de traspaso fallido', async () => {
+    const w = world(
+      new Store(),
+      () =>
+        'Una persona de nuestro equipo se pondrá en contacto contigo en breve.',
+    );
+    w.handoffPerform.mockResolvedValueOnce({
+      notified: false,
+      alreadyHandedOff: false,
+      text: 'TEXTO DE TRASPASO FALLIDO',
+    });
+    w.inbound(A, 'quiero hablar de otro tema con alguien');
+    await settle(DELAY_MS + 2_000);
+    expect(w.sends.map((s) => s.content)).toEqual([
+      'TEXTO DE TRASPASO FALLIDO',
+    ]);
+  });
+
+  it('mientras el equipo revisa su foto, decir que el equipo le escribirá el precio no es un traspaso', async () => {
+    const store = new Store();
+    const w = world(
+      store,
+      () => 'Ya la tiene el equipo y en minutos te escribirá aquí el precio 🌿',
+    );
+    w.inbound(A, 'Les mando la foto');
+    await settle(DELAY_MS + 2_000);
+    store.conversationOf(A)!.context.esperaRespuestaEquipo =
+      new Date().toISOString();
+    w.inbound(A, '¿ya la vieron?');
+    await settle(DELAY_MS + 2_000);
+    expect(w.handoffPerform).toHaveBeenCalledTimes(1);
+    expect(w.sends.filter((s) => s.to === A)).toHaveLength(2);
   });
 
   it('una oferta ("puedo pasarte con una persona") no se bloquea', async () => {
@@ -2618,7 +2822,9 @@ describe('Resultados de herramientas y traspaso (etapa 6)', () => {
     w.inbound(A, 'quiero hablar con alguien por favor ahora');
     await settle(DELAY_MS + 2_000);
     expect(w.handoffPerform).toHaveBeenCalledTimes(1);
-    expect(w.sends[0].content).toBe('TEXTO FIJO DE TRASPASO');
+    expect(w.sends[0].content).toBe(
+      'Listo, una persona del equipo te escribirá por aquí.',
+    );
   });
 
   it('una acción de escritura que falló no se presenta como hecha: reintento y, si insiste, mensaje honesto', async () => {
@@ -4097,6 +4303,36 @@ describe('Camino rápido de la imagen: se analiza al llegar', () => {
         '[imagen verificada por el sistema: VALID',
       );
     });
+
+    it.each(['VALID', 'ERROR'])(
+      'una foto de cabello con %s queda esperando al equipo y prometer su precio no traspasa el chat',
+      async (verdict) => {
+        const w = world(
+          new Store(),
+          () =>
+            'Gracias 🌿 El equipo la revisa y en minutos te escribirá aquí el precio.',
+        );
+        w.setImageAnalysis(true);
+        w.setSpecialistMode('ACTIVE');
+        w.specialistFindMode.mockResolvedValue(bindings('foto-cabello'));
+        w.specialistRun.mockImplementation((input) =>
+          Promise.resolve({
+            ...w.activeOutcome(verdict),
+            capability: input.capability,
+          }),
+        );
+        w.inboundImage(A);
+        await settle(DELAY_MS + 2_000);
+
+        expect(w.handoffPerform).not.toHaveBeenCalled();
+        expect(w.sends.map((s) => s.content)).toEqual([
+          'Gracias 🌿 El equipo la revisa y en minutos te escribirá aquí el precio.',
+        ]);
+        expect(
+          w.store.conversationOf(A)?.context.esperaRespuestaEquipo,
+        ).toEqual(expect.any(String));
+      },
+    );
 
     it('los vínculos en SHADOW no bloquean ni cambian la respuesta', async () => {
       const w = fastWorld();

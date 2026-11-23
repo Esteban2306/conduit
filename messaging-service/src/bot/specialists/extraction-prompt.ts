@@ -1,4 +1,5 @@
 import {
+  DEFAULT_STRING_LENGTH,
   ExtractionOutput,
   OutputSchemaDocument,
   Variable,
@@ -13,7 +14,7 @@ function shapeOf(variable: Variable): string {
     case 'number':
       return '<número o null>';
     case 'string':
-      return '<texto o null>';
+      return `<texto o null, máximo ${variable.maxLength ?? DEFAULT_STRING_LENGTH} caracteres>`;
     case 'boolean':
       return '<true, false o null>';
     case 'date':
@@ -69,6 +70,43 @@ function hasForbiddenKeys(value: unknown, depth = 0): boolean {
   );
 }
 
+function clipText(value: string, max: number): string {
+  if (value.length <= max) return value;
+  const cut = value.slice(0, max);
+  const space = cut.lastIndexOf(' ');
+  return (space > max * 0.6 ? cut.slice(0, space) : cut).trimEnd();
+}
+
+function withClippedTexts(
+  json: unknown,
+  schema: OutputSchemaDocument,
+): unknown {
+  if (json === null || typeof json !== 'object' || Array.isArray(json)) {
+    return json;
+  }
+  const variables = (json as Record<string, unknown>).variables;
+  if (
+    variables === null ||
+    typeof variables !== 'object' ||
+    Array.isArray(variables)
+  ) {
+    return json;
+  }
+  const clipped: Record<string, unknown> = {
+    ...(variables as Record<string, unknown>),
+  };
+  for (const variable of schema.variables) {
+    const value = clipped[variable.name];
+    if (variable.type === 'string' && typeof value === 'string') {
+      clipped[variable.name] = clipText(
+        value,
+        variable.maxLength ?? DEFAULT_STRING_LENGTH,
+      );
+    }
+  }
+  return { ...(json as Record<string, unknown>), variables: clipped };
+}
+
 export type ParsedExtraction =
   | { ok: true; output: ExtractionOutput }
   | { ok: false; reason: 'OUTPUT_NOT_JSON' | 'OUTPUT_INVALID' };
@@ -85,7 +123,9 @@ export function parseExtraction(
     return { ok: false, reason: 'OUTPUT_NOT_JSON' };
   }
   if (hasForbiddenKeys(json)) return { ok: false, reason: 'OUTPUT_INVALID' };
-  const parsed = extractionSchemaFor(schema).safeParse(json);
+  const parsed = extractionSchemaFor(schema).safeParse(
+    withClippedTexts(json, schema),
+  );
   return parsed.success
     ? { ok: true, output: parsed.data }
     : { ok: false, reason: 'OUTPUT_INVALID' };

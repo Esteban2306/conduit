@@ -62,7 +62,29 @@ import {
   transcribedContent,
 } from '../ai/AudioTranscriptionService';
 import { SystemPauseService } from '../pause/SystemPause.service';
-import { FAILURE_STREAKS_KEY } from '../handoff/handoff-defaults';
+import {
+  FAILURE_STREAKS_KEY,
+  HANDOFF_AT_KEY,
+} from '../handoff/handoff-defaults';
+import {
+  AWAITING_TEAM_KEY,
+  TEAM_ANSWER_KEY,
+  TEAM_ANSWER_TAKEOVER_MS,
+  TEAM_ANSWER_TURN,
+  answersWithAmount,
+  awaitsTeamAnswer,
+  isHandoffPause,
+  takeoverEndsAt,
+} from './team-reply';
+import {
+  SPANISH_ONLY_INSTRUCTION,
+  withoutLeakedNarration,
+} from './leaked-narration';
+import {
+  ALREADY_GREETED_NOTE,
+  GREETED_WINDOW_MS,
+  withoutRepeatedGreeting,
+} from './repeated-greeting';
 import { promisesHumanContact } from '../handoff/handoff-promise';
 import { TurnBudget } from '../ai/turn-budget';
 import { limitToolData } from '../tools/tool-result-limit';
@@ -107,6 +129,7 @@ import {
   personalChatNote,
   personalChatPatch,
 } from './chat-situation';
+import { AFFIRMED_SLOT_NOTE, blockedToolsForTurn } from './turn-tools';
 import {
   conversationAddress,
   isIgnorableJid,
@@ -694,7 +717,27 @@ export class BotRouter {
       conversationId,
       botConfig.maxHistoryMessages,
     );
-    if (aiData.pending.length === 0) return;
+    let teamResume = false;
+    if (aiData.pending.length === 0) {
+      const answer = await this.conversationService.teamAnswerToResume(
+        conversationId,
+        aiData.context,
+      );
+      if (!answer) return;
+      teamResume = true;
+      aiData.pending = [
+        {
+          id: answer.id,
+          content: TEAM_ANSWER_TURN,
+          hasImage: false,
+          waMessageId: null,
+          createdAt: answer.createdAt,
+        },
+      ];
+      this.logger.log(
+        `El equipo respondió en el chat de ${maskChat(phoneNumber)}: el bot retoma la conversación desde ahí.`,
+      );
+    }
     turn.answeredUntil = this.lastInboundAt(aiData.pending);
 
     this.readGates.set(conversationId, this.markTurnRead(turn, aiData.pending));
@@ -703,11 +746,17 @@ export class BotRouter {
       botConfig.id,
       phoneNumber,
     );
-    const freshStart = this.isIdleSince(
-      lastBotMessage,
-      botConfig.conversationTimeoutMinutes ?? 60,
-      aiData.context,
-    );
+    const freshStart =
+      !teamResume &&
+      this.isIdleSince(
+        lastBotMessage,
+        botConfig.conversationTimeoutMinutes ?? 60,
+        aiData.context,
+      );
+    const greetedEarlier =
+      freshStart &&
+      !!lastBotMessage &&
+      Date.now() - lastBotMessage.at.getTime() < GREETED_WINDOW_MS;
     if (freshStart && lastBotMessage) {
       this.logger.log(
         `Conversación ${conversationId} sin respuesta de la clienta por más de ${botConfig.conversationTimeoutMinutes ?? 60} min: se empieza de cero.`,
@@ -754,35 +803,36 @@ export class BotRouter {
       .filter((m) => !m.hasImage)
       .map((m) => m.content)
       .join('\n');
-    const intentOutcome: IntentOutcome = handoffQuiet
-      ? { handled: false }
-      : await this.intentHandler.handle({
-          tenantId,
-          botConfigId: botConfig.id,
-          conversationId,
-          phoneNumber,
-          connectionId,
-          text: aiData.pending.some((m) => m.hasImage) ? '' : intentText,
-          hasImage: aiData.pending.some((m) => m.hasImage),
-          turnId: aiData.pending[aiData.pending.length - 1].id,
-          context: aiData.context,
-          pendingIds: aiData.pending.map((m) => m.id),
-          lastBotMessage: freshStart ? null : lastBotMessage,
-          loadTools: () =>
-            this.toolDefinitionService.getActiveToolsForBot(botConfig.id),
-          send: async (reply) => {
-            this.publishResponseRequest(
-              conversationId,
-              botConfig.id,
-              intentText,
-              false,
-            );
-            // Reglas e intenciones fijas (baja, abuso…) ya dejaron su efecto.
-            await this.sendReply(turn, reply, 0, undefined, {
-              mustDeliver: true,
-            });
-          },
-        });
+    const intentOutcome: IntentOutcome =
+      handoffQuiet || teamResume
+        ? { handled: false }
+        : await this.intentHandler.handle({
+            tenantId,
+            botConfigId: botConfig.id,
+            conversationId,
+            phoneNumber,
+            connectionId,
+            text: aiData.pending.some((m) => m.hasImage) ? '' : intentText,
+            hasImage: aiData.pending.some((m) => m.hasImage),
+            turnId: aiData.pending[aiData.pending.length - 1].id,
+            context: aiData.context,
+            pendingIds: aiData.pending.map((m) => m.id),
+            lastBotMessage: freshStart ? null : lastBotMessage,
+            loadTools: () =>
+              this.toolDefinitionService.getActiveToolsForBot(botConfig.id),
+            send: async (reply) => {
+              this.publishResponseRequest(
+                conversationId,
+                botConfig.id,
+                intentText,
+                false,
+              );
+              // Reglas e intenciones fijas (baja, abuso…) ya dejaron su efecto.
+              await this.sendReply(turn, reply, 0, undefined, {
+                mustDeliver: true,
+              });
+            },
+          });
     if (intentOutcome.handled) return;
     const slim = intentOutcome.slim;
     const notices = [...(intentOutcome.notices ?? [])];
@@ -812,7 +862,7 @@ export class BotRouter {
     const imageAvailable = hasImage || !!imageMessage;
 
     let userMessageForAI = combinedText || '[imagen recibida]';
-    if (!hasImage && imageMessage) {
+    if (!hasImage && imageMessage && !teamResume) {
       userMessageForAI = `[la clienta ya envió una imagen en esta conversación y sigue disponible para registrarla]\n${userMessageForAI}`;
     }
     let imageVerified: boolean | undefined;
@@ -867,21 +917,26 @@ export class BotRouter {
       ACTION_PROPOSAL.test(lastBotMessage.content) &&
       proposesSingleSlot(lastBotMessage.content) &&
       isAffirmation(intentText);
-    const tools = (
-      slim ? allTools.filter((t) => slim.tools.includes(t.spec.name)) : allTools
-    )
-      .filter(
-        (t) =>
-          !(handoffQuiet || affirmsSlot) || (t.pausesBotMinutes ?? 0) === 0,
-      )
-      .filter((t) => !affirmsSlot || !t.readOnly || t.pinResultInMemory);
+    const tools = slim
+      ? allTools.filter((t) => slim.tools.includes(t.spec.name))
+      : allTools;
+    const blockedThisTurn = blockedToolsForTurn(tools, {
+      handoffQuiet,
+      affirmsSlot,
+    });
     const toolByName = new Map(tools.map((t) => [t.spec.name, t]));
     const readOnlyTools = new Set(
       tools.filter((t) => t.readOnly).map((t) => t.spec.name),
     );
 
+    const alreadyGreeted =
+      greetedEarlier ||
+      teamResume ||
+      aiData.history.some((h) => h.role === MessageRole.ASSISTANT);
     const situation: string[] = [];
+    if (greetedEarlier) situation.push(ALREADY_GREETED_NOTE);
     if (handoffQuiet) situation.push(handoffQuietNote(aiData.context));
+    if (affirmsSlot) situation.push(AFFIRMED_SLOT_NOTE);
     const personalNote = handoffQuiet ? null : personalChatNote(aiData.context);
     if (personalNote) situation.push(personalNote);
     const firstContact =
@@ -953,6 +1008,22 @@ export class BotRouter {
             return {
               ok: false,
               content: { error: true, message: 'Tool desconocida.' },
+            };
+          }
+          const blocked = blockedThisTurn.get(req.name);
+          if (blocked) {
+            record(req.name, {
+              kind: 'EXPECTED',
+              httpStatus: null,
+              code: 'NOT_ALLOWED_THIS_TURN',
+            });
+            return {
+              ok: false,
+              content: {
+                error: true,
+                status: 'NOT_ALLOWED_THIS_TURN',
+                message: blocked,
+              },
             };
           }
 
@@ -1398,7 +1469,41 @@ export class BotRouter {
       }
     }
 
-    if (this.receiptTracker.isChatActive(sessionKey, 30000)) {
+    const narration = withoutLeakedNarration(aiResult.content);
+    if (narration.dropped > 0) {
+      this.replyMetrics.increment('leakedNarration');
+      this.logger.warn(
+        `La IA escribió ${narration.dropped} párrafo(s) que no eran para la clienta (razonamiento o inglés) en ${maskChat(phoneNumber)}: no se envían.`,
+      );
+      if (narration.content) {
+        aiResult = { ...aiResult, content: narration.content };
+      } else {
+        let retried: typeof aiResult | null = null;
+        try {
+          retried = await generate({
+            appendInstruction: SPANISH_ONLY_INSTRUCTION,
+          });
+        } catch (error) {
+          this.logger.error(
+            `Fallo el reintento en español: ${maskError(error)}`,
+          );
+        }
+        const clean = retried
+          ? withoutLeakedNarration(retried.content).content
+          : '';
+        if (!retried || isBlank(clean)) {
+          await this.handleAiUnavailable(
+            turn,
+            aiData.context,
+            'La IA respondió dos veces con su razonamiento en vez del mensaje',
+          );
+          return;
+        }
+        aiResult = { ...retried, content: clean };
+      }
+    }
+
+    if (this.receiptTracker.isChatActive(sessionKey, OWNER_ACTIVE_DISCARD_MS)) {
       this.logger.log(
         `Dueño activo mientras la IA procesaba. Respuesta descartada; se reintenta después.`,
       );
@@ -1438,7 +1543,10 @@ export class BotRouter {
       return;
     }
 
-    let reply = guarded.content;
+    let reply =
+      alreadyGreeted && !guarded.replaced
+        ? withoutRepeatedGreeting(guarded.content)
+        : guarded.content;
     let tokensUsed = aiResult.tokensUsed;
 
     if (
@@ -2125,10 +2233,22 @@ export class BotRouter {
       .join(' | ')
       .slice(0, 100);
 
+    const forTeam = shown.some(
+      (outcome) =>
+        outcome.capability !== IMAGE_ANALYSIS_CAPABILITY &&
+        TEAM_REVIEW_VERDICTS.has(outcome.result.verdict),
+    );
+    if (forTeam) {
+      ctx.aiData.context = {
+        ...ctx.aiData.context,
+        [AWAITING_TEAM_KEY]: new Date().toISOString(),
+      };
+    }
     try {
       await this.conversationService.updateContext(ctx.conversationId, {
         contextPatch: {
           [FACTS_KEY]: facts,
+          ...(forTeam && { [AWAITING_TEAM_KEY]: new Date().toISOString() }),
           ...(imageVerified !== undefined && { imageVerified }),
           lastImageDetails: details,
           ...(hasError
@@ -2362,7 +2482,7 @@ export class BotRouter {
     const { turn, recorded, modelHandoff } = input;
     const pending = unresolvedFailures(recorded);
 
-    const handoff = async (reason: string) => {
+    const handoff = async (reason: string, keepReply = false) => {
       const result = await this.handoffService.perform({
         tenantId: turn.tenantId,
         botConfigId: turn.botConfig.id,
@@ -2374,7 +2494,9 @@ export class BotRouter {
         context: input.context,
         loadTools: input.loadTools,
       });
-      return { content: result.text, replaced: true };
+      return keepReply && result.notified
+        ? { content: input.content, replaced: false }
+        : { content: result.text, replaced: true };
     };
 
     const fault = pending.find(
@@ -2395,13 +2517,19 @@ export class BotRouter {
     }
 
     const teamNotified = recorded.some((call) => call.teamNotified === true);
-    if (!modelHandoff && !teamNotified && promisesHumanContact(input.content)) {
+    if (
+      !modelHandoff &&
+      !teamNotified &&
+      !awaitsTeamAnswer(input.context) &&
+      promisesHumanContact(input.content)
+    ) {
       this.replyMetrics.increment('promiseBlocked');
       this.logger.warn(
         `La IA prometió una persona sin traspaso para ${turn.phoneNumber}; se hace el traspaso real.`,
       );
       return handoff(
         'La IA prometió que una persona escribiría sin haber hecho el traspaso',
+        true,
       );
     }
 
@@ -2505,7 +2633,51 @@ export class BotRouter {
 
     if (!conversation) return;
 
-    await this.conversationService.saveHumanOutbound(conversation.id, text);
+    const saved = await this.conversationService.saveHumanOutbound(
+      conversation.id,
+      text,
+    );
+    const context = (conversation.context ?? {}) as Record<string, unknown>;
+    const endsHandoff =
+      this.conversationService.isBotPaused(context) && isHandoffPause(context);
+    if (endsHandoff) {
+      this.logger.log(
+        `El equipo ya escribió en el chat de ${maskChat(phoneNumber)}: termina la pausa del traspaso y rige la espera normal tras su último mensaje.`,
+      );
+    }
+    const handoffEnd = endsHandoff
+      ? { botPausedUntil: null, botPauseReason: null, [HANDOFF_AT_KEY]: null }
+      : {};
+    const answersPhoto = awaitsTeamAnswer(context) && answersWithAmount(text);
+    if (!answersPhoto && endsHandoff) {
+      await this.conversationService.updateContext(conversation.id, {
+        contextPatch: handoffEnd,
+      });
+    }
+    if (answersPhoto) {
+      await this.conversationService.updateContext(conversation.id, {
+        contextPatch: {
+          ...handoffEnd,
+          [AWAITING_TEAM_KEY]: null,
+          [TEAM_ANSWER_KEY]: saved.id,
+        },
+      });
+      this.logger.log(
+        `El equipo respondió con un precio la foto de ${maskChat(phoneNumber)}: el bot sigue enseguida.`,
+      );
+      this.scheduleRetry(
+        {
+          tenantId,
+          sessionKey,
+          phoneNumber,
+          botConfig,
+          connectionId,
+          conversationId: conversation.id,
+        },
+        Math.max(TEAM_ANSWER_TAKEOVER_MS, OWNER_ACTIVE_DISCARD_MS) + 1000,
+      );
+      return;
+    }
 
     this.logger.debug(`Takeover humano registrado para ${phoneNumber}`);
   }
@@ -2587,7 +2759,7 @@ export class BotRouter {
       );
 
     return lastHumanMessage
-      ? new Date(lastHumanMessage.createdAt.getTime() + takeoverMs)
+      ? takeoverEndsAt(lastHumanMessage, takeoverMs)
       : null;
   }
 
@@ -2667,6 +2839,14 @@ export class BotRouter {
     });
   }
 }
+
+const OWNER_ACTIVE_DISCARD_MS = 30_000;
+
+const TEAM_REVIEW_VERDICTS = new Set<string>([
+  'VALID',
+  'NEEDS_REVIEW',
+  'ERROR',
+]);
 
 const COMPLETED_CLAIM =
   /\b(?:qued[oó]|quedaron|ya est[aá]|fue|ha sido|se (?:agend[oó]|reserv[oó]|cancel[oó]|reagend[oó]|registr[oó]|cre[oó]))\s*(?:ya\s*)?(?:agendad[ao]s?|reservad[ao]s?|cancelad[ao]s?|reagendad[ao]s?|confirmad[ao]s?|registrad[ao]s?|cread[ao]s?)?\b/i;

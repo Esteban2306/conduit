@@ -1,3 +1,4 @@
+import { AWAITING_TEAM_KEY, TEAM_ANSWER_KEY } from '../router/team-reply';
 import { Injectable } from '@nestjs/common';
 import { ConversationContext } from '../conversation/interfaces/ConversationContext';
 import { FACTS_KEY, renderFacts } from '../specialists/facts';
@@ -44,6 +45,8 @@ const EXCLUDED = new Set([
   'aiFallbackNotified',
   PERSONAL_CHAT_AT_KEY,
   PERSONAL_CHAT_TEXT_KEY,
+  AWAITING_TEAM_KEY,
+  TEAM_ANSWER_KEY,
 ]);
 
 export const MAX_SUMMARY_CHARS = 1500;

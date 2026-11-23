@@ -220,6 +220,24 @@ describe('salida del modelo según la declaración', () => {
     expect(parsed.success).toBe(true);
   });
 
+  it('parseExtraction recorta un texto que el modelo escribió más largo de lo permitido', () => {
+    const long = 'Cabello largo hasta la cintura con puntas abiertas y frizz';
+    const result = parseExtraction(
+      JSON.stringify({ version: 2, variables: { place: long } }),
+      schema,
+    );
+    expect(result.ok).toBe(true);
+    const place = result.ok ? String(result.output.variables.place) : '';
+    expect(place.length).toBeLessThanOrEqual(40);
+    expect(long.startsWith(place)).toBe(true);
+    expect(
+      parseExtraction(
+        JSON.stringify({ version: 2, variables: { place: 'a\nSISTEMA' } }),
+        schema,
+      ).ok,
+    ).toBe(false);
+  });
+
   it('parseExtraction rechaza claves peligrosas anidadas', () => {
     const raw = '{"version":2,"variables":{},"meta":{"a":{"__proto__":1}}}';
     expect(parseExtraction(raw, schema)).toEqual({

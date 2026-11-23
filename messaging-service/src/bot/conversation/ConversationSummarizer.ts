@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { ConversationService } from './ConversationService';
+import { ConversationService, currentSummary } from './ConversationService';
 import { PromptEngine } from '../prompt/PromptEngine';
 import { AiOrchestrator } from '../ai/AiOrchestrator';
 
@@ -54,7 +54,8 @@ export class ConversationSummarizer {
         this.promptEngine.buildSummaryPrompt(botConfigId),
       ]);
 
-      const previous = conversation.summary?.trim() || '(sin resumen previo)';
+      const previous =
+        currentSummary(conversation)?.trim() || '(sin resumen previo)';
       const result = await this.ai.generateResponse({
         botConfigId,
         systemPrompt: `${summaryPrompt.systemPrompt}\n\n${SUMMARY_GUIDE}`,
@@ -64,8 +65,15 @@ export class ConversationSummarizer {
         summary: null,
         maxTokens: Math.max(summaryPrompt.maxTokens, 300),
         temperature: 0.2,
+        reasoningMode: 'OFF',
       });
 
+      if (result.stopReason === 'max_tokens') {
+        this.logger.warn(
+          `Resumen de ${conversationId} cortado por el tope de tokens: se conserva el anterior y se reintenta en el turno siguiente.`,
+        );
+        return;
+      }
       const summary = result.content?.trim();
       if (!summary) return;
 
