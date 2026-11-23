@@ -46,6 +46,9 @@ describe('respuesta del equipo a una foto que el bot le pasó', () => {
     ).toBe(false);
     expect(awaitsTeamAnswer({}, NOW)).toBe(false);
     expect(answersWithAmount('Serán 200 para tu cabello')).toBe(true);
+    expect(answersWithAmount('Te queda en $250.000')).toBe(true);
     expect(answersWithAmount('ya la reviso')).toBe(false);
+    expect(answersWithAmount('te espero a las 10')).toBe(false);
+    expect(answersWithAmount('a las 10:30 el 19/12')).toBe(false);
   });
 });

@@ -13,8 +13,11 @@ export function awaitsTeamAnswer(
   return Number.isFinite(at) && now - at <= AWAITING_TEAM_MAX_MS;
 }
 
+const AMOUNT =
+  /(?<![\d:/])(?<!\blas\s)\b\d{2,}(?:[.,]\d{3})*\b(?![:/]\d|\s*(?:h\b|horas?|min|a\.?\s?m|p\.?\s?m))/i;
+
 export function answersWithAmount(text: string): boolean {
-  return /\d/.test(text);
+  return AMOUNT.test(text);
 }
 
 export function takeoverEndsAt(
