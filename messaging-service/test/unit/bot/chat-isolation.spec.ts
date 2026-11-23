@@ -206,6 +206,39 @@ class Store {
               };
         },
       ),
+      resumeBot: later(() => undefined),
+      lastInboundIsImage: later((conversationId: string) => {
+        const last = this.messages
+          .filter(
+            (m) =>
+              m.conversationId === conversationId && m.direction === 'INBOUND',
+          )
+          .sort((a, b) => b.createdAt - a.createdAt)[0];
+        return !!last?.hasImage;
+      }),
+      restoreIgnoredSinceLastReply: later((conversationId: string) => {
+        const own = this.messages.filter(
+          (m) => m.conversationId === conversationId,
+        );
+        const lastReply = Math.max(
+          0,
+          ...own
+            .filter((m) => m.direction === 'OUTBOUND')
+            .map((m) => m.createdAt),
+        );
+        let count = 0;
+        for (const m of own) {
+          if (
+            m.direction === 'INBOUND' &&
+            m.processedBy === 'ignored' &&
+            m.createdAt > lastReply
+          ) {
+            m.processedBy = 'user';
+            count++;
+          }
+        }
+        return count;
+      }),
       findActiveByPhone: later(
         (bot: string, phone: string) => this.conversationOf(phone, bot) ?? null,
       ),
@@ -1025,7 +1058,9 @@ describe('Aislamiento de chats (etapa 1)', () => {
     store.conversationOf(A)!.context.esperaRespuestaEquipo =
       new Date().toISOString();
     w.ownerWrites(A, 'Para tu pelo valdría 250 mil');
-    await settle(60_000);
+    await settle(4 * 60_000);
+    expect(w.aiCalls).toEqual(['Les mando la foto de mi cabello']);
+    await settle(2 * 60_000);
     expect(w.aiCalls).toEqual([
       'Les mando la foto de mi cabello',
       TEAM_ANSWER_TURN,
@@ -1035,6 +1070,64 @@ describe('Aislamiento de chats (etapa 1)', () => {
     );
     await settle(20 * 60_000);
     expect(w.aiCalls).toHaveLength(2);
+  });
+
+  it('si el equipo sigue escribiendo, la espera de 5 minutos cuenta desde su último mensaje', async () => {
+    const store = new Store();
+    const w = world(store, (m) =>
+      m === TEAM_ANSWER_TURN
+        ? 'Perfecto, te confirmo la cita.'
+        : `respuesta a: ${m}`,
+    );
+    w.inbound(A, 'Les mando la foto de mi cabello');
+    await settle(DELAY_MS + 2_000);
+    store.conversationOf(A)!.context.esperaRespuestaEquipo =
+      new Date().toISOString();
+    w.ownerWrites(A, 'Para tu pelo valdría 250 mil');
+    await settle(4 * 60_000);
+    w.ownerWrites(A, 'Y te queda bien con la hidratación incluida');
+    await settle(4 * 60_000);
+    expect(w.aiCalls).toHaveLength(1);
+    await settle(2 * 60_000);
+    expect(w.aiCalls).toEqual([
+      'Les mando la foto de mi cabello',
+      TEAM_ANSWER_TURN,
+    ]);
+  });
+
+  it('si el bot pidió la foto del cabello y llega una imagen, el precio del equipo hace seguir la cita aunque el análisis falle', async () => {
+    const store = new Store();
+    const w = world(store, (m) =>
+      m === TEAM_ANSWER_TURN
+        ? 'Listo, con ese precio te confirmo.'
+        : 'Envíame una foto de tu cabello desde atrás. El equipo la revisará y te escribirá el precio por aquí.',
+    );
+    w.inbound(A, '¿te mando foto para el precio?');
+    await settle(DELAY_MS + 2_000);
+    expect(w.handoffPerform).not.toHaveBeenCalled();
+    expect(store.conversationOf(A)!.context.fotoPedidaEn).toEqual(
+      expect.any(String),
+    );
+    w.inboundImage(A);
+    await settle(2_000);
+    w.ownerWrites(A, 'Costaría 250000');
+    await settle(6 * 60_000);
+    expect(w.aiCalls.at(-1)).toBe(TEAM_ANSWER_TURN);
+    expect(w.handoffPerform).not.toHaveBeenCalled();
+  });
+
+  it('al reactivar el bot desde el panel, responde lo que la clienta escribió mientras estuvo en pausa', async () => {
+    const store = new Store();
+    const w = world(store);
+    w.inbound(A, 'Hola');
+    await settle(DELAY_MS + 2_000);
+    w.inbound(A, 'A las 7 está bien');
+    await settle(100);
+    const last = store.messages.at(-1)!;
+    last.processedBy = 'ignored';
+    await w.router.resumeConversation(`conv-${A}`, TENANT);
+    await settle(DELAY_MS + 2_000);
+    expect(w.aiCalls).toEqual(['Hola', 'A las 7 está bien']);
   });
 
   it('si el equipo escribe algo sin precio, el bot no retoma por su cuenta', async () => {

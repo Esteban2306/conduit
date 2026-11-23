@@ -1,7 +1,8 @@
 export const AWAITING_TEAM_KEY = 'esperaRespuestaEquipo';
 export const TEAM_ANSWER_KEY = 'respuestaEquipo';
 export const AWAITING_TEAM_MAX_MS = 3 * 60 * 60 * 1000;
-export const TEAM_ANSWER_TAKEOVER_MS = 15 * 1000;
+export const TEAM_ANSWER_TAKEOVER_MS = 5 * 60 * 1000;
+export const PHOTO_REQUESTED_KEY = 'fotoPedidaEn';
 
 export function awaitsTeamAnswer(
   context: Record<string, unknown>,
@@ -39,4 +40,28 @@ export const TEAM_ANSWER_TURN =
 export function isHandoffPause(context: Record<string, unknown>): boolean {
   const reason = context.botPauseReason;
   return typeof reason === 'string' && reason.startsWith('Traspaso:');
+}
+
+export const TEAM_ANSWER_NOTE =
+  'La persona del equipo ya le respondió en este chat (su último mensaje está en el historial). Tómalo como dato cierto: si es un precio, es el precio de su servicio; guárdalo con la herramienta del precio del equipo si la tienes, no lo cuestiones ni lo compares con el rango y sigue agendando con ese precio, sin pasar el chat a una persona por eso.';
+
+const HAIR_PHOTO_REQUEST =
+  /\b(?:envi[ae]|enviame|envianos|manda|mandame|mandanos|comparte|compartenos|compartime|adjunta)\b[^.?!\n]{0,80}\bfotos?\b[^.?!\n]{0,80}\b(?:cabello|pelo)\b/;
+
+export function asksForHairPhoto(text: string): boolean {
+  const plain = text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+  return HAIR_PHOTO_REQUEST.test(plain);
+}
+
+export function photoRequestedRecently(
+  context: Record<string, unknown>,
+  now = Date.now(),
+): boolean {
+  const at = context[PHOTO_REQUESTED_KEY];
+  if (typeof at !== 'string') return false;
+  const time = new Date(at).getTime();
+  return Number.isFinite(time) && now - time <= AWAITING_TEAM_MAX_MS;
 }

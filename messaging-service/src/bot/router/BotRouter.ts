@@ -71,6 +71,11 @@ import {
   TEAM_ANSWER_KEY,
   TEAM_ANSWER_TAKEOVER_MS,
   TEAM_ANSWER_TURN,
+  TEAM_ANSWER_NOTE,
+  AWAITING_TEAM_MAX_MS,
+  PHOTO_REQUESTED_KEY,
+  asksForHairPhoto,
+  photoRequestedRecently,
   answersWithAmount,
   awaitsTeamAnswer,
   isHandoffPause,
@@ -539,6 +544,7 @@ export class BotRouter {
     const conversation =
       await this.conversationService.findById(conversationId);
     await this.conversationService.resumeBot(conversationId);
+    await this.conversationService.restoreIgnoredSinceLastReply(conversationId);
 
     if (!conversation.lastConnectionId) return;
     const botConfig = await this.botConfigService.getConfigForRouting(
@@ -866,6 +872,13 @@ export class BotRouter {
       userMessageForAI = `[la clienta ya envió una imagen en esta conversación y sigue disponible para registrarla]\n${userMessageForAI}`;
     }
     let imageVerified: boolean | undefined;
+    if (hasImage && photoRequestedRecently(aiData.context)) {
+      const since = new Date().toISOString();
+      aiData.context = { ...aiData.context, [AWAITING_TEAM_KEY]: since };
+      await this.conversationService.updateContext(conversationId, {
+        contextPatch: { [AWAITING_TEAM_KEY]: since },
+      });
+    }
 
     if (hasImage && imageMessage && botConfig.imageAnalysisEnabled) {
       const routing = botConfig as { id: string; systemPrompt: string };
@@ -935,6 +948,15 @@ export class BotRouter {
       aiData.history.some((h) => h.role === MessageRole.ASSISTANT);
     const situation: string[] = [];
     if (greetedEarlier) situation.push(ALREADY_GREETED_NOTE);
+    if (
+      !teamResume &&
+      (await this.conversationService.teamAnswerToResume(
+        conversationId,
+        aiData.context,
+      ))
+    ) {
+      situation.push(TEAM_ANSWER_NOTE);
+    }
     if (handoffQuiet) situation.push(handoffQuietNote(aiData.context));
     if (affirmsSlot) situation.push(AFFIRMED_SLOT_NOTE);
     const personalNote = handoffQuiet ? null : personalChatNote(aiData.context);
@@ -1720,6 +1742,11 @@ export class BotRouter {
     const sent = await this.sendReply(turn, reply, tokensUsed, imageVerified, {
       mustDeliver,
     });
+    if (sent && asksForHairPhoto(reply)) {
+      await this.conversationService.updateContext(conversationId, {
+        contextPatch: { [PHOTO_REQUESTED_KEY]: new Date().toISOString() },
+      });
+    }
     if (sent && notices.length > 0) {
       this.intentHandler.markNoticesDelivered(
         conversationId,
@@ -2521,6 +2548,7 @@ export class BotRouter {
       !modelHandoff &&
       !teamNotified &&
       !awaitsTeamAnswer(input.context) &&
+      !asksForHairPhoto(input.content) &&
       promisesHumanContact(input.content)
     ) {
       this.replyMetrics.increment('promiseBlocked');
@@ -2648,7 +2676,20 @@ export class BotRouter {
     const handoffEnd = endsHandoff
       ? { botPausedUntil: null, botPauseReason: null, [HANDOFF_AT_KEY]: null }
       : {};
-    const answersPhoto = awaitsTeamAnswer(context) && answersWithAmount(text);
+    const awaitingPhotoPrice =
+      awaitsTeamAnswer(context) ||
+      (photoRequestedRecently(context) &&
+        (await this.conversationService.lastInboundIsImage(
+          conversation.id,
+          AWAITING_TEAM_MAX_MS,
+        )));
+    const continuesAnswer =
+      (await this.conversationService.teamAnswerToResume(
+        conversation.id,
+        context,
+      )) !== null;
+    const answersPhoto =
+      continuesAnswer || (awaitingPhotoPrice && answersWithAmount(text));
     if (!answersPhoto && endsHandoff) {
       await this.conversationService.updateContext(conversation.id, {
         contextPatch: handoffEnd,
@@ -2663,7 +2704,7 @@ export class BotRouter {
         },
       });
       this.logger.log(
-        `El equipo respondió con un precio la foto de ${maskChat(phoneNumber)}: el bot sigue enseguida.`,
+        `El equipo respondió con un precio la foto de ${maskChat(phoneNumber)}: el bot sigue con la cita 5 minutos después de su último mensaje.`,
       );
       this.scheduleRetry(
         {
