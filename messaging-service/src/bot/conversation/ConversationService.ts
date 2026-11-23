@@ -18,7 +18,10 @@ import { UpdateContextDto } from './dto/UpdateContext.dto';
 import { EventBusService } from 'src/infra/events/event.service';
 import { EVENT_TYPES } from 'src/infra/events/constants/event.types';
 import { PINNED_MEMORY_KEY, pinEntry } from './pinned-memory';
-import { TEAM_ANSWER_KEY } from '../router/team-reply';
+import {
+  TEAM_ANSWER_KEY,
+  TEAM_ANSWER_RESUME_MS,
+} from '../router/team-reply';
 
 const CLOSED_STATUSES: ConversationStatus[] = [
   ConversationStatus.COMPLETED,
@@ -208,6 +211,50 @@ export class ConversationService {
     return message
       ? { ...message, answersPhoto: context[TEAM_ANSWER_KEY] === message.id }
       : null;
+  }
+
+  async teamAnswerToResume(
+    conversationId: string,
+    context: ConversationContext,
+    now = Date.now(),
+  ): Promise<{ id: string; content: string; createdAt: Date } | null> {
+    const id = context[TEAM_ANSWER_KEY];
+    if (typeof id !== 'string') return null;
+    const answer = await this.prisma.botMessage.findFirst({
+      where: {
+        id,
+        conversationId,
+        direction: MessageDirection.OUTBOUND,
+        processedBy: 'human',
+        createdAt: { gte: new Date(now - TEAM_ANSWER_RESUME_MS) },
+      },
+      select: { id: true, content: true, createdAt: true },
+    });
+    if (!answer) return null;
+    const answeredAfter = await this.prisma.botMessage.count({
+      where: {
+        conversationId,
+        direction: MessageDirection.OUTBOUND,
+        processedBy: { not: 'human' },
+        createdAt: { gt: answer.createdAt },
+      },
+    });
+    return answeredAfter === 0 ? answer : null;
+  }
+
+  async lastInboundIsImage(
+    conversationId: string,
+    withinMs: number,
+    now = Date.now(),
+  ): Promise<boolean> {
+    const last = await this.prisma.botMessage.findFirst({
+      where: { conversationId, direction: MessageDirection.INBOUND },
+      orderBy: { createdAt: 'desc' },
+      select: { hasImage: true, createdAt: true },
+    });
+    return (
+      !!last && last.hasImage && now - last.createdAt.getTime() <= withinMs
+    );
   }
 
   async saveHumanOutbound(

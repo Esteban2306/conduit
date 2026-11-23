@@ -51,7 +51,7 @@ const MIN_ENGLISH_WORDS = 4;
 const MIN_ENGLISH_RATIO = 0.25;
 
 export const SPANISH_ONLY_INSTRUCTION =
-  'Escribe solo el mensaje para la clienta, en español. No expliques lo que vas a hacer ni lo que ves en los datos.';
+  'Escribe solo el mensaje para la clienta, en español. No expliques lo que vas a hacer, lo que ves en los datos ni cómo calculaste una fecha o un precio.';
 
 export function looksEnglish(paragraph: string): boolean {
   const words = paragraph
@@ -64,12 +64,32 @@ export function looksEnglish(paragraph: string): boolean {
   return hits >= MIN_ENGLISH_WORDS && hits / words.length >= MIN_ENGLISH_RATIO;
 }
 
-export function withoutEnglishNarration(text: string): {
+const GREETING_START =
+  /^\s*[¡!]?\s*(?:hola|holi|buen(?:os|as)\s+(?:d[ií]as|tardes|noches))\b/i;
+
+const PLANNING =
+  /\b(?:hoy es (?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\b.*\bas[ií] que|necesito saber|antes de (?:buscar|consultar|agendar|responder|ofrecer|guardar|saludar)|voy a (?:saludar|preguntar|consultar|buscar|responder|revisar|guardar|ofrecer|llamar|usar)|(?:debo|tengo que) (?:preguntar|consultar|ofrecer|guardar|llamar|usar|saludar)|la clienta|el cliente|la usuaria|el usuario|ya no aplicar[ií]a|no aplicar[ií]a)/i;
+
+const ADDRESSES_CLIENT = /[¿?]|\b(?:te|tu|tus|ti|contigo|usted)\b/i;
+
+export function looksLikePlanning(paragraph: string): boolean {
+  return PLANNING.test(paragraph) && !ADDRESSES_CLIENT.test(paragraph);
+}
+
+export function withoutLeakedNarration(text: string): {
   content: string;
   dropped: number;
 } {
   const paragraphs = text.split(/\n\s*\n/);
-  const kept = paragraphs.filter((paragraph) => !looksEnglish(paragraph));
+  const greetingAt = paragraphs.findIndex(
+    (paragraph, index) => index > 0 && GREETING_START.test(paragraph),
+  );
+  const kept = paragraphs.filter(
+    (paragraph, index) =>
+      !(greetingAt > 0 && index < greetingAt) &&
+      !looksEnglish(paragraph) &&
+      !(paragraphs.length > 1 && looksLikePlanning(paragraph)),
+  );
   return {
     content: kept.join('\n\n').trim(),
     dropped: paragraphs.length - kept.length,

@@ -52,7 +52,8 @@ function noticeBlock(notices: string[]): string {
 }
 
 const MEMORY_DISCIPLINE = `
-Mantén el hilo de la conversación: antes de responder, revisa el resumen, las acciones ya realizadas y los mensajes recientes para saber qué quiere lograr el cliente y en qué paso van. No vuelvas a pedir datos que el cliente ya dio ni repitas consultas cuyo resultado ya tienes, salvo que haya pasado tiempo y el dato pueda haber cambiado (por ejemplo, la disponibilidad). Si el cliente escribió varios mensajes seguidos, respóndelos todos en una sola respuesta.`.trim();
+Mantén el hilo de la conversación: antes de responder, revisa el resumen, las acciones ya realizadas y los mensajes recientes para saber qué quiere lograr el cliente y en qué paso van. No vuelvas a pedir datos que el cliente ya dio ni repitas consultas cuyo resultado ya tienes, salvo que haya pasado tiempo y el dato pueda haber cambiado (por ejemplo, la disponibilidad). Si el cliente escribió varios mensajes seguidos, respóndelos todos en una sola respuesta.
+Todo lo que escribes se le envía tal cual al cliente: escribe solo el mensaje para él, en su idioma, nunca lo que piensas, cómo calculaste una fecha o un precio ni lo que vas a hacer. Saluda y preséntate solo en el primer mensaje de la conversación: si en el historial ya saludaste, no vuelvas a hacerlo.`.trim();
 
 const TOOL_RESULT_DISCIPLINE = `
 Cuando uses una herramienta, tu respuesta debe basarse ÚNICAMENTE en el resultado real que esa herramienta devolvió — nunca en lo que asumas o esperes que haya pasado.
