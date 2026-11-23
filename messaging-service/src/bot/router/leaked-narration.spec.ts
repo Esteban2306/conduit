@@ -51,18 +51,14 @@ Hola, Luz 🌿 ¿Qué servicio te gustaría agendar para el miércoles 2 de dici
     });
   });
 
-  it('quita el razonamiento sobre una promoción que no aplica', () => {
-    const reply = `El Alisado tiene una promoción de fin de año del 20 % de descuento, con precio de $200.000 – $304.000 (en lugar de $250.000 – $380.000), pero vence el 24 de noviembre, así que para el 2 de diciembre ya no aplicaría.
+  it('no esconde la aclaración de que una promoción no aplica para su fecha', () => {
+    const reply = `El Alisado tiene una promoción del 20 %, pero vence el 24 de noviembre, así que para el 2 de diciembre ya no aplicaría.
 
-Para el miércoles 2 de diciembre hay estos cupos:
-
-✨ 7:00 a. m.
-✨ 8:00 a. m.`;
-    const result = withoutLeakedNarration(reply);
-    expect(result.dropped).toBe(1);
-    expect(result.content.startsWith('Para el miércoles 2 de diciembre')).toBe(
-      true,
-    );
+Para el miércoles 2 de diciembre hay estos cupos:`;
+    expect(withoutLeakedNarration(reply)).toEqual({
+      content: reply,
+      dropped: 0,
+    });
   });
 
   it('no toca lo que sí le habla a la clienta', () => {

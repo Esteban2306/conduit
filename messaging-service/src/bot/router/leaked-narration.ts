@@ -68,7 +68,7 @@ const GREETING_START =
   /^\s*[¡!]?\s*(?:hola|holi|buen(?:os|as)\s+(?:d[ií]as|tardes|noches))\b/i;
 
 const PLANNING =
-  /\b(?:hoy es (?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\b.*\bas[ií] que|necesito saber|antes de (?:buscar|consultar|agendar|responder|ofrecer|guardar|saludar)|voy a (?:saludar|preguntar|consultar|buscar|responder|revisar|guardar|ofrecer|llamar|usar)|(?:debo|tengo que) (?:preguntar|consultar|ofrecer|guardar|llamar|usar|saludar)|la clienta|el cliente|la usuaria|el usuario|ya no aplicar[ií]a|no aplicar[ií]a)/i;
+  /\b(?:hoy es (?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\b.*\bas[ií] que|necesito saber|antes de (?:buscar|consultar|agendar|responder|ofrecer|guardar|saludar)|voy a (?:saludar|preguntar|consultar|buscar|responder|revisar|guardar|ofrecer|llamar|usar)|(?:debo|tengo que) (?:preguntar|consultar|ofrecer|guardar|llamar|usar|saludar)|la clienta|el cliente|la usuaria|el usuario)/i;
 
 const ADDRESSES_CLIENT = /[¿?]|\b(?:te|tu|tus|ti|contigo|usted)\b/i;
 

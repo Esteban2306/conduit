@@ -18,10 +18,7 @@ import { UpdateContextDto } from './dto/UpdateContext.dto';
 import { EventBusService } from 'src/infra/events/event.service';
 import { EVENT_TYPES } from 'src/infra/events/constants/event.types';
 import { PINNED_MEMORY_KEY, pinEntry } from './pinned-memory';
-import {
-  TEAM_ANSWER_KEY,
-  TEAM_ANSWER_RESUME_MS,
-} from '../router/team-reply';
+import { TEAM_ANSWER_KEY, TEAM_ANSWER_RESUME_MS } from '../router/team-reply';
 
 const CLOSED_STATUSES: ConversationStatus[] = [
   ConversationStatus.COMPLETED,
@@ -240,21 +237,6 @@ export class ConversationService {
       },
     });
     return answeredAfter === 0 ? answer : null;
-  }
-
-  async lastInboundIsImage(
-    conversationId: string,
-    withinMs: number,
-    now = Date.now(),
-  ): Promise<boolean> {
-    const last = await this.prisma.botMessage.findFirst({
-      where: { conversationId, direction: MessageDirection.INBOUND },
-      orderBy: { createdAt: 'desc' },
-      select: { hasImage: true, createdAt: true },
-    });
-    return (
-      !!last && last.hasImage && now - last.createdAt.getTime() <= withinMs
-    );
   }
 
   async saveHumanOutbound(

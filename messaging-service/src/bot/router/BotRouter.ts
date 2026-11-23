@@ -71,7 +71,6 @@ import {
   TEAM_ANSWER_KEY,
   TEAM_ANSWER_TAKEOVER_MS,
   TEAM_ANSWER_TURN,
-  TEAM_PHOTO_WINDOW_MS,
   answersWithAmount,
   awaitsTeamAnswer,
   isHandoffPause,
@@ -863,7 +862,7 @@ export class BotRouter {
     const imageAvailable = hasImage || !!imageMessage;
 
     let userMessageForAI = combinedText || '[imagen recibida]';
-    if (!hasImage && imageMessage) {
+    if (!hasImage && imageMessage && !teamResume) {
       userMessageForAI = `[la clienta ya envió una imagen en esta conversación y sigue disponible para registrarla]\n${userMessageForAI}`;
     }
     let imageVerified: boolean | undefined;
@@ -2649,13 +2648,7 @@ export class BotRouter {
     const handoffEnd = endsHandoff
       ? { botPausedUntil: null, botPauseReason: null, [HANDOFF_AT_KEY]: null }
       : {};
-    const answersPhoto =
-      answersWithAmount(text) &&
-      (awaitsTeamAnswer(context) ||
-        (await this.conversationService.lastInboundIsImage(
-          conversation.id,
-          TEAM_PHOTO_WINDOW_MS,
-        )));
+    const answersPhoto = awaitsTeamAnswer(context) && answersWithAmount(text);
     if (!answersPhoto && endsHandoff) {
       await this.conversationService.updateContext(conversation.id, {
         contextPatch: handoffEnd,

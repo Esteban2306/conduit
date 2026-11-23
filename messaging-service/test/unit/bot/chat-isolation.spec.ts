@@ -206,15 +206,6 @@ class Store {
               };
         },
       ),
-      lastInboundIsImage: later((conversationId: string) => {
-        const last = this.messages
-          .filter(
-            (m) =>
-              m.conversationId === conversationId && m.direction === 'INBOUND',
-          )
-          .sort((a, b) => b.createdAt - a.createdAt)[0];
-        return !!last?.hasImage;
-      }),
       findActiveByPhone: later(
         (bot: string, phone: string) => this.conversationOf(phone, bot) ?? null,
       ),
@@ -1056,6 +1047,17 @@ describe('Aislamiento de chats (etapa 1)', () => {
     w.ownerWrites(A, 'Ya la estoy revisando');
     await settle(20 * 60_000);
     expect(w.aiCalls).toHaveLength(1);
+  });
+
+  it('un monto del equipo sin una foto esperando su precio (por ejemplo, un anticipo) no hace retomar al bot', async () => {
+    const store = new Store();
+    const w = world(store);
+    w.inboundImage(A);
+    await settle(DELAY_MS + 2_000);
+    w.ownerWrites(A, 'Recibido tu anticipo de 50 mil');
+    await settle(20 * 60_000);
+    expect(w.aiCalls).toHaveLength(1);
+    expect(store.conversationOf(A)!.context.respuestaEquipo).toBeUndefined();
   });
 
   it('cuando el equipo escribe en un chat traspasado, termina la pausa del traspaso', async () => {

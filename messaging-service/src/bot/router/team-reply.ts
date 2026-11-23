@@ -32,7 +32,6 @@ export function takeoverEndsAt(
 }
 
 export const TEAM_ANSWER_RESUME_MS = 60 * 60 * 1000;
-export const TEAM_PHOTO_WINDOW_MS = AWAITING_TEAM_MAX_MS;
 
 export const TEAM_ANSWER_TURN =
   '[aviso del sistema: la persona del equipo acaba de responderle en este chat (es el último mensaje) y la clienta todavía no ha escrito nada nuevo. Sigue tú desde ahí, sin saludar ni repetir lo que dijo el equipo: si le dio un precio, guárdalo con la herramienta del precio del equipo si la tienes y continúa el paso en que iban (por ejemplo, confirma en una sola pregunta el servicio, el día, la hora y ese precio).]';
