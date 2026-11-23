@@ -3,6 +3,8 @@ export const TEAM_ANSWER_KEY = 'respuestaEquipo';
 export const AWAITING_TEAM_MAX_MS = 3 * 60 * 60 * 1000;
 export const TEAM_ANSWER_TAKEOVER_MS = 5 * 60 * 1000;
 export const PHOTO_REQUESTED_KEY = 'fotoPedidaEn';
+export const HAIR_PHOTO_NOTICE =
+  'La clienta envió la foto de su cabello para que le des el precio. Búscala en el chat y respóndele el precio por ahí: el bot espera tu respuesta y luego sigue con la cita con ese precio.';
 
 export function awaitsTeamAnswer(
   context: Record<string, unknown>,

@@ -408,6 +408,7 @@ function world(
       text: 'TEXTO FIJO DE TRASPASO',
     }),
   );
+  const handoffNotify = jest.fn((_req?: unknown) => Promise.resolve(true));
   const handoffAfter = jest.fn((..._args: unknown[]) => Promise.resolve(true));
   const intentHandle = jest.fn((_turn?: unknown) =>
     Promise.resolve({ handled: false }),
@@ -670,6 +671,7 @@ function world(
     {
       perform: handoffPerform,
       afterModelHandoff: handoffAfter,
+      notifyTeam: handoffNotify,
       isActive: (context: Record<string, unknown>) =>
         typeof context.handoffAt === 'string' &&
         typeof context.botPausedUntil === 'string' &&
@@ -825,6 +827,7 @@ function world(
     afterSlimTurn,
     handoffPerform,
     handoffAfter,
+    handoffNotify,
     prefetch,
     setPrefetch: (value: boolean) => {
       prefetchEnabled = value;
@@ -1109,11 +1112,17 @@ describe('Aislamiento de chats (etapa 1)', () => {
       expect.any(String),
     );
     w.inboundImage(A);
-    await settle(2_000);
+    await settle(DELAY_MS + 2_000);
+    expect(w.handoffNotify).toHaveBeenCalledTimes(1);
+    expect(w.handoffNotify.mock.calls[0][0]).toMatchObject({
+      reason: expect.stringContaining('foto de su cabello'),
+    });
+    expect(store.conversationOf(A)!.context.botPausedUntil).toBeUndefined();
     w.ownerWrites(A, 'Costaría 250000');
     await settle(6 * 60_000);
     expect(w.aiCalls.at(-1)).toBe(TEAM_ANSWER_TURN);
     expect(w.handoffPerform).not.toHaveBeenCalled();
+    expect(w.handoffNotify).toHaveBeenCalledTimes(1);
   });
 
   it('al reactivar el bot desde el panel, responde lo que la clienta escribió mientras estuvo en pausa', async () => {

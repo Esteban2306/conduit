@@ -74,6 +74,7 @@ import {
   TEAM_ANSWER_NOTE,
   AWAITING_TEAM_MAX_MS,
   PHOTO_REQUESTED_KEY,
+  HAIR_PHOTO_NOTICE,
   asksForHairPhoto,
   photoRequestedRecently,
   answersWithAmount,
@@ -873,6 +874,29 @@ export class BotRouter {
     }
     let imageVerified: boolean | undefined;
     if (hasImage && photoRequestedRecently(aiData.context)) {
+      if (!awaitsTeamAnswer(aiData.context)) {
+        const context = aiData.context;
+        void this.handoffService
+          .notifyTeam({
+            tenantId,
+            botConfigId: botConfig.id,
+            conversationId,
+            connectionId,
+            phoneNumber,
+            reason: HAIR_PHOTO_NOTICE,
+            context,
+            loadTools: () =>
+              this.toolDefinitionService.getActiveToolsForBot(botConfig.id),
+          })
+          .then((notified) => {
+            if (!notified) {
+              this.logger.warn(
+                `No se pudo avisar al equipo de la foto de cabello de ${maskChat(phoneNumber)}.`,
+              );
+            }
+          })
+          .catch(() => undefined);
+      }
       const since = new Date().toISOString();
       aiData.context = { ...aiData.context, [AWAITING_TEAM_KEY]: since };
       await this.conversationService.updateContext(conversationId, {
