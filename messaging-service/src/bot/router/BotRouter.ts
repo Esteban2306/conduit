@@ -107,6 +107,7 @@ import {
   personalChatNote,
   personalChatPatch,
 } from './chat-situation';
+import { AFFIRMED_SLOT_NOTE, blockedToolsForTurn } from './turn-tools';
 import {
   conversationAddress,
   isIgnorableJid,
@@ -867,14 +868,13 @@ export class BotRouter {
       ACTION_PROPOSAL.test(lastBotMessage.content) &&
       proposesSingleSlot(lastBotMessage.content) &&
       isAffirmation(intentText);
-    const tools = (
-      slim ? allTools.filter((t) => slim.tools.includes(t.spec.name)) : allTools
-    )
-      .filter(
-        (t) =>
-          !(handoffQuiet || affirmsSlot) || (t.pausesBotMinutes ?? 0) === 0,
-      )
-      .filter((t) => !affirmsSlot || !t.readOnly || t.pinResultInMemory);
+    const tools = slim
+      ? allTools.filter((t) => slim.tools.includes(t.spec.name))
+      : allTools;
+    const blockedThisTurn = blockedToolsForTurn(tools, {
+      handoffQuiet,
+      affirmsSlot,
+    });
     const toolByName = new Map(tools.map((t) => [t.spec.name, t]));
     const readOnlyTools = new Set(
       tools.filter((t) => t.readOnly).map((t) => t.spec.name),
@@ -882,6 +882,7 @@ export class BotRouter {
 
     const situation: string[] = [];
     if (handoffQuiet) situation.push(handoffQuietNote(aiData.context));
+    if (affirmsSlot) situation.push(AFFIRMED_SLOT_NOTE);
     const personalNote = handoffQuiet ? null : personalChatNote(aiData.context);
     if (personalNote) situation.push(personalNote);
     const firstContact =
@@ -953,6 +954,22 @@ export class BotRouter {
             return {
               ok: false,
               content: { error: true, message: 'Tool desconocida.' },
+            };
+          }
+          const blocked = blockedThisTurn.get(req.name);
+          if (blocked) {
+            record(req.name, {
+              kind: 'EXPECTED',
+              httpStatus: null,
+              code: 'NOT_ALLOWED_THIS_TURN',
+            });
+            return {
+              ok: false,
+              content: {
+                error: true,
+                status: 'NOT_ALLOWED_THIS_TURN',
+                message: blocked,
+              },
             };
           }
 

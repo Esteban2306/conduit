@@ -64,8 +64,15 @@ export class ConversationSummarizer {
         summary: null,
         maxTokens: Math.max(summaryPrompt.maxTokens, 300),
         temperature: 0.2,
+        reasoningMode: 'OFF',
       });
 
+      if (result.stopReason === 'max_tokens') {
+        this.logger.warn(
+          `Resumen de ${conversationId} cortado por el tope de tokens: se conserva el anterior y se reintenta en el turno siguiente.`,
+        );
+        return;
+      }
       const summary = result.content?.trim();
       if (!summary) return;
 

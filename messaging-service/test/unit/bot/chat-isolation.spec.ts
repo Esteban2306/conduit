@@ -1908,7 +1908,7 @@ describe('Situación del chat: primera vez, traspaso y mensajes personales', () 
     expect(store.pendingOf(store.conversationOf(A)!.id)).toHaveLength(0);
   });
 
-  it('tras un traspaso, una pregunta por una cita sí se responde, sin herramientas de traspaso y con la situación explicada', async () => {
+  it('tras un traspaso, una pregunta por una cita sí se responde, sin poder pasar el chat otra vez y con la situación explicada', async () => {
     const store = new Store();
     const w = world(store, (m) =>
       m.includes('cupo') ? 'El viernes tengo a las 2:00 p. m.' : 'Listo 🙏',
@@ -1922,6 +1922,14 @@ describe('Situación del chat: primera vez, traspaso y mensajes personales', () 
     handedOff(store, A);
     w.setBotPaused(true);
 
+    let handoffAttempt:
+      | { ok: boolean; content: Record<string, unknown> }
+      | undefined;
+    w.setToolScript(async (exec, call) => {
+      if (call === 2) {
+        handoffAttempt = await exec({ name: 'pasar_a_persona', arguments: {} });
+      }
+    });
     w.inbound(A, '¿Tienes cupo el viernes para hidratación?');
     await settle(DELAY_MS + 2_000);
 
@@ -1929,7 +1937,9 @@ describe('Situación del chat: primera vez, traspaso y mensajes personales', () 
     expect(w.intentHandle).toHaveBeenCalledTimes(1);
     expect(w.aiInputs[1].tools?.map((t) => t.name)).toEqual([
       'consultar_disponibilidad',
+      'pasar_a_persona',
     ]);
+    expect(handoffAttempt?.content.status).toBe('NOT_ALLOWED_THIS_TURN');
     expect((w.promptInputs[1].situation as string[]).join(' ')).toContain(
       'Este chat ya se pasó al equipo (motivo: Pide las fotos de su visita)',
     );
@@ -2039,7 +2049,7 @@ describe('Respuestas que la clienta entiende y acciones que sí se hacen', () =>
     expect(w.metrics.snapshot().confirmWithoutAction).toBe(1);
   });
 
-  it('ante un "sí" al horario propuesto, ese turno solo puede ejecutar la acción: ni consultar de nuevo ni pasar el chat a una persona', async () => {
+  it('ante un "sí" al horario propuesto, ese turno solo puede ejecutar la acción: ni consultar de nuevo ni pasar el chat a una persona, sin cambiar la lista de herramientas (el prefijo cacheado)', async () => {
     const store = new Store();
     store.lastOutboundValue = {
       content: '¿Te aparto el lunes 23 a las 8:00 a. m.?',
@@ -2051,25 +2061,42 @@ describe('Respuestas que la clienta entiende y acciones que sí se hacen', () =>
         { name: 'crear_reserva_whatsapp', arguments: {}, ok: true },
       ],
     }));
-    w.setTools(
-      [
-        'consultar_cliente',
-        'listar_tratamientos',
+    const offered = [
+      'consultar_cliente',
+      'listar_tratamientos',
+      'disponibilidad_combo',
+      'crear_reserva_whatsapp',
+      'pasar_a_persona',
+    ];
+    w.setTools(offered, ['pasar_a_persona'], [], [], ['consultar_cliente']);
+    const results: Record<
+      string,
+      { ok: boolean; content: Record<string, unknown> }
+    > = {};
+    w.setToolScript(async (exec) => {
+      for (const name of [
         'disponibilidad_combo',
-        'crear_reserva_whatsapp',
         'pasar_a_persona',
-      ],
-      ['pasar_a_persona'],
-      [],
-      [],
-      ['consultar_cliente'],
-    );
+        'consultar_cliente',
+      ]) {
+        results[name] = await exec({ name, arguments: {} });
+      }
+    });
     w.inbound(A, 'Sí, confírmala');
     await settle(DELAY_MS + 2_000);
-    expect(w.aiInputs[0].tools?.map((t) => t.name)).toEqual([
-      'consultar_cliente',
-      'crear_reserva_whatsapp',
-    ]);
+    expect(w.aiInputs[0].tools?.map((t) => t.name)).toEqual(offered);
+    expect(results.disponibilidad_combo.content.status).toBe(
+      'NOT_ALLOWED_THIS_TURN',
+    );
+    expect(results.pasar_a_persona.content.status).toBe(
+      'NOT_ALLOWED_THIS_TURN',
+    );
+    expect(results.consultar_cliente.content.status).not.toBe(
+      'NOT_ALLOWED_THIS_TURN',
+    );
+    expect((w.promptInputs[0].situation as string[]).join(' ')).toContain(
+      'acaba de aceptar el único día y hora',
+    );
   });
 
   it('un "sí" a una lista de varios horarios no fuerza ninguna reserva', async () => {
