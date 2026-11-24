@@ -22,6 +22,8 @@ export const NO_REPLY_CONFIRM_INSTRUCTION = `REVISA ANTES DE CALLAR: aplica de n
 
 export const QUIET_NO_REPLY_CONFIRM_INSTRUCTION = `REVISA ANTES DE CALLAR: ¿el mensaje pregunta por citas, horarios, cupos, precios, servicios o productos? Si sí, respóndele normalmente con las herramientas. Si no (saludos, "¿sigue ahí?", agradecimientos o el tema que ya se pasó al equipo), responde otra vez solo ${NO_REPLY_MARKER}.`;
 
+export const MUST_REPLY_INSTRUCTION = `ATENCIÓN: el mensaje de la clienta trata de citas, servicios, horarios o precios (incluso si es para otra persona: su hija, su mamá, una amiga), así que es del negocio y NO puedes callarte. Respóndele normalmente con las herramientas; no escribas ${NO_REPLY_MARKER}.`;
+
 export function isNoReply(reply: string): boolean {
   return reply.toUpperCase().includes(NO_REPLY_MARKER);
 }

@@ -56,6 +56,13 @@ export function personalChatNote(
 const BUSINESS_WORDS =
   /\b(?:cita|citas|cupo|cupos|horario|horarios|disponib\w*|agend\w*|reserv\w*|apart\w*|precio|precios|valor|cuanto|costo|cuesta|servicio|servicios|tratamiento\w*|producto\w*|promoci\w*|reagend\w*|cancel\w*|hoy|manana|lunes|martes|miercoles|jueves|viernes|sabado|domingo|semana|hora|dia)\b|\b(?:a las|las|a la) \d{1,2}\b|\b\d{1,2}(?::\d{2})?\s*(?:am|pm|a m|p m)\b/;
 
+const BOOKING_WORDS =
+  /\b(?:cita|citas|cupo|cupos|disponib\w*|agend\w*|reserv\w*|apart\w*|precio|precios|cuanto (?:cuesta|vale|es)|costo|servicio|servicios|tratamiento\w*|producto\w*|promoci\w*|reagend\w*|anticipo|comprobante)\b/;
+
+export function looksLikeBusinessRequest(text: string): boolean {
+  return BOOKING_WORDS.test(normalizeText(text));
+}
+
 export function silenceNeedsCheck(
   handoffQuiet: boolean,
   personalNote: string | null,
