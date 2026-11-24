@@ -899,9 +899,16 @@ export class BotRouter {
           .catch(() => undefined);
       }
       const since = new Date().toISOString();
-      aiData.context = { ...aiData.context, [AWAITING_TEAM_KEY]: since };
+      aiData.context = {
+        ...aiData.context,
+        [AWAITING_TEAM_KEY]: since,
+        [PHOTO_REQUESTED_KEY]: null,
+      };
       await this.conversationService.updateContext(conversationId, {
-        contextPatch: { [AWAITING_TEAM_KEY]: since },
+        contextPatch: {
+          [AWAITING_TEAM_KEY]: since,
+          [PHOTO_REQUESTED_KEY]: null,
+        },
       });
     }
 

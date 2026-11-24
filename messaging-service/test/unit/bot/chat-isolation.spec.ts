@@ -1125,6 +1125,35 @@ describe('Aislamiento de chats (etapa 1)', () => {
     expect(w.handoffNotify).toHaveBeenCalledTimes(1);
   });
 
+  it('la foto del cabello consume el pedido: un comprobante que llega después no avisa al equipo ni hace esperar su precio', async () => {
+    const store = new Store();
+    const w = world(store, (m) =>
+      m === TEAM_ANSWER_TURN
+        ? 'Listo, te confirmo la cita con ese precio.'
+        : m.includes('cupo')
+          ? 'Tu cita quedó apartada. Envíame aquí el comprobante del anticipo.'
+          : m.includes('imagen')
+            ? 'Gracias, ya la recibimos.'
+            : 'Envíame una foto de tu cabello desde atrás. El equipo la revisará y te escribirá el precio por aquí.',
+    );
+    w.inbound(A, '¿te mando foto para el precio?');
+    await settle(DELAY_MS + 2_000);
+    w.inboundImage(A);
+    await settle(DELAY_MS + 2_000);
+    w.ownerWrites(A, 'Costaría 250000');
+    await settle(6 * 60_000);
+    w.inbound(A, 'Sí, apártame el cupo del jueves');
+    await settle(DELAY_MS + 2_000);
+    w.inboundImage(A);
+    await settle(DELAY_MS + 2_000);
+    expect(w.handoffNotify).toHaveBeenCalledTimes(1);
+    expect(store.conversationOf(A)!.context.esperaRespuestaEquipo).toBeFalsy();
+    const calls = w.aiCalls.length;
+    w.ownerWrites(A, 'Recibido tu anticipo de 50 mil');
+    await settle(10 * 60_000);
+    expect(w.aiCalls).toHaveLength(calls);
+  });
+
   it('al reactivar el bot desde el panel, responde lo que la clienta escribió mientras estuvo en pausa', async () => {
     const store = new Store();
     const w = world(store);
