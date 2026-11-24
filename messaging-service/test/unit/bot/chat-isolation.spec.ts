@@ -206,6 +206,39 @@ class Store {
               };
         },
       ),
+      resumeBot: later(() => undefined),
+      lastInboundIsImage: later((conversationId: string) => {
+        const last = this.messages
+          .filter(
+            (m) =>
+              m.conversationId === conversationId && m.direction === 'INBOUND',
+          )
+          .sort((a, b) => b.createdAt - a.createdAt)[0];
+        return !!last?.hasImage;
+      }),
+      restoreIgnoredSinceLastReply: later((conversationId: string) => {
+        const own = this.messages.filter(
+          (m) => m.conversationId === conversationId,
+        );
+        const lastReply = Math.max(
+          0,
+          ...own
+            .filter((m) => m.direction === 'OUTBOUND')
+            .map((m) => m.createdAt),
+        );
+        let count = 0;
+        for (const m of own) {
+          if (
+            m.direction === 'INBOUND' &&
+            m.processedBy === 'ignored' &&
+            m.createdAt > lastReply
+          ) {
+            m.processedBy = 'user';
+            count++;
+          }
+        }
+        return count;
+      }),
       findActiveByPhone: later(
         (bot: string, phone: string) => this.conversationOf(phone, bot) ?? null,
       ),
@@ -375,6 +408,7 @@ function world(
       text: 'TEXTO FIJO DE TRASPASO',
     }),
   );
+  const handoffNotify = jest.fn((_req?: unknown) => Promise.resolve(true));
   const handoffAfter = jest.fn((..._args: unknown[]) => Promise.resolve(true));
   const intentHandle = jest.fn((_turn?: unknown) =>
     Promise.resolve({ handled: false }),
@@ -637,6 +671,7 @@ function world(
     {
       perform: handoffPerform,
       afterModelHandoff: handoffAfter,
+      notifyTeam: handoffNotify,
       isActive: (context: Record<string, unknown>) =>
         typeof context.handoffAt === 'string' &&
         typeof context.botPausedUntil === 'string' &&
@@ -792,6 +827,7 @@ function world(
     afterSlimTurn,
     handoffPerform,
     handoffAfter,
+    handoffNotify,
     prefetch,
     setPrefetch: (value: boolean) => {
       prefetchEnabled = value;
@@ -1025,7 +1061,9 @@ describe('Aislamiento de chats (etapa 1)', () => {
     store.conversationOf(A)!.context.esperaRespuestaEquipo =
       new Date().toISOString();
     w.ownerWrites(A, 'Para tu pelo valdría 250 mil');
-    await settle(60_000);
+    await settle(4 * 60_000);
+    expect(w.aiCalls).toEqual(['Les mando la foto de mi cabello']);
+    await settle(2 * 60_000);
     expect(w.aiCalls).toEqual([
       'Les mando la foto de mi cabello',
       TEAM_ANSWER_TURN,
@@ -1037,16 +1075,141 @@ describe('Aislamiento de chats (etapa 1)', () => {
     expect(w.aiCalls).toHaveLength(2);
   });
 
-  it('si el equipo escribe algo sin precio, el bot no retoma por su cuenta', async () => {
+  it('si el equipo sigue escribiendo, la espera de 5 minutos cuenta desde su último mensaje', async () => {
+    const store = new Store();
+    const w = world(store, (m) =>
+      m === TEAM_ANSWER_TURN
+        ? 'Perfecto, te confirmo la cita.'
+        : `respuesta a: ${m}`,
+    );
+    w.inbound(A, 'Les mando la foto de mi cabello');
+    await settle(DELAY_MS + 2_000);
+    store.conversationOf(A)!.context.esperaRespuestaEquipo =
+      new Date().toISOString();
+    w.ownerWrites(A, 'Para tu pelo valdría 250 mil');
+    await settle(4 * 60_000);
+    w.ownerWrites(A, 'Y te queda bien con la hidratación incluida');
+    await settle(4 * 60_000);
+    expect(w.aiCalls).toHaveLength(1);
+    await settle(2 * 60_000);
+    expect(w.aiCalls).toEqual([
+      'Les mando la foto de mi cabello',
+      TEAM_ANSWER_TURN,
+    ]);
+  });
+
+  it('si el bot pidió la foto del cabello y llega una imagen, el precio del equipo hace seguir la cita aunque el análisis falle', async () => {
+    const store = new Store();
+    const w = world(store, (m) =>
+      m === TEAM_ANSWER_TURN
+        ? 'Listo, con ese precio te confirmo.'
+        : 'Envíame una foto de tu cabello desde atrás. El equipo la revisará y te escribirá el precio por aquí.',
+    );
+    w.inbound(A, '¿te mando foto para el precio?');
+    await settle(DELAY_MS + 2_000);
+    expect(w.handoffPerform).not.toHaveBeenCalled();
+    expect(store.conversationOf(A)!.context.fotoPedidaEn).toEqual(
+      expect.any(String),
+    );
+    w.inboundImage(A);
+    await settle(DELAY_MS + 2_000);
+    expect(w.handoffNotify).toHaveBeenCalledTimes(1);
+    expect(w.handoffNotify.mock.calls[0][0]).toMatchObject({
+      reason: expect.stringContaining('foto de su cabello'),
+    });
+    expect(store.conversationOf(A)!.context.botPausedUntil).toBeUndefined();
+    w.ownerWrites(A, 'Costaría 250000');
+    await settle(6 * 60_000);
+    expect(w.aiCalls.at(-1)).toBe(TEAM_ANSWER_TURN);
+    expect(w.handoffPerform).not.toHaveBeenCalled();
+    expect(w.handoffNotify).toHaveBeenCalledTimes(1);
+  });
+
+  it('la foto del cabello consume el pedido: un comprobante que llega después no avisa al equipo ni hace esperar su precio', async () => {
+    const store = new Store();
+    const w = world(store, (m) =>
+      m === TEAM_ANSWER_TURN
+        ? 'Listo, te confirmo la cita con ese precio.'
+        : m.includes('cupo')
+          ? 'Tu cita quedó apartada. Envíame aquí el comprobante del anticipo.'
+          : m.includes('imagen')
+            ? 'Gracias, ya la recibimos.'
+            : 'Envíame una foto de tu cabello desde atrás. El equipo la revisará y te escribirá el precio por aquí.',
+    );
+    w.inbound(A, '¿te mando foto para el precio?');
+    await settle(DELAY_MS + 2_000);
+    w.inboundImage(A);
+    await settle(DELAY_MS + 2_000);
+    w.ownerWrites(A, 'Costaría 250000');
+    await settle(6 * 60_000);
+    w.inbound(A, 'Sí, apártame el cupo del jueves');
+    await settle(DELAY_MS + 2_000);
+    w.inboundImage(A);
+    await settle(DELAY_MS + 2_000);
+    expect(w.handoffNotify).toHaveBeenCalledTimes(1);
+    expect(store.conversationOf(A)!.context.esperaRespuestaEquipo).toBeFalsy();
+    const calls = w.aiCalls.length;
+    w.ownerWrites(A, 'Recibido tu anticipo de 50 mil');
+    await settle(10 * 60_000);
+    expect(w.aiCalls).toHaveLength(calls);
+  });
+
+  it('al reactivar el bot desde el panel, responde lo que la clienta escribió mientras estuvo en pausa', async () => {
+    const store = new Store();
+    const w = world(store);
+    w.inbound(A, 'Hola');
+    await settle(DELAY_MS + 2_000);
+    w.inbound(A, 'A las 7 está bien');
+    await settle(100);
+    const last = store.messages.at(-1)!;
+    last.processedBy = 'ignored';
+    await w.router.resumeConversation(`conv-${A}`, TENANT);
+    await settle(DELAY_MS + 2_000);
+    expect(w.aiCalls).toEqual(['Hola', 'A las 7 está bien']);
+  });
+
+  it('si el bot consultó al equipo por una recomendación, cualquier respuesta del equipo lo hace seguir 5 minutos después', async () => {
+    const store = new Store();
+    const w = world(store, (m) =>
+      m === TEAM_ANSWER_TURN
+        ? 'La profesional te recomienda la Terapia de rehabilitación. ¿Te busco cupo?'
+        : 'Ya le pasé tu caso a una profesional del equipo; te responde aquí en minutos.',
+    );
+    w.setTools(['consultar_al_equipo']);
+    w.setToolResults({
+      consultar_al_equipo: {
+        status: 'SUCCESS',
+        body: { teamNotified: true, awaitTeamAnswer: true },
+      },
+    });
+    w.setToolScript(async (exec, call) => {
+      if (call === 1)
+        await exec({ name: 'consultar_al_equipo', arguments: {} });
+    });
+    w.inbound(A, 'No sé qué tratamiento me sirve, tengo el pelo muy seco');
+    await settle(DELAY_MS + 2_000);
+    expect(store.conversationOf(A)!.context.esperaConsejoEquipo).toEqual(
+      expect.any(String),
+    );
+    expect(w.handoffPerform).not.toHaveBeenCalled();
+    w.ownerWrites(A, 'Te recomiendo la terapia de rehabilitación');
+    await settle(6 * 60_000);
+    expect(w.aiCalls.at(-1)).toBe(TEAM_ANSWER_TURN);
+    expect(w.sends.at(-1)?.content).toContain('Terapia de rehabilitación');
+  });
+
+  it('si el equipo responde la foto sin precio (por ejemplo, una recomendación), el bot también sigue 5 minutos después', async () => {
     const store = new Store();
     const w = world(store);
     w.inbound(A, 'Les mando la foto de mi cabello');
     await settle(DELAY_MS + 2_000);
     store.conversationOf(A)!.context.esperaRespuestaEquipo =
       new Date().toISOString();
-    w.ownerWrites(A, 'Ya la estoy revisando');
-    await settle(20 * 60_000);
+    w.ownerWrites(A, 'Te conviene la terapia de rehabilitación');
+    await settle(4 * 60_000);
     expect(w.aiCalls).toHaveLength(1);
+    await settle(2 * 60_000);
+    expect(w.aiCalls.at(-1)).toBe(TEAM_ANSWER_TURN);
   });
 
   it('un monto del equipo sin una foto esperando su precio (por ejemplo, un anticipo) no hace retomar al bot', async () => {
@@ -4304,7 +4467,7 @@ describe('Camino rápido de la imagen: se analiza al llegar', () => {
       );
     });
 
-    it.each(['VALID', 'ERROR'])(
+    it.each(['VALID', 'NEEDS_REVIEW'])(
       'una foto de cabello con %s queda esperando al equipo y prometer su precio no traspasa el chat',
       async (verdict) => {
         const w = world(
@@ -4333,6 +4496,37 @@ describe('Camino rápido de la imagen: se analiza al llegar', () => {
         ).toEqual(expect.any(String));
       },
     );
+
+    it('un comprobante cuya revisión de cabello falló, sin que el bot pidiera foto, no queda esperando un precio del equipo', async () => {
+      const store = new Store();
+      const w = world(
+        store,
+        () => 'Gracias, el equipo revisará tu comprobante.',
+      );
+      w.setImageAnalysis(true);
+      w.setSpecialistMode('ACTIVE');
+      w.specialistFindMode.mockResolvedValue(
+        bindings('image-analysis', 'foto-cabello'),
+      );
+      w.specialistRun.mockImplementation((input) =>
+        Promise.resolve({
+          ...w.activeOutcome(
+            input.capability === 'foto-cabello' ? 'ERROR' : 'VALID',
+          ),
+          capability: input.capability,
+        }),
+      );
+      w.inboundImage(A);
+      await settle(DELAY_MS + 2_000);
+      expect(
+        store.conversationOf(A)?.context.esperaRespuestaEquipo,
+      ).toBeFalsy();
+      expect(w.handoffNotify).not.toHaveBeenCalled();
+      const calls = w.aiCalls.length;
+      w.ownerWrites(A, 'Recibido tu anticipo de 50 mil');
+      await settle(10 * 60_000);
+      expect(w.aiCalls).toHaveLength(calls);
+    });
 
     it('los vínculos en SHADOW no bloquean ni cambian la respuesta', async () => {
       const w = fastWorld();

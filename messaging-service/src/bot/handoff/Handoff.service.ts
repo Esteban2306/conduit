@@ -118,6 +118,17 @@ export class HandoffService {
     }
   }
 
+  async notifyTeam(request: HandoffRequest): Promise<boolean> {
+    const tools = await request.loadTools();
+    const preferred =
+      request.toolName ?? (await this.defaultHandoffTool(request.botConfigId));
+    const tool =
+      tools.find((t) => t.spec.name === preferred) ??
+      tools.find((t) => (t.pausesBotMinutes ?? 0) > 0);
+    const notified = tool ? await this.viaBackend(request, tool) : false;
+    return notified || this.viaContacts(request);
+  }
+
   /**
    * La propia IA llamó a la herramienta de traspaso: se verifica el aviso y
    * se deja constancia. Devuelve si el bot debe pausarse.

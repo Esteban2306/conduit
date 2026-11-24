@@ -25,7 +25,7 @@ export function handoffQuietNote(context: ConversationContext): string {
     typeof reason === 'string' && reason.trim() !== ''
       ? ` (motivo: ${reason.trim().slice(0, 200)})`
       : '';
-  return `Este chat ya se pasó al equipo${motive} y una persona lo atenderá. Si pregunta por citas, horarios, cupos, precios, servicios o productos (por ejemplo "otra cosa, ¿tienes cupo el viernes?"), respóndele con normalidad y con las herramientas, como a cualquier clienta: eso nunca se calla. A todo lo demás (agradecimientos, despedidas o el tema que se pasó al equipo) responde solo ${NO_REPLY_MARKER}. No vuelvas a pasar el chat ni repitas que una persona escribirá.`;
+  return `Este chat ya se pasó al equipo${motive} y una persona lo atenderá. Si pregunta por citas, horarios, cupos, precios, servicios o productos (por ejemplo "otra cosa, ¿tienes cupo el viernes?"), o responde a algo que tú le propusiste (elige una hora: "a las 7 está bien"; confirma: "sí, agéndala"), respóndele con normalidad y sigue agendando y con las herramientas, como a cualquier clienta: eso nunca se calla. A todo lo demás (agradecimientos, despedidas o el tema que se pasó al equipo) responde solo ${NO_REPLY_MARKER}. No vuelvas a pasar el chat ni repitas que una persona escribirá.`;
 }
 
 export function personalChatPatch(
@@ -54,7 +54,7 @@ export function personalChatNote(
 }
 
 const BUSINESS_WORDS =
-  /\b(?:cita|citas|cupo|cupos|horario|horarios|disponib\w*|agend\w*|reserv\w*|apart\w*|precio|precios|valor|cuanto|costo|cuesta|servicio|servicios|tratamiento\w*|producto\w*|promoci\w*|reagend\w*|cancel\w*|hoy|manana|lunes|martes|miercoles|jueves|viernes|sabado|domingo|semana)\b/;
+  /\b(?:cita|citas|cupo|cupos|horario|horarios|disponib\w*|agend\w*|reserv\w*|apart\w*|precio|precios|valor|cuanto|costo|cuesta|servicio|servicios|tratamiento\w*|producto\w*|promoci\w*|reagend\w*|cancel\w*|hoy|manana|lunes|martes|miercoles|jueves|viernes|sabado|domingo|semana|hora|dia)\b|\b(?:a las|las|a la) \d{1,2}\b|\b\d{1,2}(?::\d{2})?\s*(?:am|pm|a m|p m)\b/;
 
 export function silenceNeedsCheck(
   handoffQuiet: boolean,

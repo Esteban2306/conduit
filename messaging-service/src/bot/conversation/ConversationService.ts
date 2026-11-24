@@ -239,6 +239,39 @@ export class ConversationService {
     return answeredAfter === 0 ? answer : null;
   }
 
+  async lastInboundIsImage(
+    conversationId: string,
+    withinMs: number,
+    now = Date.now(),
+  ): Promise<boolean> {
+    const last = await this.prisma.botMessage.findFirst({
+      where: { conversationId, direction: MessageDirection.INBOUND },
+      orderBy: { createdAt: 'desc' },
+      select: { hasImage: true, createdAt: true },
+    });
+    return (
+      !!last && last.hasImage && now - last.createdAt.getTime() <= withinMs
+    );
+  }
+
+  async restoreIgnoredSinceLastReply(conversationId: string): Promise<number> {
+    const lastReply = await this.prisma.botMessage.findFirst({
+      where: { conversationId, direction: MessageDirection.OUTBOUND },
+      orderBy: { createdAt: 'desc' },
+      select: { createdAt: true },
+    });
+    const restored = await this.prisma.botMessage.updateMany({
+      where: {
+        conversationId,
+        direction: MessageDirection.INBOUND,
+        processedBy: IGNORED_INBOUND,
+        ...(lastReply && { createdAt: { gt: lastReply.createdAt } }),
+      },
+      data: { processedBy: 'user' },
+    });
+    return restored.count;
+  }
+
   async saveHumanOutbound(
     conversationId: string,
     content: string,

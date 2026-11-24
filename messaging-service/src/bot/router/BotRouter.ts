@@ -71,7 +71,14 @@ import {
   TEAM_ANSWER_KEY,
   TEAM_ANSWER_TAKEOVER_MS,
   TEAM_ANSWER_TURN,
-  answersWithAmount,
+  TEAM_ANSWER_NOTE,
+  AWAITING_TEAM_MAX_MS,
+  PHOTO_REQUESTED_KEY,
+  HAIR_PHOTO_NOTICE,
+  AWAITING_ADVICE_KEY,
+  asksToAwaitTeam,
+  asksForHairPhoto,
+  photoRequestedRecently,
   awaitsTeamAnswer,
   isHandoffPause,
   takeoverEndsAt,
@@ -539,6 +546,7 @@ export class BotRouter {
     const conversation =
       await this.conversationService.findById(conversationId);
     await this.conversationService.resumeBot(conversationId);
+    await this.conversationService.restoreIgnoredSinceLastReply(conversationId);
 
     if (!conversation.lastConnectionId) return;
     const botConfig = await this.botConfigService.getConfigForRouting(
@@ -866,6 +874,43 @@ export class BotRouter {
       userMessageForAI = `[la clienta ya envió una imagen en esta conversación y sigue disponible para registrarla]\n${userMessageForAI}`;
     }
     let imageVerified: boolean | undefined;
+    if (hasImage && photoRequestedRecently(aiData.context)) {
+      if (!awaitsTeamAnswer(aiData.context)) {
+        const context = aiData.context;
+        void this.handoffService
+          .notifyTeam({
+            tenantId,
+            botConfigId: botConfig.id,
+            conversationId,
+            connectionId,
+            phoneNumber,
+            reason: HAIR_PHOTO_NOTICE,
+            context,
+            loadTools: () =>
+              this.toolDefinitionService.getActiveToolsForBot(botConfig.id),
+          })
+          .then((notified) => {
+            if (!notified) {
+              this.logger.warn(
+                `No se pudo avisar al equipo de la foto de cabello de ${maskChat(phoneNumber)}.`,
+              );
+            }
+          })
+          .catch(() => undefined);
+      }
+      const since = new Date().toISOString();
+      aiData.context = {
+        ...aiData.context,
+        [AWAITING_TEAM_KEY]: since,
+        [PHOTO_REQUESTED_KEY]: null,
+      };
+      await this.conversationService.updateContext(conversationId, {
+        contextPatch: {
+          [AWAITING_TEAM_KEY]: since,
+          [PHOTO_REQUESTED_KEY]: null,
+        },
+      });
+    }
 
     if (hasImage && imageMessage && botConfig.imageAnalysisEnabled) {
       const routing = botConfig as { id: string; systemPrompt: string };
@@ -935,6 +980,15 @@ export class BotRouter {
       aiData.history.some((h) => h.role === MessageRole.ASSISTANT);
     const situation: string[] = [];
     if (greetedEarlier) situation.push(ALREADY_GREETED_NOTE);
+    if (
+      !teamResume &&
+      (await this.conversationService.teamAnswerToResume(
+        conversationId,
+        aiData.context,
+      ))
+    ) {
+      situation.push(TEAM_ANSWER_NOTE);
+    }
     if (handoffQuiet) situation.push(handoffQuietNote(aiData.context));
     if (affirmsSlot) situation.push(AFFIRMED_SLOT_NOTE);
     const personalNote = handoffQuiet ? null : personalChatNote(aiData.context);
@@ -1129,6 +1183,21 @@ export class BotRouter {
           record(req.name, classified, outcome.responseBody);
           const streak = nextStreaks(streaks, req.name, classified);
           streaks = streak.streaks;
+
+          if (
+            outcome.status === 'SUCCESS' &&
+            asksToAwaitTeam(outcome.responseBody)
+          ) {
+            const since = new Date().toISOString();
+            const waiting = {
+              [AWAITING_TEAM_KEY]: since,
+              [AWAITING_ADVICE_KEY]: since,
+            };
+            aiData.context = { ...aiData.context, ...waiting };
+            await this.conversationService.updateContext(conversationId, {
+              contextPatch: waiting,
+            });
+          }
 
           if (outcome.status === 'SUCCESS' && resolved.pausesBotMinutes) {
             // Traspaso a una persona: el bot deja de responder en este chat
@@ -1720,6 +1789,11 @@ export class BotRouter {
     const sent = await this.sendReply(turn, reply, tokensUsed, imageVerified, {
       mustDeliver,
     });
+    if (sent && asksForHairPhoto(reply)) {
+      await this.conversationService.updateContext(conversationId, {
+        contextPatch: { [PHOTO_REQUESTED_KEY]: new Date().toISOString() },
+      });
+    }
     if (sent && notices.length > 0) {
       this.intentHandler.markNoticesDelivered(
         conversationId,
@@ -2521,6 +2595,7 @@ export class BotRouter {
       !modelHandoff &&
       !teamNotified &&
       !awaitsTeamAnswer(input.context) &&
+      !asksForHairPhoto(input.content) &&
       promisesHumanContact(input.content)
     ) {
       this.replyMetrics.increment('promiseBlocked');
@@ -2648,7 +2723,19 @@ export class BotRouter {
     const handoffEnd = endsHandoff
       ? { botPausedUntil: null, botPauseReason: null, [HANDOFF_AT_KEY]: null }
       : {};
-    const answersPhoto = awaitsTeamAnswer(context) && answersWithAmount(text);
+    const awaitingPhotoPrice =
+      awaitsTeamAnswer(context) ||
+      (photoRequestedRecently(context) &&
+        (await this.conversationService.lastInboundIsImage(
+          conversation.id,
+          AWAITING_TEAM_MAX_MS,
+        )));
+    const continuesAnswer =
+      (await this.conversationService.teamAnswerToResume(
+        conversation.id,
+        context,
+      )) !== null;
+    const answersPhoto = continuesAnswer || awaitingPhotoPrice;
     if (!answersPhoto && endsHandoff) {
       await this.conversationService.updateContext(conversation.id, {
         contextPatch: handoffEnd,
@@ -2659,11 +2746,12 @@ export class BotRouter {
         contextPatch: {
           ...handoffEnd,
           [AWAITING_TEAM_KEY]: null,
+          [AWAITING_ADVICE_KEY]: null,
           [TEAM_ANSWER_KEY]: saved.id,
         },
       });
       this.logger.log(
-        `El equipo respondió con un precio la foto de ${maskChat(phoneNumber)}: el bot sigue enseguida.`,
+        `El equipo respondió con un precio la foto de ${maskChat(phoneNumber)}: el bot sigue con la cita 5 minutos después de su último mensaje.`,
       );
       this.scheduleRetry(
         {
@@ -2842,11 +2930,7 @@ export class BotRouter {
 
 const OWNER_ACTIVE_DISCARD_MS = 30_000;
 
-const TEAM_REVIEW_VERDICTS = new Set<string>([
-  'VALID',
-  'NEEDS_REVIEW',
-  'ERROR',
-]);
+const TEAM_REVIEW_VERDICTS = new Set<string>(['VALID', 'NEEDS_REVIEW']);
 
 const COMPLETED_CLAIM =
   /\b(?:qued[oó]|quedaron|ya est[aá]|fue|ha sido|se (?:agend[oó]|reserv[oó]|cancel[oó]|reagend[oó]|registr[oó]|cre[oó]))\s*(?:ya\s*)?(?:agendad[ao]s?|reservad[ao]s?|cancelad[ao]s?|reagendad[ao]s?|confirmad[ao]s?|registrad[ao]s?|cread[ao]s?)?\b/i;

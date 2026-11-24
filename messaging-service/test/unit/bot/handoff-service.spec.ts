@@ -290,3 +290,22 @@ describe('HandoffService.afterModelHandoff', () => {
     ).toBe(true);
   });
 });
+
+describe('HandoffService.notifyTeam', () => {
+  it('avisa al equipo por el backend sin pausar el bot ni marcar el chat como traspasado', async () => {
+    const w = build();
+    await expect(
+      w.service.notifyTeam(w.request({ reason: 'Foto de cabello' })),
+    ).resolves.toBe(true);
+    expect(w.executed[0]).toMatchObject({ toolDefinitionId: 'def-h' });
+    expect(w.paused).toEqual([]);
+    expect(w.contexts).toEqual([]);
+  });
+
+  it('si el backend no confirma, avisa por los contactos de escalamiento', async () => {
+    const w = build({ backend: { status: 'TECHNICAL_ERROR' } });
+    await expect(w.service.notifyTeam(w.request())).resolves.toBe(true);
+    expect(w.notified).toHaveLength(1);
+    expect(w.paused).toEqual([]);
+  });
+});
