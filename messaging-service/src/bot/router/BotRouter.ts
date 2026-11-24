@@ -75,9 +75,10 @@ import {
   AWAITING_TEAM_MAX_MS,
   PHOTO_REQUESTED_KEY,
   HAIR_PHOTO_NOTICE,
+  AWAITING_ADVICE_KEY,
+  asksToAwaitTeam,
   asksForHairPhoto,
   photoRequestedRecently,
-  answersWithAmount,
   awaitsTeamAnswer,
   isHandoffPause,
   takeoverEndsAt,
@@ -1175,6 +1176,21 @@ export class BotRouter {
           record(req.name, classified, outcome.responseBody);
           const streak = nextStreaks(streaks, req.name, classified);
           streaks = streak.streaks;
+
+          if (
+            outcome.status === 'SUCCESS' &&
+            asksToAwaitTeam(outcome.responseBody)
+          ) {
+            const since = new Date().toISOString();
+            const waiting = {
+              [AWAITING_TEAM_KEY]: since,
+              [AWAITING_ADVICE_KEY]: since,
+            };
+            aiData.context = { ...aiData.context, ...waiting };
+            await this.conversationService.updateContext(conversationId, {
+              contextPatch: waiting,
+            });
+          }
 
           if (outcome.status === 'SUCCESS' && resolved.pausesBotMinutes) {
             // Traspaso a una persona: el bot deja de responder en este chat
@@ -2712,8 +2728,7 @@ export class BotRouter {
         conversation.id,
         context,
       )) !== null;
-    const answersPhoto =
-      continuesAnswer || (awaitingPhotoPrice && answersWithAmount(text));
+    const answersPhoto = continuesAnswer || awaitingPhotoPrice;
     if (!answersPhoto && endsHandoff) {
       await this.conversationService.updateContext(conversation.id, {
         contextPatch: handoffEnd,
@@ -2724,6 +2739,7 @@ export class BotRouter {
         contextPatch: {
           ...handoffEnd,
           [AWAITING_TEAM_KEY]: null,
+          [AWAITING_ADVICE_KEY]: null,
           [TEAM_ANSWER_KEY]: saved.id,
         },
       });

@@ -1139,16 +1139,48 @@ describe('Aislamiento de chats (etapa 1)', () => {
     expect(w.aiCalls).toEqual(['Hola', 'A las 7 está bien']);
   });
 
-  it('si el equipo escribe algo sin precio, el bot no retoma por su cuenta', async () => {
+  it('si el bot consultó al equipo por una recomendación, cualquier respuesta del equipo lo hace seguir 5 minutos después', async () => {
+    const store = new Store();
+    const w = world(store, (m) =>
+      m === TEAM_ANSWER_TURN
+        ? 'La profesional te recomienda la Terapia de rehabilitación. ¿Te busco cupo?'
+        : 'Ya le pasé tu caso a una profesional del equipo; te responde aquí en minutos.',
+    );
+    w.setTools(['consultar_al_equipo']);
+    w.setToolResults({
+      consultar_al_equipo: {
+        status: 'SUCCESS',
+        body: { teamNotified: true, awaitTeamAnswer: true },
+      },
+    });
+    w.setToolScript(async (exec, call) => {
+      if (call === 1)
+        await exec({ name: 'consultar_al_equipo', arguments: {} });
+    });
+    w.inbound(A, 'No sé qué tratamiento me sirve, tengo el pelo muy seco');
+    await settle(DELAY_MS + 2_000);
+    expect(store.conversationOf(A)!.context.esperaConsejoEquipo).toEqual(
+      expect.any(String),
+    );
+    expect(w.handoffPerform).not.toHaveBeenCalled();
+    w.ownerWrites(A, 'Te recomiendo la terapia de rehabilitación');
+    await settle(6 * 60_000);
+    expect(w.aiCalls.at(-1)).toBe(TEAM_ANSWER_TURN);
+    expect(w.sends.at(-1)?.content).toContain('Terapia de rehabilitación');
+  });
+
+  it('si el equipo responde la foto sin precio (por ejemplo, una recomendación), el bot también sigue 5 minutos después', async () => {
     const store = new Store();
     const w = world(store);
     w.inbound(A, 'Les mando la foto de mi cabello');
     await settle(DELAY_MS + 2_000);
     store.conversationOf(A)!.context.esperaRespuestaEquipo =
       new Date().toISOString();
-    w.ownerWrites(A, 'Ya la estoy revisando');
-    await settle(20 * 60_000);
+    w.ownerWrites(A, 'Te conviene la terapia de rehabilitación');
+    await settle(4 * 60_000);
     expect(w.aiCalls).toHaveLength(1);
+    await settle(2 * 60_000);
+    expect(w.aiCalls.at(-1)).toBe(TEAM_ANSWER_TURN);
   });
 
   it('un monto del equipo sin una foto esperando su precio (por ejemplo, un anticipo) no hace retomar al bot', async () => {

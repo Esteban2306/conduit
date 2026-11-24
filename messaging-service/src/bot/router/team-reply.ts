@@ -1,10 +1,11 @@
 export const AWAITING_TEAM_KEY = 'esperaRespuestaEquipo';
+export const AWAITING_ADVICE_KEY = 'esperaConsejoEquipo';
 export const TEAM_ANSWER_KEY = 'respuestaEquipo';
 export const AWAITING_TEAM_MAX_MS = 3 * 60 * 60 * 1000;
 export const TEAM_ANSWER_TAKEOVER_MS = 5 * 60 * 1000;
 export const PHOTO_REQUESTED_KEY = 'fotoPedidaEn';
 export const HAIR_PHOTO_NOTICE =
-  'La clienta envió la foto de su cabello para que le des el precio. Búscala en el chat y respóndele el precio por ahí: el bot espera tu respuesta y luego sigue con la cita con ese precio.';
+  'La clienta envió la foto de su cabello para que le digas el precio o qué le conviene. Búscala en el chat y respóndele por ahí: el bot espera tu respuesta (5 minutos después de tu último mensaje) y luego sigue con la cita con lo que le digas.';
 
 export function awaitsTeamAnswer(
   context: Record<string, unknown>,
@@ -37,7 +38,7 @@ export function takeoverEndsAt(
 export const TEAM_ANSWER_RESUME_MS = 60 * 60 * 1000;
 
 export const TEAM_ANSWER_TURN =
-  '[aviso del sistema: la persona del equipo acaba de responderle en este chat (es el último mensaje) y la clienta todavía no ha escrito nada nuevo. Sigue tú desde ahí, sin saludar ni repetir lo que dijo el equipo: si le dio un precio, guárdalo con la herramienta del precio del equipo si la tienes y continúa el paso en que iban (por ejemplo, confirma en una sola pregunta el servicio, el día, la hora y ese precio).]';
+  '[aviso del sistema: la persona del equipo acaba de responderle en este chat (es el último mensaje) y la clienta todavía no ha escrito nada nuevo. Sigue tú desde ahí, sin saludar ni repetir lo que dijo el equipo: si le recomendó un servicio o producto, preséntaselo y ofrécele agendarlo o pedirlo; si le dio un precio, guárdalo con la herramienta del precio del equipo si la tienes y continúa el paso en que iban (por ejemplo, confirma en una sola pregunta el servicio, el día, la hora y ese precio).]';
 
 export function isHandoffPause(context: Record<string, unknown>): boolean {
   const reason = context.botPauseReason;
@@ -66,4 +67,13 @@ export function photoRequestedRecently(
   if (typeof at !== 'string') return false;
   const time = new Date(at).getTime();
   return Number.isFinite(time) && now - time <= AWAITING_TEAM_MAX_MS;
+}
+
+export function asksToAwaitTeam(body: unknown): boolean {
+  return (
+    !!body &&
+    typeof body === 'object' &&
+    (body as Record<string, unknown>).awaitTeamAnswer === true &&
+    (body as Record<string, unknown>).teamNotified !== false
+  );
 }
