@@ -108,6 +108,7 @@ import { findRepeatedQuestion } from './repeated-question';
 import {
   announcesPendingCheck,
   isNoReply,
+  MUST_REPLY_INSTRUCTION,
   NO_REPLY_CONFIRM_INSTRUCTION,
   QUIET_NO_REPLY_CONFIRM_INSTRUCTION,
   askedDayInstruction,
@@ -133,6 +134,7 @@ import {
   firstContactNoticeOf,
   handoffQuietNote,
   silenceNeedsCheck,
+  looksLikeBusinessRequest,
   personalChatNote,
   personalChatPatch,
 } from './chat-situation';
@@ -1307,7 +1309,8 @@ export class BotRouter {
 
     if (
       isNoReply(aiResult.content) &&
-      !silenceNeedsCheck(handoffQuiet, personalNote, combinedText)
+      !silenceNeedsCheck(handoffQuiet, personalNote, combinedText) &&
+      !looksLikeBusinessRequest(combinedText)
     ) {
       this.replyMetrics.increment('silenced');
       this.logger.log(
@@ -1330,6 +1333,30 @@ export class BotRouter {
         this.logger.warn(
           `No se pudo confirmar el silencio para ${maskChat(phoneNumber)}: ${maskError(error)}`,
         );
+      }
+      if (
+        (!second || isNoReply(second.content)) &&
+        looksLikeBusinessRequest(combinedText)
+      ) {
+        try {
+          second = await generate({
+            appendInstruction: MUST_REPLY_INSTRUCTION,
+          });
+        } catch (error) {
+          this.logger.warn(
+            `No se pudo forzar la respuesta para ${maskChat(phoneNumber)}: ${maskError(error)}`,
+          );
+          second = null;
+        }
+        if (!second || isNoReply(second.content)) {
+          this.replyMetrics.increment('emptyFallback');
+          await this.handleAiUnavailable(
+            turn,
+            aiData.context,
+            'La IA se calló ante una solicitud del negocio',
+          );
+          return;
+        }
       }
       if (!second || isNoReply(second.content)) {
         this.replyMetrics.increment('silenced');

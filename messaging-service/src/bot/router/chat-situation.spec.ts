@@ -14,3 +14,23 @@ describe('en un chat traspasado, elegir una hora nunca se calla sin revisar', ()
     expect(silenceNeedsCheck(true, null, 'muchas gracias')).toBe(false);
   });
 });
+
+import { looksLikeBusinessRequest } from './chat-situation';
+
+describe('looksLikeBusinessRequest', () => {
+  it.each([
+    'Buenas, mi amiga quiere una terapia, la puedo agendar yo?',
+    'quiero una cita para mi hija',
+    'cuanto cuesta el alisado',
+  ])('es del negocio: %s', (text) => {
+    expect(looksLikeBusinessRequest(text)).toBe(true);
+  });
+
+  it.each([
+    'hola mija como amaneciste hoy',
+    'tia me puedes llevar a la hora del almuerzo',
+    'mi hijo ya salio del colegio',
+  ])('no es del negocio: %s', (text) => {
+    expect(looksLikeBusinessRequest(text)).toBe(false);
+  });
+});

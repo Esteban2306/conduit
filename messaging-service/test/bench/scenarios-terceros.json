@@ -1,0 +1,952 @@
+{
+ "version": 1,
+ "notes": "terceros + regresión",
+ "scenarios": [
+  {
+   "id": "t01",
+   "category": "terceros",
+   "title": "Cita para su hija: pide nombre y fecha de nacimiento de la hija, no reserva",
+   "prior": {
+    "client": {
+     "name": "Diana Pardo",
+     "birthDate": "1990-07-21"
+    }
+   },
+   "turns": [
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "Hola, quiero separar una terapia de hidratación para mi hija"
+      }
+     ]
+    }
+   ],
+   "expect": {
+    "toolsAll": [
+     "consultar_cliente"
+    ],
+    "toolsForbidden": [
+     "crear_reserva_whatsapp",
+     "registrar_cliente"
+    ],
+    "replyMatches": "nacimiento"
+   }
+  },
+  {
+   "id": "t02",
+   "category": "terceros",
+   "title": "Cita para su hija de punta a punta: reserva con la hija, no con la mamá",
+   "prior": {
+    "client": {
+     "name": "Diana Pardo",
+     "birthDate": "1990-07-21"
+    }
+   },
+   "turns": [
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "Hola, quiero una terapia de hidratación para mi hija"
+      }
+     ]
+    },
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "Se llama Sofía Ramírez Pardo y nació el 3 de mayo de 2014"
+      }
+     ]
+    },
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "el miércoles 25 a las 8:00 de la mañana, con valoración en el spa"
+      }
+     ]
+    },
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "sí, confírmala"
+      }
+     ]
+    }
+   ],
+   "expect": {
+    "toolsAny": [
+     "consultar_disponibilidad",
+     "disponibilidad_combo"
+    ],
+    "toolsAll": [
+     "crear_reserva_whatsapp"
+    ],
+    "toolsForbidden": [
+     "registrar_cliente"
+    ],
+    "finalState": {
+     "reservationCountAtLeast": 1
+    }
+   }
+  },
+  {
+   "id": "t03",
+   "category": "terceros",
+   "title": "Cita para una amiga: pide sus datos, no usa los de la clienta",
+   "prior": {
+    "client": {
+     "name": "Diana Pardo",
+     "birthDate": "1990-07-21"
+    }
+   },
+   "turns": [
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "Buenas, mi amiga quiere una terapia de hidratación, la puedo agendar yo?"
+      }
+     ]
+    }
+   ],
+   "expect": {
+    "toolsForbidden": [
+     "crear_reserva_whatsapp"
+    ],
+    "replyMatches": "nacimiento"
+   }
+  },
+  {
+   "id": "t04",
+   "category": "terceros",
+   "title": "Para ella y para su hija: dos reservas",
+   "prior": {
+    "client": {
+     "name": "Diana Pardo",
+     "birthDate": "1990-07-21"
+    }
+   },
+   "turns": [
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "Hola, quiero una terapia de hidratación para mí y otra para mi hija Sofía Ramírez Pardo, nació el 3 de mayo de 2014, mañana a las 2 de la tarde las dos"
+      }
+     ]
+    },
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "sí, confírmalas las dos"
+      }
+     ]
+    }
+   ],
+   "expect": {
+    "toolsAny": [
+     "consultar_disponibilidad",
+     "disponibilidad_combo"
+    ],
+    "toolsAll": [
+     "crear_reserva_whatsapp"
+    ],
+    "finalState": {
+     "reservationCountAtLeast": 2
+    }
+   }
+  },
+  {
+   "id": "t05",
+   "category": "terceros",
+   "title": "Hora de hoy que ya no se puede: no dice que sí sin consultar y ofrece otra",
+   "prior": {
+    "client": {
+     "name": "Diana Pardo",
+     "birthDate": "1990-07-21"
+    }
+   },
+   "turns": [
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "Hola, quiero una cita hoy a las 7 de la mañana"
+      }
+     ]
+    },
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "terapia de hidratación"
+      }
+     ]
+    }
+   ],
+   "expect": {
+    "toolsAny": [
+     "consultar_disponibilidad",
+     "disponibilidad_combo"
+    ],
+    "toolsForbidden": [
+     "crear_reserva_whatsapp"
+    ],
+    "replyNotMatches": "^\\s*(sí|si|claro)\\b"
+   }
+  },
+  {
+   "id": "b01",
+   "category": "saludo",
+   "title": "Saludo simple",
+   "turns": [
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "Hola buenas tardes"
+      }
+     ]
+    }
+   ],
+   "expect": {
+    "route": "IA",
+    "replyMatches": "Sof[ií]a",
+    "toolsForbidden": [
+     "crear_reserva_whatsapp",
+     "cancelar_reserva_whatsapp"
+    ]
+   },
+   "expectActive": {
+    "route": "directo",
+    "replyMatches": "Sof[ií]a"
+   }
+  },
+  {
+   "id": "b13",
+   "category": "agendar",
+   "title": "Agendar sin valoración, clienta nueva",
+   "turns": [
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "Quiero agendar una terapia de hidratación"
+      }
+     ]
+    },
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "el próximo martes en la mañana"
+      }
+     ]
+    },
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "a las 9 está bien"
+      }
+     ]
+    },
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "Soy Laura Gómez, nací el 2 de febrero de 1995. Acepto los términos, no tengo alergias ni estoy embarazada"
+      }
+     ]
+    },
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "sí, confirmo"
+      }
+     ]
+    }
+   ],
+   "expect": {
+    "toolsAll": [
+     "registrar_cliente",
+     "crear_reserva_whatsapp"
+    ],
+    "finalState": {
+     "reservationCountAtLeast": 1,
+     "clientNameMatches": "Laura G[oó]mez",
+     "clientConsents": [
+      "TERMINOS_SERVICIO"
+     ]
+    }
+   }
+  },
+  {
+   "id": "b14",
+   "category": "agendar",
+   "title": "Agendar sin valoración, clienta recurrente (con día y hora pedidos)",
+   "prior": {
+    "client": {
+     "name": "Diana Pardo",
+     "birthDate": "1990-07-21"
+    }
+   },
+   "turns": [
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "Hola! quiero separar una terapia de hidratación para el próximo lunes a las 9am"
+      }
+     ]
+    },
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "sí, confírmala"
+      }
+     ]
+    }
+   ],
+   "expect": {
+    "toolsAny": [
+     "consultar_disponibilidad",
+     "disponibilidad_combo"
+    ],
+    "toolsAll": [
+     "consultar_cliente",
+     "crear_reserva_whatsapp"
+    ],
+    "toolsForbidden": [
+     "registrar_cliente"
+    ],
+    "replyNotMatches": "fecha de nacimiento|nombre completo|apellido",
+    "finalState": {
+     "reservationCountAtLeast": 1,
+     "clientNameMatches": "Diana Pardo"
+    }
+   }
+  },
+  {
+   "id": "b19",
+   "category": "cancelar",
+   "title": "Cancelar (\"ya no voy a poder ir\")",
+   "prior": {
+    "client": {
+     "name": "Valentina Ruiz",
+     "birthDate": "1996-09-12"
+    },
+    "reservations": [
+     {
+      "treatment": "Spa coreano",
+      "daysFromNow": 2,
+      "hour": 15,
+      "status": "CONFIRMADA",
+      "deposit": "CONFIRMADO"
+     }
+    ]
+   },
+   "turns": [
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "Hola, ya no voy a poder ir a mi cita"
+      }
+     ]
+    },
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "no quiero reagendar, cancélala"
+      }
+     ]
+    }
+   ],
+   "expect": {
+    "toolsAll": [
+     "reservas_proximas",
+     "cancelar_reserva_whatsapp"
+    ],
+    "finalState": {
+     "reservationStatus": "CANCELADA"
+    }
+   }
+  },
+  {
+   "id": "b74",
+   "category": "agendar",
+   "title": "Clienta nueva de punta a punta: datos una sola vez, reserva y comprobante",
+   "turns": [
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "Hola, quiero agendar una terapia de nutrición"
+      }
+     ]
+    },
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "Sí, el primero que tengas"
+      }
+     ]
+    },
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "Me llamo Camila Torres Ruiz y nací el 3 de marzo de 1995"
+      }
+     ]
+    },
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "Sí, confirmo"
+      }
+     ]
+    },
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "Sí, ese horario"
+      }
+     ]
+    },
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "image": {
+        "caption": "listo, ya pagué"
+       }
+      }
+     ]
+    }
+   ],
+   "expect": {
+    "toolsAll": [
+     "registrar_cliente",
+     "crear_reserva_whatsapp"
+    ],
+    "finalState": {
+     "reservationCountAtLeast": 1,
+     "clientNameMatches": "Camila Torres"
+    },
+    "noFalseHumanPromise": true
+   }
+  },
+  {
+   "id": "t06",
+   "category": "terceros",
+   "title": "Hija: todo en un mensaje y un sí",
+   "prior": {
+    "client": {
+     "name": "Diana Pardo",
+     "birthDate": "1990-07-21"
+    }
+   },
+   "turns": [
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "Hola, quiero agendar una terapia de hidratación para mi hija Valentina Gómez Ruiz, nació el 12 de agosto de 2015, mañana a las 8 de la mañana"
+      }
+     ]
+    },
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "sí"
+      }
+     ]
+    }
+   ],
+   "expect": {
+    "toolsAll": [
+     "crear_reserva_whatsapp"
+    ],
+    "toolsForbidden": [
+     "registrar_cliente"
+    ],
+    "finalState": {
+     "reservationCountAtLeast": 1
+    }
+   }
+  },
+  {
+   "id": "t07",
+   "category": "terceros",
+   "title": "Hija: sin servicio, respuestas cortas",
+   "prior": {
+    "client": {
+     "name": "Diana Pardo",
+     "birthDate": "1990-07-21"
+    }
+   },
+   "turns": [
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "quiero una cita para mi hija"
+      }
+     ]
+    },
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "hidratación"
+      }
+     ]
+    },
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "Valentina Gómez Ruiz, 12/08/2015"
+      }
+     ]
+    },
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "la de las 8"
+      }
+     ]
+    },
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "dale"
+      }
+     ]
+    }
+   ],
+   "expect": {
+    "toolsAll": [
+     "crear_reserva_whatsapp"
+    ],
+    "toolsForbidden": [
+     "registrar_cliente"
+    ],
+    "finalState": {
+     "reservationCountAtLeast": 1
+    }
+   }
+  },
+  {
+   "id": "t08",
+   "category": "terceros",
+   "title": "Mamá: la clienta agenda por ella",
+   "prior": {
+    "client": {
+     "name": "Diana Pardo",
+     "birthDate": "1990-07-21"
+    }
+   },
+   "turns": [
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "Hola, mi mamá quiere una terapia de hidratación mañana"
+      }
+     ]
+    },
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "Carmen Ruiz de Pardo, 4 de enero de 1962"
+      }
+     ]
+    },
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "a las 8 am"
+      }
+     ]
+    },
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "sí confírmala"
+      }
+     ]
+    }
+   ],
+   "expect": {
+    "toolsAll": [
+     "crear_reserva_whatsapp"
+    ],
+    "toolsForbidden": [
+     "registrar_cliente"
+    ],
+    "finalState": {
+     "reservationCountAtLeast": 1
+    }
+   }
+  },
+  {
+   "id": "t09",
+   "category": "terceros",
+   "title": "Amiga: pide agendarle y confirma",
+   "prior": {
+    "client": {
+     "name": "Diana Pardo",
+     "birthDate": "1990-07-21"
+    }
+   },
+   "turns": [
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "Buenas, quiero agendarle una cita de hidratación a una amiga"
+      }
+     ]
+    },
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "Laura Medina Ríos, nació el 30 de junio de 1988"
+      }
+     ]
+    },
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "mañana a las 8 de la mañana"
+      }
+     ]
+    },
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "sí, apártala"
+      }
+     ]
+    }
+   ],
+   "expect": {
+    "toolsAll": [
+     "crear_reserva_whatsapp"
+    ],
+    "toolsForbidden": [
+     "registrar_cliente"
+    ],
+    "finalState": {
+     "reservationCountAtLeast": 1
+    }
+   }
+  },
+  {
+   "id": "t10",
+   "category": "terceros",
+   "title": "Hijo pequeño, sin registrar a la mamá",
+   "prior": {},
+   "turns": [
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "Hola, necesito una cita para mi hijo"
+      }
+     ]
+    },
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "hidratación, se llama Mateo Pardo Díaz, 2 de febrero de 2018. Yo soy Ana Díaz, nací el 5 de mayo de 1989"
+      }
+     ]
+    },
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "el jueves a las 2 de la tarde"
+      }
+     ]
+    },
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "sí"
+      }
+     ]
+    }
+   ],
+   "expect": {
+    "toolsAll": [
+     "crear_reserva_whatsapp"
+    ],
+    "toolsForbidden": [
+     "registrar_cliente"
+    ],
+    "finalState": {
+     "reservationCountAtLeast": 1
+    }
+   }
+  },
+  {
+   "id": "r05",
+   "category": "chat-real",
+   "title": "Mensaje personal de un familiar en el número del spa: no se responde nada",
+   "turns": [
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "Hola hijo como vas"
+      }
+     ]
+    },
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "Bien gracias a Dios, ya me entregaron el carro"
+      }
+     ]
+    }
+   ],
+   "expect": {
+    "replyNotMatches": "[\\s\\S]",
+    "toolsForbidden": [
+     "crear_reserva_whatsapp",
+     "registrar_cliente"
+    ]
+   }
+  },
+  {
+   "id": "b32",
+   "category": "spam",
+   "title": "Insultos",
+   "turns": [
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "son unos ladrones hp, roban a la gente"
+      }
+     ]
+    }
+   ],
+   "expect": {
+    "toolsForbidden": [
+     "crear_reserva_whatsapp",
+     "cancelar_reserva_whatsapp"
+    ]
+   },
+   "expectActive": {
+    "route": "plantilla",
+    "replyMatches": "mala experiencia",
+    "toolsForbidden": [
+     "crear_reserva_whatsapp",
+     "cancelar_reserva_whatsapp"
+    ]
+   }
+  },
+  {
+   "id": "b62",
+   "category": "reglas",
+   "title": "Spam con enlace: silencio",
+   "turns": [
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "Gana dinero fácil con bitcoin https://x.test/ya"
+      }
+     ]
+    }
+   ],
+   "expect": {
+    "toolsForbidden": [
+     "crear_reserva_whatsapp"
+    ]
+   },
+   "expectActive": {
+    "route": "ignorado",
+    "toolsForbidden": [
+     "crear_reserva_whatsapp"
+    ]
+   }
+  },
+  {
+   "id": "b57",
+   "category": "reglas",
+   "title": "No quiere más mensajes: confirma y calla",
+   "prior": {
+    "client": {
+     "name": "Daniela Rojas",
+     "birthDate": "1990-03-03"
+    }
+   },
+   "turns": [
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "no quiero más mensajes"
+      }
+     ]
+    },
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "hola quiero agendar una cita"
+      }
+     ],
+     "expectActive": {
+      "route": "ignorado"
+     }
+    }
+   ],
+   "expect": {
+    "toolsForbidden": [
+     "crear_reserva_whatsapp"
+    ]
+   },
+   "expectActive": {
+    "toolsForbidden": [
+     "crear_reserva_whatsapp",
+     "consultar_disponibilidad"
+    ],
+    "replyMatches": "no te volveremos a escribir",
+    "finalState": {
+     "reservationCountAtLeast": 0
+    }
+   }
+  },
+  {
+   "id": "b64",
+   "category": "cierre",
+   "title": "Tras agendar, el relleno no recibe respuesta",
+   "prior": {
+    "client": {
+     "name": "Catalina Vega",
+     "birthDate": "1992-02-12"
+    }
+   },
+   "turns": [
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "Hola! quiero separar una terapia de hidratación para el próximo miércoles a las 9am"
+      }
+     ]
+    },
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "sí, confírmala"
+      }
+     ]
+    },
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "muchas gracias por todo, que tengas buen día"
+      }
+     ],
+     "expectActive": {
+      "route": "ignorado"
+     }
+    },
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "ok perfecto"
+      }
+     ],
+     "expectActive": {
+      "route": "ignorado"
+     }
+    }
+   ],
+   "expect": {
+    "toolsAny": [
+     "crear_reserva_whatsapp"
+    ]
+   },
+   "expectActive": {
+    "toolsAll": [
+     "crear_reserva_whatsapp"
+    ],
+    "finalState": {
+     "reservationCountAtLeast": 1
+    }
+   }
+  },
+  {
+   "id": "r19",
+   "category": "agendar",
+   "title": "\"El primero que tengas\" o \"sí\" a varios horarios: no agenda sin día y hora exactos",
+   "prior": {
+    "client": {
+     "name": "Paola Ríos",
+     "birthDate": "1988-06-10"
+    }
+   },
+   "turns": [
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "Hola, quiero agendar una terapia de hidratación"
+      }
+     ]
+    },
+    {
+     "actor": "A",
+     "messages": [
+      {
+       "text": "el primero que tengas"
+      }
+     ]
+    }
+   ],
+   "expect": {
+    "toolsForbidden": [
+     "crear_reserva_whatsapp"
+    ],
+    "replyMatches": "d[ií]a y (?:la )?hora|\\?",
+    "notCutOrEmpty": true
+   }
+  }
+ ]
+}
