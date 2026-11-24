@@ -2930,11 +2930,7 @@ export class BotRouter {
 
 const OWNER_ACTIVE_DISCARD_MS = 30_000;
 
-const TEAM_REVIEW_VERDICTS = new Set<string>([
-  'VALID',
-  'NEEDS_REVIEW',
-  'ERROR',
-]);
+const TEAM_REVIEW_VERDICTS = new Set<string>(['VALID', 'NEEDS_REVIEW']);
 
 const COMPLETED_CLAIM =
   /\b(?:qued[oó]|quedaron|ya est[aá]|fue|ha sido|se (?:agend[oó]|reserv[oó]|cancel[oó]|reagend[oó]|registr[oó]|cre[oó]))\s*(?:ya\s*)?(?:agendad[ao]s?|reservad[ao]s?|cancelad[ao]s?|reagendad[ao]s?|confirmad[ao]s?|registrad[ao]s?|cread[ao]s?)?\b/i;

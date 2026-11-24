@@ -4467,7 +4467,7 @@ describe('Camino rápido de la imagen: se analiza al llegar', () => {
       );
     });
 
-    it.each(['VALID', 'ERROR'])(
+    it.each(['VALID', 'NEEDS_REVIEW'])(
       'una foto de cabello con %s queda esperando al equipo y prometer su precio no traspasa el chat',
       async (verdict) => {
         const w = world(
@@ -4496,6 +4496,37 @@ describe('Camino rápido de la imagen: se analiza al llegar', () => {
         ).toEqual(expect.any(String));
       },
     );
+
+    it('un comprobante cuya revisión de cabello falló, sin que el bot pidiera foto, no queda esperando un precio del equipo', async () => {
+      const store = new Store();
+      const w = world(
+        store,
+        () => 'Gracias, el equipo revisará tu comprobante.',
+      );
+      w.setImageAnalysis(true);
+      w.setSpecialistMode('ACTIVE');
+      w.specialistFindMode.mockResolvedValue(
+        bindings('image-analysis', 'foto-cabello'),
+      );
+      w.specialistRun.mockImplementation((input) =>
+        Promise.resolve({
+          ...w.activeOutcome(
+            input.capability === 'foto-cabello' ? 'ERROR' : 'VALID',
+          ),
+          capability: input.capability,
+        }),
+      );
+      w.inboundImage(A);
+      await settle(DELAY_MS + 2_000);
+      expect(
+        store.conversationOf(A)?.context.esperaRespuestaEquipo,
+      ).toBeFalsy();
+      expect(w.handoffNotify).not.toHaveBeenCalled();
+      const calls = w.aiCalls.length;
+      w.ownerWrites(A, 'Recibido tu anticipo de 50 mil');
+      await settle(10 * 60_000);
+      expect(w.aiCalls).toHaveLength(calls);
+    });
 
     it('los vínculos en SHADOW no bloquean ni cambian la respuesta', async () => {
       const w = fastWorld();
