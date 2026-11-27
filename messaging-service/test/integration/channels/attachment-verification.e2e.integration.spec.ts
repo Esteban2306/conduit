@@ -560,6 +560,14 @@ suite(
         ['con monto negativo', () => extraction({ amount: -150000 })],
         ['con monto absurdo', () => extraction({ amount: 1e15 })],
         ['con moneda demasiado larga', () => extraction({ currency: 'COPX' })],
+        [
+          'con referencia demasiado larga',
+          () => extraction({ reference: `TRX-${'9'.repeat(80)}` }),
+        ],
+        [
+          'con destinatario demasiado largo',
+          () => extraction({ recipient: `Spa Demo ${'x'.repeat(130)}` }),
+        ],
         ['con fecha imposible', () => extraction({ date: '2026-02-31' })],
         [
           'con legibilidad inventada',

@@ -1,0 +1,5 @@
+# Claude Code (solo local)
+CLAUDE.local.md
+.claude/
+*.bak-*
+report-*-screenshot.png

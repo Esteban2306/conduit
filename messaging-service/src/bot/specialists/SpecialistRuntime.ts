@@ -644,7 +644,7 @@ export class SpecialistRuntime {
         }),
       );
 
-      const parsed = parseExtraction(response.content, schema);
+      const parsed = parseExtraction(response.content, schema, rules.data);
       if (!parsed.ok) {
         return {
           ...failure(parsed.reason, schema),

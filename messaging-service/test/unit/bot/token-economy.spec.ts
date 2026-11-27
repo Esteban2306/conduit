@@ -42,6 +42,30 @@ const TOOLS = [
   { name: 'dos', description: 'd2', parametersSchema: { type: 'object' } },
 ];
 
+type Block = { type?: string; cache_control?: unknown };
+type SentParams = {
+  system: Block[];
+  tools: Block[];
+  messages: Array<{ content: Block[] }>;
+  temperature?: unknown;
+  thinking?: unknown;
+  output_config?: unknown;
+};
+const sent = (call = 0): SentParams =>
+  (create.mock.calls as Array<[SentParams]>)[call][0];
+
+// Importing @prisma/client loads the local .env, so each test starts without the
+// TTL override and sets it itself when it needs it.
+const ENV_CACHE_TTL = process.env.ANTHROPIC_CACHE_TTL;
+beforeEach(() => {
+  delete process.env.ANTHROPIC_CACHE_TTL;
+});
+afterAll(() => {
+  if (ENV_CACHE_TTL !== undefined) {
+    process.env.ANTHROPIC_CACHE_TTL = ENV_CACHE_TTL;
+  }
+});
+
 describe('AnthropicProvider: caché, razonamiento y tiempos', () => {
   beforeEach(() => {
     create.mockReset();
@@ -64,7 +88,7 @@ describe('AnthropicProvider: caché, razonamiento y tiempos', () => {
       baseUrl: '',
       tools: TOOLS,
     });
-    const params = create.mock.calls[0][0];
+    const params = sent();
     expect(params.system).toEqual([
       { type: 'text', text: 'FIJO', cache_control: { type: 'ephemeral' } },
       { type: 'text', text: 'DINAMICO' },
@@ -90,7 +114,7 @@ describe('AnthropicProvider: caché, razonamiento y tiempos', () => {
       baseUrl: '',
       tools: TOOLS,
     });
-    const params = create.mock.calls[0][0];
+    const params = sent();
     expect(params.system).toBe('TODO');
     expect(params.tools[1].cache_control).toBeUndefined();
   });
@@ -114,7 +138,7 @@ describe('AnthropicProvider: caché, razonamiento y tiempos', () => {
       baseUrl: '',
       reasoningMode: mode,
     });
-    const params = create.mock.calls[0][0];
+    const params = sent();
     expect({
       ...(params.thinking ? { thinking: params.thinking } : {}),
       ...(params.output_config ? { output_config: params.output_config } : {}),
@@ -187,7 +211,7 @@ describe('AnthropicProvider: caché, razonamiento y tiempos', () => {
     });
 
     const marks = (call: number) => {
-      const params = create.mock.calls[call][0];
+      const params = sent(call);
       const inMessages = (
         params.messages as Array<{ content: unknown }>
       ).flatMap((m) =>
@@ -212,7 +236,7 @@ describe('AnthropicProvider: caché, razonamiento y tiempos', () => {
       expect(marks(call).total).toBeLessThanOrEqual(3);
     }
     const last = (call: number) => {
-      const msgs = create.mock.calls[call][0].messages as Array<{
+      const msgs = sent(call).messages as Array<{
         content: Array<{ type: string; cache_control?: unknown }>;
       }>;
       const content = msgs[msgs.length - 1].content;
@@ -223,39 +247,33 @@ describe('AnthropicProvider: caché, razonamiento y tiempos', () => {
   });
 
   it('con ANTHROPIC_CACHE_TTL=1h el prefijo estable dura 1 hora y el tramo del turno sigue en 5 minutos', async () => {
-    const previous = process.env.ANTHROPIC_CACHE_TTL;
     process.env.ANTHROPIC_CACHE_TTL = '1h';
-    try {
-      create.mockResolvedValue({
-        content: [{ type: 'text', text: 'hola' }],
-        usage: usage(100, 10),
-        stop_reason: 'end_turn',
-        model: 'm',
-      });
-      await new AnthropicProvider().generateText({
-        prompt: 'hola',
-        systemPrompt: 'FIJO\n\nDINAMICO',
-        systemBlocks: { cacheable: 'FIJO', dynamic: 'DINAMICO' },
-        model: 'm',
-        apiKey: 'k',
-        baseUrl: '',
-        tools: TOOLS,
-      });
-      const params = create.mock.calls[0][0];
-      expect(params.system[0].cache_control).toEqual({
-        type: 'ephemeral',
-        ttl: '1h',
-      });
-      expect(params.tools[1].cache_control).toEqual({
-        type: 'ephemeral',
-        ttl: '1h',
-      });
-      const lastBlock = params.messages[0].content[0];
-      expect(lastBlock.cache_control).toEqual({ type: 'ephemeral' });
-    } finally {
-      if (previous === undefined) delete process.env.ANTHROPIC_CACHE_TTL;
-      else process.env.ANTHROPIC_CACHE_TTL = previous;
-    }
+    create.mockResolvedValue({
+      content: [{ type: 'text', text: 'hola' }],
+      usage: usage(100, 10),
+      stop_reason: 'end_turn',
+      model: 'm',
+    });
+    await new AnthropicProvider().generateText({
+      prompt: 'hola',
+      systemPrompt: 'FIJO\n\nDINAMICO',
+      systemBlocks: { cacheable: 'FIJO', dynamic: 'DINAMICO' },
+      model: 'm',
+      apiKey: 'k',
+      baseUrl: '',
+      tools: TOOLS,
+    });
+    const params = sent();
+    expect(params.system[0].cache_control).toEqual({
+      type: 'ephemeral',
+      ttl: '1h',
+    });
+    expect(params.tools[1].cache_control).toEqual({
+      type: 'ephemeral',
+      ttl: '1h',
+    });
+    const lastBlock = params.messages[0].content[0];
+    expect(lastBlock.cache_control).toEqual({ type: 'ephemeral' });
   });
 
   it('billableTokens cobra escritura de caché completa y lectura al 10 %', () => {
@@ -363,7 +381,7 @@ describe('PromptEngine: bloque cacheable sin datos de la conversación', () => {
         tools: TOOLS,
       });
     }
-    const [a, b] = create.mock.calls.map((c) => c[0]);
+    const [a, b] = (create.mock.calls as Array<[SentParams]>).map((c) => c[0]);
     expect(JSON.stringify(a.system[0])).toBe(JSON.stringify(b.system[0]));
     expect(JSON.stringify(a.tools)).toBe(JSON.stringify(b.tools));
     expect(JSON.stringify(a.system[1])).not.toBe(JSON.stringify(b.system[1]));

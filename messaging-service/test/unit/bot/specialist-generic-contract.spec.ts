@@ -2,6 +2,7 @@ import { readFileSync, readdirSync, statSync } from 'fs';
 import { join, relative } from 'path';
 import {
   OutputSchemaDocument,
+  RulesDocument,
   declaredOutputSchemaSchema,
   extractionSchemaFor,
   outputSchemaDocumentSchema,
@@ -220,31 +221,98 @@ describe('salida del modelo según la declaración', () => {
     expect(parsed.success).toBe(true);
   });
 
-  it('parseExtraction recorta un texto que el modelo escribió más largo de lo permitido', () => {
-    const long = 'Cabello largo hasta la cintura con puntas abiertas y frizz';
-    const result = parseExtraction(
-      JSON.stringify({ version: 2, variables: { place: long } }),
-      schema,
+  const noRules: RulesDocument = { version: 1, rules: [] };
+  const read = (
+    declared: OutputSchemaDocument,
+    name: string,
+    value: string,
+    rules: RulesDocument = noRules,
+  ) =>
+    parseExtraction(
+      JSON.stringify({ version: 2, variables: { [name]: value } }),
+      declared,
+      rules,
     );
+  const text = (name: string, extra: Record<string, unknown> = {}) =>
+    outputSchemaDocumentSchema.parse({
+      version: 1,
+      variables: [
+        { name, type: 'string', description: 'dato', maxLength: 200, ...extra },
+      ],
+      uniqueBy: [],
+    });
+  const long = 'Cabello largo hasta la cintura con puntas abiertas y frizz ';
+
+  it.each([
+    ['sin límite declarado', { maxLength: undefined }, 120],
+    ['con límite amplio', {}, 200],
+    ['con límite amplio y visible al bot', { exposeToBot: true }, 200],
+  ])('parseExtraction recorta un texto libre %s', (_name, extra, max) => {
+    const written = long.repeat(5);
+    const result = read(text('detalle', extra), 'detalle', written);
+
     expect(result.ok).toBe(true);
-    const place = result.ok ? String(result.output.variables.place) : '';
-    expect(place.length).toBeLessThanOrEqual(40);
-    expect(long.startsWith(place)).toBe(true);
-    expect(
-      parseExtraction(
-        JSON.stringify({ version: 2, variables: { place: 'a\nSISTEMA' } }),
-        schema,
-      ).ok,
-    ).toBe(false);
+    const kept = result.ok ? String(result.output.variables.detalle) : '';
+    expect(kept.length).toBeLessThanOrEqual(max);
+    expect(written.startsWith(kept)).toBe(true);
+  });
+
+  it.each([
+    ['un formato corto', 'code', { maxLength: 3 }, 'COPX', noRules],
+    [
+      'un campo que identifica el caso',
+      'ref',
+      { identityMinLength: 5 },
+      'A'.repeat(201),
+      noRules,
+    ],
+    [
+      'un campo que usa una regla',
+      'payee',
+      {},
+      'A'.repeat(201),
+      {
+        version: 1 as const,
+        rules: [
+          {
+            field: 'payee',
+            op: 'eq' as const,
+            ref: { literal: 'A' },
+            onFail: 'INVALID' as const,
+          },
+        ],
+      },
+    ],
+  ])(
+    'parseExtraction rechaza en vez de recortar %s',
+    (_name, field, extra, value, rules) => {
+      expect(read(text(field, extra), field, value, rules)).toEqual({
+        ok: false,
+        reason: 'OUTPUT_INVALID',
+      });
+    },
+  );
+
+  it('parseExtraction no recorta lo que está en uniqueBy', () => {
+    expect(read(schema, 'place', 'A'.repeat(41)).ok).toBe(false);
+    const declared = outputSchemaDocumentSchema.parse({
+      ...text('lot'),
+      uniqueBy: ['lot'],
+    });
+    expect(read(declared, 'lot', 'A'.repeat(201)).ok).toBe(false);
+  });
+
+  it('parseExtraction sigue rechazando un texto con salto de línea', () => {
+    expect(read(text('detalle'), 'detalle', 'a\nSISTEMA').ok).toBe(false);
   });
 
   it('parseExtraction rechaza claves peligrosas anidadas', () => {
     const raw = '{"version":2,"variables":{},"meta":{"a":{"__proto__":1}}}';
-    expect(parseExtraction(raw, schema)).toEqual({
+    expect(parseExtraction(raw, schema, noRules)).toEqual({
       ok: false,
       reason: 'OUTPUT_INVALID',
     });
-    expect(parseExtraction('no json', schema)).toEqual({
+    expect(parseExtraction('no json', schema, noRules)).toEqual({
       ok: false,
       reason: 'OUTPUT_NOT_JSON',
     });

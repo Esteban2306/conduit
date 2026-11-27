@@ -2,6 +2,7 @@ import {
   DEFAULT_STRING_LENGTH,
   ExtractionOutput,
   OutputSchemaDocument,
+  RulesDocument,
   Variable,
   extractionSchemaFor,
 } from './contracts';
@@ -70,6 +71,25 @@ function hasForbiddenKeys(value: unknown, depth = 0): boolean {
   );
 }
 
+const MIN_CLIPPABLE_LENGTH = 100;
+
+// Only free prose may be shortened: cutting a value that is decided on, or that
+// has a format-sized limit, would turn an invalid output into a valid one.
+function clippableLimit(
+  variable: Variable,
+  schema: OutputSchemaDocument,
+  rules: RulesDocument,
+): number | null {
+  if (variable.type !== 'string') return null;
+  const max = variable.maxLength ?? DEFAULT_STRING_LENGTH;
+  const decides =
+    max < MIN_CLIPPABLE_LENGTH ||
+    variable.identityMinLength !== undefined ||
+    schema.uniqueBy.includes(variable.name) ||
+    rules.rules.some((rule) => rule.field === variable.name);
+  return decides ? null : max;
+}
+
 function clipText(value: string, max: number): string {
   if (value.length <= max) return value;
   const cut = value.slice(0, max);
@@ -80,6 +100,7 @@ function clipText(value: string, max: number): string {
 function withClippedTexts(
   json: unknown,
   schema: OutputSchemaDocument,
+  rules: RulesDocument,
 ): unknown {
   if (json === null || typeof json !== 'object' || Array.isArray(json)) {
     return json;
@@ -97,11 +118,9 @@ function withClippedTexts(
   };
   for (const variable of schema.variables) {
     const value = clipped[variable.name];
-    if (variable.type === 'string' && typeof value === 'string') {
-      clipped[variable.name] = clipText(
-        value,
-        variable.maxLength ?? DEFAULT_STRING_LENGTH,
-      );
+    const max = clippableLimit(variable, schema, rules);
+    if (max !== null && typeof value === 'string') {
+      clipped[variable.name] = clipText(value, max);
     }
   }
   return { ...(json as Record<string, unknown>), variables: clipped };
@@ -114,6 +133,7 @@ export type ParsedExtraction =
 export function parseExtraction(
   raw: string,
   schema: OutputSchemaDocument,
+  rules: RulesDocument,
 ): ParsedExtraction {
   const cleaned = raw.replace(/```json|```/gi, '').trim();
   let json: unknown;
@@ -124,7 +144,7 @@ export function parseExtraction(
   }
   if (hasForbiddenKeys(json)) return { ok: false, reason: 'OUTPUT_INVALID' };
   const parsed = extractionSchemaFor(schema).safeParse(
-    withClippedTexts(json, schema),
+    withClippedTexts(json, schema, rules),
   );
   return parsed.success
     ? { ok: true, output: parsed.data }
